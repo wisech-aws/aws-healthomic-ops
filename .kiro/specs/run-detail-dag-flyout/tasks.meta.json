@@ -1,0 +1,179 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "4. Restructure `RunDetailView` to a full-width DAG and single-column analysis": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789675565550
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789734576650
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789735154434
+      }
+    ],
+    "5. Wire the SplitPanel fly-out into `RunDetailView`": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789675565593
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789735158950
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789735343436
+      }
+    ],
+    "6. Preserve cross-zone deep-linking and stale-selection handling through the new structure": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789675565650
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789735347673
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789735749844
+      }
+    ],
+    "7. Preserve honesty / non-fabrication across the revision": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789675565684
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789735753346
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789735846688
+      }
+    ],
+    "8. Rework the `RunDetailView` test suite for the full-width + fly-out structure": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789675565736
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789735850363
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789736559257
+      }
+    ],
+    "9. Scope guard and verification (no deploy)": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789675565773
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789736562354
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789736857758
+      }
+    ],
+    "1. Add a view-agnostic split-panel slot to the `Dashboard` shell": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789675583319
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789731546862
+      }
+    ],
+    "2. Build the `UtilizationBars` component": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789675586232
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789679972184
+      }
+    ],
+    "3. Swap `UtilizationBars` into `TaskDetailPanel`": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789731552033
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789734570205
+      }
+    ],
+    "1.1 Write shell slot tests": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789731557439
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789734572432
+      }
+    ],
+    "2.1 Write `UtilizationBars` tests": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789731558344
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789734571575
+      }
+    ],
+    "3.1 Rework `TaskDetailPanel` metric tests": [
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789734577602
+      },
+      {
+        "executionId": "d0fdf736-a29f-4c42-8f3b-076ecd24f4bc",
+        "chatSessionId": "sess_907e3db5-5761-4955-aff5-e5fb032c28be",
+        "timestamp": 1789734664303
+      }
+    ]
+  }
+}

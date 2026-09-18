@@ -1,0 +1,622 @@
+{
+  "pbtResults": {
+    "5.3 Write property test for enrichment uses only allowed read operations": {
+      "status": "passed",
+      "lastRunTimestamp": 1787865666040
+    }
+  },
+  "executionHistory": {
+    "1. Scaffold the monorepo, CDK app shell, and shared tooling": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645024
+      },
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853662710
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857712241
+      }
+    ],
+    "2.1 Define the single table with GSI1 in DataStack": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645129
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857716433
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857831207
+      }
+    ],
+    "3.1 Define domain records and status enums": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645159
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857717543
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857831967
+      }
+    ],
+    "3.2 Implement the EventMapper with confirm-against-docs mapping functions": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645193
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857838083
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858215187
+      }
+    ],
+    "4.1 Implement run/task key derivation and attribute persistence": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645241
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857839021
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858216563
+      }
+    ],
+    "4.2 Implement the monotonic conditional upsert and identifier validation": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645274
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858236311
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865131622
+      }
+    ],
+    "4.3 Implement static graph persistence and failure recording": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645301
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858237307
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865704537
+      }
+    ],
+    "5.1 Implement enrichment calls with retries and timeouts": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645332
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865703806
+      }
+    ],
+    "6.1 Define the DefinitionParser interface and dispatcher": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645358
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857840105
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858218472
+      }
+    ],
+    "6.2 Implement the WDL parser": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645385
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858238660
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865128219
+      }
+    ],
+    "6.3 Implement the Nextflow parser": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645417
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858239612
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865129553
+      }
+    ],
+    "6.4 Implement the CWL parser": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645443
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858242056
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865130505
+      }
+    ],
+    "7. Checkpoint - Ensure all ingest logic and parser tests pass": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645472
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865709446
+      }
+    ],
+    "8.1 Implement the AppSync Publisher": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645498
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865714645
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866521794
+      }
+    ],
+    "8.2 Wire the ingest handler pipeline": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645526
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866524063
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866859812
+      }
+    ],
+    "9.1 Define the GraphQL schema and Cognito auth": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645566
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865715739
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866523113
+      }
+    ],
+    "9.2 Implement APPSYNC_JS resolvers on the DynamoDB data source": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645591
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866525325
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866860709
+      }
+    ],
+    "9.3 Export API outputs and scope data source grants": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645617
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866862153
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923130863
+      }
+    ],
+    "10.1 Provision the ingest Lambda and event source": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645649
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866863141
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923133091
+      }
+    ],
+    "10.2 Grant least-privilege IAM to the ingest role": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645675
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923132164
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923697510
+      }
+    ],
+    "11. Checkpoint - Ensure ingest, API, and infrastructure tests pass": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645701
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923698761
+      }
+    ],
+    "12.1 Implement the client and build-time config injection": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645731
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923706790
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787929455991
+      }
+    ],
+    "12.2 Implement the reconnecting subscription manager": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645756
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787929467954
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787930578199
+      }
+    ],
+    "13.1 Implement fleet list rendering, ordering, and status colors": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645783
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787929467219
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787930580647
+      }
+    ],
+    "13.2 Implement live fleet updates and status filtering": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645808
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787930587280
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787932479833
+      }
+    ],
+    "14.1 Implement layer selection, status overlay, inferred ordering, and timeline grouping": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645834
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787929465820
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787930579562
+      }
+    ],
+    "15.1 Render the run detail view with graph, progress, and live task updates": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645861
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787930588676
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787932481186
+      }
+    ],
+    "16.1 Provision the private S3 bucket and CloudFront distribution": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645891
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923709515
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787929457343
+      }
+    ],
+    "17.1 Add event fixtures and the synthetic-event/invoke script": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645922
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923710080
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787929458204
+      }
+    ],
+    "18.1 Write the README and cost documentation": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645949
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787930589440
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787932482081
+      }
+    ],
+    "19. Final checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "86f83781-6452-438f-ad4d-ee51dd51f1c0",
+        "chatSessionId": "sess_0b62e39a-46b5-4247-b367-8133bbba21c8",
+        "timestamp": 1787853645975
+      },
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787932517874
+      }
+    ],
+    "2. Implement the DynamoDB data model in DataStack": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787857831232
+      }
+    ],
+    "3. Implement ingest domain types, status enums, and the isolated EventMapper": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787858215222
+      }
+    ],
+    "6. Implement the Workflow Definition Parser module": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865130553
+      }
+    ],
+    "5. Implement the Enricher over HealthOmics read APIs": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865703849
+      }
+    ],
+    "4. Implement the Repository with monotonic upserts and identifier validation": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787865704569
+      }
+    ],
+    "8. Implement the Publisher and wire the ingest handler": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787866859848
+      }
+    ],
+    "9. Implement the AppSync API in ApiStack": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923130917
+      }
+    ],
+    "10. Wire IngestStack: Lambda, EventBridge, DLQ, and least-privilege IAM": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787923697556
+      }
+    ],
+    "16. Implement FrontendStack hosting": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787929457379
+      }
+    ],
+    "17. Implement fixtures and the local verification script": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787929458241
+      }
+    ],
+    "12. Implement frontend GraphQL client and subscription manager": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787930578243
+      }
+    ],
+    "14. Implement the three-layer task view logic": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787930579599
+      }
+    ],
+    "13. Implement the fleet view": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787932479925
+      }
+    ],
+    "15. Implement the run detail view": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787932481222
+      }
+    ],
+    "18. Author documentation": [
+      {
+        "executionId": "03291267-cc46-4fee-bd47-cba84b608f37",
+        "chatSessionId": "sess_f8447822-58b8-4f9d-b6b6-ec05cbdd0d4a",
+        "timestamp": 1787932482200
+      }
+    ]
+  }
+}

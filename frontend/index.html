@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HealthOmics Workflow Dashboard</title>
+    <!--
+      Deploy-time runtime config. CDK's FrontendStack overwrites /config.js at
+      deploy with the real ApiStack values (window.__APP_CONFIG__). A plain
+      (non-module) script so it runs before the app bundle. This checked-in
+      version is an empty placeholder so local dev falls back to Vite env / mock.
+    -->
+    <script src="/config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

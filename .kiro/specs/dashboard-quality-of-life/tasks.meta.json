@@ -1,0 +1,758 @@
+{
+  "pbtResults": {
+    "2.2 Write property test for interval construction in `frontend/src/metrics/intervals.test.ts`": {
+      "status": "passed",
+      "lastRunTimestamp": 1788354480602
+    },
+    "2.3 Write property test for peak concurrency in `frontend/src/metrics/intervals.test.ts`": {
+      "status": "passed",
+      "lastRunTimestamp": 1788354481525
+    },
+    "4.2 Write property test for ranking order in `frontend/src/metrics/taskRanking.test.ts`": {
+      "status": "passed",
+      "lastRunTimestamp": 1788354620156
+    },
+    "4.3 Write property test for slowest-task argmax in `frontend/src/metrics/taskRanking.test.ts`": {
+      "status": "passed",
+      "lastRunTimestamp": 1788354621139
+    },
+    "9.2 Write property test for staleness in `frontend/src/fleet/staleness.test.ts`": {
+      "status": "passed",
+      "lastRunTimestamp": 1788354642439
+    },
+    "3.2 Write property test for metric availability in `frontend/src/metrics/resourceSummary.test.ts`": {
+      "status": "passed",
+      "lastRunTimestamp": 1788354790061
+    },
+    "3.3 Write property test for CPU-hours area in `frontend/src/metrics/resourceSummary.test.ts`": {
+      "status": "passed",
+      "lastRunTimestamp": 1788354791155
+    }
+  },
+  "executionHistory": {
+    "1.1 Add numeric and task-aware duration primitives": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817081
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352826055
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352897324
+      }
+    ],
+    "2.1 Implement `toIntervals` and `peakConcurrent`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817141
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352905056
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353082449
+      }
+    ],
+    "3.1 Implement `summarizeResources`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817174
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354518511
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354664508
+      }
+    ],
+    "4.1 Implement `rankByDuration`, `topLongest`, `slowestTaskId`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817214
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352907057
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353083765
+      }
+    ],
+    "5. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817239
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788355853970
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357969143
+      }
+    ],
+    "6.1 Implement `segmentsFor` and `segmentsForAll`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817265
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352907814
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353085310
+      }
+    ],
+    "7.1 Implement `parseParameters` and `diffRunParameters`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817294
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352908763
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353086567
+      }
+    ],
+    "8.1 Implement `applyFleetControls`, `workflowOptions`, `groupByEngineVersion`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817323
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352909948
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353087553
+      }
+    ],
+    "9.1 Implement `NON_TERMINAL_STATUSES` and `evaluateStaleness`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817356
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353095998
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353389068
+      }
+    ],
+    "10. Checkpoint - Ensure all helper tests pass": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817382
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788355854937
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357970551
+      }
+    ],
+    "11.1 Add the failed/cancelled task predicate and count in RunDetailView": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817413
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354696675
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788355847385
+      }
+    ],
+    "12.1 Add slowest-node highlight support": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817437
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353096641
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353390025
+      }
+    ],
+    "13.1 Wire duration, resource summary, longest-tasks, timeline, and engine badge into RunDetailView": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817462
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357975969
+      }
+    ],
+    "14.1 Build the two-run parameters diff view": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817488
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357973345
+      }
+    ],
+    "15.1 Wire duration column, filter/sort controls, engine grouping, and stale badge into FleetView": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817513
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357974750
+      }
+    ],
+    "16.1 Add routing/navigation to reach ParamsDiffView with two selected runs": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817540
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357989912
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788358425138
+      }
+    ],
+    "17. Final checkpoint - Ensure lint, build, and tests pass": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352817562
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788358430651
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788358492313
+      }
+    ],
+    "1. Extend shared duration primitives in `frontend/src/fleet/duration.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788352897360
+      }
+    ],
+    "2. Implement interval model and overlap sweep in `frontend/src/metrics/intervals.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353082487
+      }
+    ],
+    "4. Implement task ranking / slowest-step in `frontend/src/metrics/taskRanking.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353083799
+      }
+    ],
+    "6. Implement task state-transition segments in `frontend/src/metrics/taskSegments.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353085347
+      }
+    ],
+    "7. Implement parameters diff in `frontend/src/params/paramsDiff.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353086600
+      }
+    ],
+    "8. Implement fleet filtering/sorting/grouping in `frontend/src/fleet/runFilters.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353087590
+      }
+    ],
+    "9. Implement stale-run detection in `frontend/src/fleet/staleness.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353389108
+      }
+    ],
+    "12. Extend DAG layout to highlight the slowest node in `frontend/src/rundetail/graphLayout.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788353390062
+      }
+    ],
+    "1.2 Write property test for duration primitives in `frontend/src/fleet/duration.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354319638
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354372318
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354506869
+      }
+    ],
+    "1.3 Write unit tests for duration edge cases in `frontend/src/fleet/duration.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354320960
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354373682
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354507882
+      }
+    ],
+    "2.2 Write property test for interval construction in `frontend/src/metrics/intervals.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354322403
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354375188
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354502550
+      }
+    ],
+    "2.3 Write property test for peak concurrency in `frontend/src/metrics/intervals.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354323813
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354376534
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354503945
+      }
+    ],
+    "3.2 Write property test for metric availability in `frontend/src/metrics/resourceSummary.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354324763
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354692370
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788355844692
+      }
+    ],
+    "3.3 Write property test for CPU-hours area in `frontend/src/metrics/resourceSummary.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354326136
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354693706
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788355843792
+      }
+    ],
+    "3.4 Write unit test for the peak-memory unconfirmed-units caveat in `frontend/src/metrics/resourceSummary.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354328056
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354695091
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788355842353
+      }
+    ],
+    "4.2 Write property test for ranking order in `frontend/src/metrics/taskRanking.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354329458
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354520542
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354665852
+      }
+    ],
+    "4.3 Write property test for slowest-task argmax in `frontend/src/metrics/taskRanking.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354331201
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354521341
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354667319
+      }
+    ],
+    "6.2 Write property test for segment partitioning in `frontend/src/metrics/taskSegments.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354331812
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354377583
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354505336
+      }
+    ],
+    "7.2 Write property test for diff completeness and symmetry in `frontend/src/params/paramsDiff.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354333302
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354522762
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354668664
+      }
+    ],
+    "7.3 Write property test for parse-error surfacing in `frontend/src/params/paramsDiff.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354334607
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354524173
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354670049
+      }
+    ],
+    "8.2 Write property test for filtering and input preservation in `frontend/src/fleet/runFilters.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354336565
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354525557
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354671582
+      }
+    ],
+    "8.3 Write property test for sort total order in `frontend/src/fleet/runFilters.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354337499
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354527043
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354672910
+      }
+    ],
+    "8.4 Write property test for engine-version grouping in `frontend/src/fleet/runFilters.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354338852
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354528396
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354674302
+      }
+    ],
+    "9.2 Write property test for staleness in `frontend/src/fleet/staleness.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354340254
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354529542
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354675350
+      }
+    ],
+    "11.2 Write property test for the failed-task predicate in `frontend/src/rundetail/RunDetailView.test.tsx` (or colocated helper test)": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354341704
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357971942
+      }
+    ],
+    "12.2 Write unit tests for slowest-node highlight in `frontend/src/rundetail/graphLayout.test.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354343107
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354698239
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788355846138
+      }
+    ],
+    "13.2 Write view integration tests for RunDetailView panels in `frontend/src/rundetail/RunDetailView.test.tsx`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354344603
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357986010
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788358236180
+      }
+    ],
+    "14.2 Write view integration tests for ParamsDiffView in `frontend/src/params/ParamsDiffView.test.tsx`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354345911
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357987473
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788358235189
+      }
+    ],
+    "15.2 Write view integration tests for FleetView controls in `frontend/src/fleet/FleetView.test.tsx`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354347398
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357988870
+      },
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788358233786
+      }
+    ],
+    "3. Implement resource summary in `frontend/src/metrics/resourceSummary.ts`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788354664615
+      }
+    ],
+    "11. Implement failed-task filter predicate and wire it into `frontend/src/rundetail/RunDetailView.tsx`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788355847418
+      }
+    ],
+    "14. Implement the parameters diff view in `frontend/src/params/ParamsDiffView.tsx`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357973381
+      }
+    ],
+    "15. Integrate fleet controls, engine grouping, and stale badge into `frontend/src/fleet/FleetView.tsx`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357974793
+      }
+    ],
+    "13. Integrate analytics panels into `frontend/src/rundetail/RunDetailView.tsx`": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788357976002
+      }
+    ],
+    "16. Wire the ParamsDiffView entry point into navigation (`frontend/src/App.tsx`)": [
+      {
+        "executionId": "8796af6f-2b9f-42d5-93a0-1a6f426942e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1788358425183
+      }
+    ]
+  }
+}

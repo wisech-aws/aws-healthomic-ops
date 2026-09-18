@@ -1,0 +1,22 @@
+{
+  "version": "0",
+  "id": "a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+  "detail-type": "Task Status Change",
+  "source": "aws.omics",
+  "account": "123456789012",
+  "time": "2022-10-20T22:09:12Z",
+  "region": "us-west-2",
+  "resources": ["arn:aws:omics:us-west-2:123456789012:task/8888888"],
+  "detail": {
+    "omicsVersion": "1.0.0",
+    "arn": "arn:aws:omics:us-west-2:123456789012:task/8888888",
+    "status": "COMPLETED",
+    "runArn": "arn:aws:omics:us-west-2:123456789012:run/2101313",
+    "runUuid": "153893cd-097a-40ec-aec7-838a97cd2b21",
+    "runId": "2101313",
+    "runName": "sample-run",
+    "name": "align",
+    "workflowId": "7654321",
+    "workflowName": "sample-workflow"
+  }
+}

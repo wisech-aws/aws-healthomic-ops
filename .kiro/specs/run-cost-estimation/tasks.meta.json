@@ -1,0 +1,385 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Capture `instanceType` in task enrichment": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315550
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585325235
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585778323
+      }
+    ],
+    "1.2 Persist `instanceType` on the task record and item": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315641
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585848650
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585981997
+      }
+    ],
+    "1.3 Publish `instanceType` in task updates": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315704
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586011066
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586158873
+      }
+    ],
+    "2.1 Implement `parsePriceListItem` and `fetchRateMap`": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315740
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585326178
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585775492
+      }
+    ],
+    "3.1 Add the region-keyed rate-card cache methods": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315778
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585327576
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585779199
+      }
+    ],
+    "4.1 Implement `isStale` and `loadRateCard`": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315813
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585850015
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585979636
+      }
+    ],
+    "5.1 Implement the estimate helpers": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315866
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585328526
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585780201
+      }
+    ],
+    "6.1 Implement the RUN_FILESYSTEM usage fetch": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315902
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585851467
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585984323
+      }
+    ],
+    "7.1 Implement `costHandler.ts` orchestration": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315936
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586007808
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586159616
+      }
+    ],
+    "8.1 Add the `getRunCostEstimate` query and cost types": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585315981
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585329586
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585776865
+      }
+    ],
+    "9.1 Implement `addCostResolver()` in the API stack": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585316020
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586008764
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586156499
+      }
+    ],
+    "10.1 Add frontend cost types and `instanceType` on `Task`": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585316055
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585790023
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585844742
+      }
+    ],
+    "10.2 Add the `getRunCostEstimate` client query": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585316094
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585852372
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585980993
+      }
+    ],
+    "11.1 Implement `deriveCostPresentation`": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585316127
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585853373
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585983341
+      }
+    ],
+    "12.1 Implement `RunCostPanel.tsx`": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585316183
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586010175
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586157435
+      }
+    ],
+    "13.1 Wire the cost panel, task resource type, and full metric family set into `RunDetailView`": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585316218
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586165259
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586337915
+      }
+    ],
+    "14. Final verification (no deploy)": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585316253
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586342089
+      },
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586475632
+      }
+    ],
+    "2. Price List client and pure parser": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585775533
+      }
+    ],
+    "8. GraphQL schema surface": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585776899
+      }
+    ],
+    "3. Rate-card cache in the repository": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585779236
+      }
+    ],
+    "5. Cost math pure helpers": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585780235
+      }
+    ],
+    "4. Rate-card service (cache-first, lazy refresh, stale-serve)": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585979683
+      }
+    ],
+    "10. Frontend types and client query": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585981031
+      }
+    ],
+    "11. Frontend cost presentation pure helper": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585983376
+      }
+    ],
+    "6. Filesystem usage source (DYNAMIC storage GB-hours)": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789585984356
+      }
+    ],
+    "9. CDK wiring and least-privilege IAM (deploy path)": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586156533
+      }
+    ],
+    "12. RunCostPanel component": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586157475
+      }
+    ],
+    "1. Capture task `instanceType` through the pipeline": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586158908
+      }
+    ],
+    "7. CostHandler Lambda": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586159662
+      }
+    ],
+    "13. RunDetailView wiring (cost panel, task resource type, full family set)": [
+      {
+        "executionId": "1cb43bf9-5d20-444d-8015-47de9463b52b",
+        "chatSessionId": "sess_f707f008-22ae-479f-ba47-c51b879f9d5c",
+        "timestamp": 1789586337949
+      }
+    ]
+  }
+}

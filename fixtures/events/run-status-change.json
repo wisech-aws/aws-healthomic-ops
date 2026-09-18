@@ -1,0 +1,21 @@
+{
+  "version": "0",
+  "id": "c0e540f4-df38-b986-86c1-3e3730f971fe",
+  "detail-type": "Run Status Change",
+  "source": "aws.omics",
+  "account": "123456789012",
+  "time": "2022-10-20T22:07:35Z",
+  "region": "us-west-2",
+  "resources": ["arn:aws:omics:us-west-2:123456789012:run/2101313"],
+  "detail": {
+    "omicsVersion": "1.0.0",
+    "arn": "arn:aws:omics:us-west-2:123456789012:run/2101313",
+    "status": "COMPLETED",
+    "uuid": "153893cd-097a-40ec-aec7-838a97cd2b21",
+    "runId": "2101313",
+    "runName": "sample-run",
+    "runOutputUri": "s3://amzn-s3-demo-bucket/run-output/2101313",
+    "workflowId": "7654321",
+    "workflowName": "sample-workflow"
+  }
+}

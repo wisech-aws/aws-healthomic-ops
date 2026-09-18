@@ -1,0 +1,348 @@
+# HealthOmics Workflow Dashboard — AppSync GraphQL schema.
+#
+# The Run and Task types map one-to-one to the stored DynamoDB attributes.
+# Every non-nullable stored attribute (runId, taskId, updatedAt) is exposed as a
+# non-nullable field (Req 5.1).
+#
+# Default authorization is the Cognito user pool (Req 5.12, 11.6). Interactive
+# queries and subscriptions carry @aws_cognito_user_pools; the ingest-only
+# publish mutations carry @aws_iam so only the ingest Lambda's role can call them
+# (Req 4.3, 4.4).
+#
+# The data types (Run, Task, RunConnection) carry BOTH @aws_cognito_user_pools
+# AND @aws_iam. A type with no directive inherits only the API default (Cognito),
+# which would make the IAM-authorized ingest Lambda "Not Authorized to access"
+# the Run/Task fields it reads back in the publishRunUpdate/publishTaskUpdate
+# response selection set. Granting both auth modes on the types lets Cognito
+# users read them via queries/subscriptions AND lets the IAM ingest role read
+# the mutation response, without exposing the queries themselves to IAM.
+
+enum RunStatus {
+  PENDING
+  STARTING
+  RUNNING
+  STOPPING
+  COMPLETED
+  DELETED
+  CANCELLED
+  FAILED
+}
+
+enum TaskStatus {
+  PENDING
+  STARTING
+  RUNNING
+  STOPPING
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+# Which CloudWatch log stream to read for a run (see the logs Lambda).
+enum LogStream {
+  RUN
+  ENGINE
+  TASK
+}
+
+type LogEvent {
+  # Epoch milliseconds the event was emitted.
+  timestamp: AWSTimestamp!
+  message: String!
+}
+
+type RunLogs {
+  logStreamName: String!
+  events: [LogEvent!]!
+  nextToken: String
+}
+
+# Best-effort extraction of the most relevant error lines from a run/task's
+# CloudWatch log stream (see getErrorExcerpt below). `found: false` means no
+# error-shaped line was located — never a fabricated excerpt.
+type ErrorExcerpt @aws_cognito_user_pools {
+  found: Boolean!
+  lines: [String!]!
+  truncated: Boolean!
+}
+
+type Run @aws_cognito_user_pools @aws_iam {
+  runId: ID!
+  status: RunStatus
+  name: String
+  createdAt: String
+  startedAt: String
+  stoppedAt: String
+  updatedAt: String!
+  workflowId: String
+  workflowName: String
+  # Workflow version name the run used; drives version-qualified static-graph lookup.
+  workflowVersionName: String
+  # The run's output S3 URI (for the "view outputs" link, #8).
+  outputUri: String
+  # The run's input parameters as JSON (samplesheet, references, flags; #7).
+  parameters: AWSJSON
+  # The engine version that executed the workflow (e.g. Nextflow "25.10.0").
+  engineVersion: String
+  # Run configuration used to launch the run (reproducibility): IAM role,
+  # storage, run cache, networking/VPC config, and engine log level.
+  roleArn: String
+  storageType: String
+  storageCapacity: Int
+  cacheId: String
+  cacheBehavior: String
+  networkingMode: String
+  configurationName: String
+  logLevel: String
+  # The run's batch ID, present only when the run was started as part of a batch.
+  batchId: String
+  # The run's tags (string->string map) as JSON, e.g. cost-allocation tags.
+  tags: AWSJSON
+  # Human-readable status detail (HealthOmics `statusMessage`), most useful
+  # when status is FAILED (e.g. "Workflow run failed. Review the CloudWatch
+  # logs..."). Absent for a healthy/in-progress run.
+  statusMessage: String
+  # Machine-readable failure reason (HealthOmics `failureReason`, e.g.
+  # "WORKFLOW_RUN_FAILED"). Absent unless the run failed.
+  failureReason: String
+}
+
+type Task @aws_cognito_user_pools @aws_iam {
+  runId: ID!
+  taskId: ID!
+  status: TaskStatus
+  name: String
+  createdAt: String
+  startedAt: String
+  stoppedAt: String
+  updatedAt: String!
+  cpus: Int
+  memory: Int
+  # The EC2/HealthOmics instance type the task ran on (e.g. "omics.r.2xlarge");
+  # drives the per-instance-type compute cost estimate.
+  instanceType: String
+  # Human-readable status detail (HealthOmics `statusMessage`), most useful
+  # when status is FAILED (e.g. "Run failed due to task: ... failure."). Absent
+  # for a healthy/in-progress task.
+  statusMessage: String
+  # Machine-readable failure reason (HealthOmics `failureReason`, e.g.
+  # "RUN_TASK_FAILED"). Absent unless the task failed.
+  failureReason: String
+}
+
+type RunConnection {
+  items: [Run!]!
+  nextToken: String
+}
+
+# Source-derived static DAG for a workflow version (parsed from the definition
+# bundle by ingest and cached in DynamoDB). Read-only for interactive users, so
+# it carries only @aws_cognito_user_pools like the other queries.
+type StaticGraphNode @aws_cognito_user_pools {
+  id: ID!
+  name: String!
+}
+
+type StaticGraphEdge @aws_cognito_user_pools {
+  from: ID!
+  to: ID!
+}
+
+# exact = authoritative dataflow (WDL/CWL); approximate = heuristic (Nextflow).
+enum GraphFidelity {
+  exact
+  approximate
+}
+
+type StaticGraph @aws_cognito_user_pools {
+  workflowId: ID!
+  nodes: [StaticGraphNode!]!
+  edges: [StaticGraphEdge!]!
+  fidelity: GraphFidelity!
+}
+
+# Measured resource-utilization metrics for a run, read on demand from
+# CloudWatch's Prometheus-compatible PromQL API via a Lambda data source (see
+# getRunMetrics below). Never persisted, never event-driven; read-only for
+# interactive users, so these types carry only @aws_cognito_user_pools.
+enum MetricFamily {
+  CPU
+  MEMORY
+  NETWORK
+  FILESYSTEM
+  SCRATCH
+  GPU
+  RUN_FILESYSTEM
+}
+
+# usage = actual measured value; limit = the ceiling for actual-vs-limit charts.
+enum MetricRole {
+  usage
+  limit
+}
+
+type MetricPoint @aws_cognito_user_pools {
+  # Epoch milliseconds.
+  timestamp: AWSTimestamp!
+  value: Float!
+}
+
+type MetricSeries @aws_cognito_user_pools {
+  metricName: String!
+  family: MetricFamily!
+  role: MetricRole!
+  unit: String
+  taskId: ID            # null for run-level series
+  direction: String     # network/filesystem io direction
+  scratchMode: String   # LOCAL | SHARED
+  gpuId: String
+  points: [MetricPoint!]!
+}
+
+type MetricWindow @aws_cognito_user_pools {
+  start: String!
+  end: String!
+  stepSeconds: Int!
+}
+
+type RunMetrics @aws_cognito_user_pools {
+  runId: ID!
+  window: MetricWindow
+  series: [MetricSeries!]!   # empty => unavailable
+  error: String              # non-null => query failed
+}
+
+# Estimated per-run cost breakdown, read on demand from a Lambda data source
+# (see getRunCostEstimate below). This is a list-price ESTIMATE (measured task
+# runtime x published AWS price list), never the actual billed amount, and is
+# never persisted. Read-only for interactive users, so these types carry only
+# @aws_cognito_user_pools.
+enum CostCategory {
+  COMPUTE
+  STORAGE
+}
+
+type CostLineItem @aws_cognito_user_pools {
+  category: CostCategory!
+  usageType: String!
+  resourceType: String        # instance type (compute) or storage family (storage)
+  quantity: Float             # Instance-hrs or GB-Hours; null => unavailable
+  unit: String!
+  ratePerUnit: Float          # null => unavailable
+  estimatedCost: Float        # null => unavailable
+  available: Boolean!         # false => Estimate_Unavailable_State for this line (Req 6.2)
+  unavailableReason: String
+}
+
+type RunCostEstimate @aws_cognito_user_pools {
+  runId: ID!
+  lineItems: [CostLineItem!]!
+  total: Float                # null => no line item computable (Req 6.4)
+  currency: String
+  effectiveDate: String
+  partial: Boolean!           # true => total is partial (Req 6.3)
+  error: String               # non-null => query failed (Req 5.7)
+}
+
+type Query {
+  listRuns(limit: Int, nextToken: String): RunConnection!
+    @aws_cognito_user_pools
+  getRun(runId: ID!): Run @aws_cognito_user_pools
+  listTasksForRun(runId: ID!): [Task!]! @aws_cognito_user_pools
+  # Source-derived static DAG for a workflow version, keyed by workflowId +
+  # workflowVersionName. Returns null when no usable graph is cached.
+  getStaticGraph(workflowId: ID!, workflowVersionName: String!): StaticGraph
+    @aws_cognito_user_pools
+  # Logs for a step: stream=RUN|ENGINE for the run header, stream=TASK+taskId for
+  # a selected task node. Backed by a Lambda data source over CloudWatch Logs.
+  getRunLogs(
+    runId: ID!
+    stream: LogStream!
+    taskId: ID
+    nextToken: String
+    limit: Int
+  ): RunLogs @aws_cognito_user_pools
+  # Best-effort error-line extraction from a run/task's CloudWatch log stream
+  # (Option B: HealthOmics' own statusMessage is often just boilerplate
+  # telling the operator to go read the logs, with no actual diagnosis).
+  # Backed by the same Lambda data source as getRunLogs.
+  getErrorExcerpt(runId: ID!, stream: LogStream!, taskId: ID): ErrorExcerpt
+    @aws_cognito_user_pools
+  # Measured resource-utilization metrics for a run (CPU/memory by default,
+  # widen with families). startTime/endTime default to the run's own window
+  # when omitted. Backed by a Lambda data source that signs and queries
+  # CloudWatch's PromQL API; never persisted.
+  getRunMetrics(
+    runId: ID!
+    startTime: String
+    endTime: String
+    stepSeconds: Int
+    families: [MetricFamily!]
+  ): RunMetrics @aws_cognito_user_pools
+  # Estimated per-run cost breakdown (list-price estimate from measured task
+  # runtime x the published AWS price list; never the actual billed amount).
+  # Backed by a Lambda data source; never persisted.
+  getRunCostEstimate(runId: ID!): RunCostEstimate @aws_cognito_user_pools
+}
+
+type Mutation {
+  # Ingest-only, IAM authorized. Not exposed to interactive users.
+  publishRunUpdate(input: RunInput!): Run @aws_iam
+  publishTaskUpdate(input: TaskInput!): Task @aws_iam
+}
+
+type Subscription {
+  onRunUpdated: Run
+    @aws_subscribe(mutations: ["publishRunUpdate"])
+    @aws_cognito_user_pools
+  onTaskUpdated(runId: ID!): Task
+    @aws_subscribe(mutations: ["publishTaskUpdate"])
+    @aws_cognito_user_pools
+}
+
+input RunInput {
+  runId: ID!
+  status: RunStatus
+  name: String
+  createdAt: String
+  startedAt: String
+  stoppedAt: String
+  updatedAt: String!
+  workflowId: String
+  workflowName: String
+  # Workflow version name the run used; drives version-qualified static-graph lookup.
+  workflowVersionName: String
+  outputUri: String
+  parameters: AWSJSON
+  engineVersion: String
+  roleArn: String
+  storageType: String
+  storageCapacity: Int
+  cacheId: String
+  cacheBehavior: String
+  networkingMode: String
+  configurationName: String
+  logLevel: String
+  # The run's batch ID, present only when the run was started as part of a batch.
+  batchId: String
+  # The run's tags (string->string map) as JSON, e.g. cost-allocation tags.
+  tags: AWSJSON
+  statusMessage: String
+  failureReason: String
+}
+
+input TaskInput {
+  runId: ID!
+  taskId: ID!
+  status: TaskStatus
+  name: String
+  createdAt: String
+  startedAt: String
+  stoppedAt: String
+  updatedAt: String!
+  cpus: Int
+  memory: Int
+  instanceType: String
+  statusMessage: String
+  failureReason: String
+}

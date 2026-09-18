@@ -1,0 +1,415 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Change `WorkflowDefinition` and `StaticGraph` types": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284420
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401293449
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401639049
+      }
+    ],
+    "1.2 Migrate all existing `WorkflowDefinition` construction sites and parser fixtures to keep the build green": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284452
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401645428
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402394630
+      }
+    ],
+    "2.1 Implement `unzipToFileMap` with `fflate`": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284477
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401646596
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402393622
+      }
+    ],
+    "3.1 Rewrite `getWorkflowDefinition` to fetch, download, and unzip within the invocation": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284503
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402400623
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402594851
+      }
+    ],
+    "4.1 Update WDL and CWL parsers to read `files[mainPath]` and set fidelity `exact`": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284529
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402402023
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402596235
+      }
+    ],
+    "5.1 Implement transitive include resolution over the File_Map": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284555
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402627557
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403175009
+      }
+    ],
+    "5.2 Implement best-effort dataflow edges and Nextflow fidelity decision": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284582
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403185935
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403383156
+      }
+    ],
+    "5.3 Add nf-core-style Nextflow edge fixtures": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284605
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403653703
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403841228
+      }
+    ],
+    "6.1 Ensure `parseDefinition`/`assertValidGraph` validate and carry fidelity": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284630
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402628952
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403176126
+      }
+    ],
+    "7.1 Version-qualify keys and extend the Graph_Item": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284651
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402629908
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403173841
+      }
+    ],
+    "8.1 Source `workflowVersionName` from `GetRun`": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284675
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402631302
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403173812
+      }
+    ],
+    "8.2 Wire `resolveStaticGraph` to cache-gate by version key with DEFAULT fallback": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284700
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403393090
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403647937
+      }
+    ],
+    "9.1 Add the `StaticGraph` schema types and `getStaticGraph` query": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284721
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402403423
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402597635
+      }
+    ],
+    "9.2 Implement the `getStaticGraph` JS resolver": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284743
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402632351
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403173865
+      }
+    ],
+    "9.3 Register the resolver on the read-only DynamoDB data source": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284764
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403187327
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403384547
+      }
+    ],
+    "10.1 Add frontend types for version name and fidelity": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284795
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402404356
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402598500
+      }
+    ],
+    "10.2 Add the `getStaticGraph` client query and version selection": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284826
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403188303
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403385530
+      }
+    ],
+    "10.3 Fetch, select layer, label fidelity, and toggle in `RunDetailView`": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284852
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403394054
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403649105
+      }
+    ],
+    "10.4 Remove the `App.tsx` staticGraph shim": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284878
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403654645
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403842117
+      }
+    ],
+    "11. Final verification (no deploy)": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789401284904
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403847279
+      },
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403992359
+      }
+    ],
+    "2. In-memory zip decoder": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402393665
+      }
+    ],
+    "1. Foundational parser type change and blast-radius migration": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402394664
+      }
+    ],
+    "3. Definition_Fetcher rewrite (download + in-invocation unzip)": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402594884
+      }
+    ],
+    "4. WDL and CWL parsers read from the File_Map with exact fidelity": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789402596275
+      }
+    ],
+    "7. Repository version-qualified keys and fidelity/language storage": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403173892
+      }
+    ],
+    "6. Dispatcher fidelity passthrough and graph validation": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403176161
+      }
+    ],
+    "9. GraphQL schema, resolver, and infra registration": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403384583
+      }
+    ],
+    "8. Handler orchestration with version name sourcing and cache gating": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403647981
+      }
+    ],
+    "5. Nextflow cross-file include resolution and best-effort edges": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403841284
+      }
+    ],
+    "10. Frontend types, client query, and run detail rendering": [
+      {
+        "executionId": "d8e6778e-6b4c-4fb6-9d36-b386a3a4c3bf",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789403842158
+      }
+    ]
+  }
+}

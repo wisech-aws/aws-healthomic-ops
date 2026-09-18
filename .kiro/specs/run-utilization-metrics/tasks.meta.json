@@ -1,0 +1,396 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Implement the metric registry": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976235
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413655464
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413912078
+      }
+    ],
+    "1.2 Implement the PromQL selector builder": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976265
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413656157
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413912829
+      }
+    ],
+    "1.5 Implement the Prometheus parser (vector + matrix)": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976289
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413657065
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413913834
+      }
+    ],
+    "2.1 Implement the empty-vs-error result mapping": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976316
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413930554
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414418912
+      }
+    ],
+    "2.3 Add `@aws-crypto/sha256-js` to ingest dependencies": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976345
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413562503
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413647113
+      }
+    ],
+    "2.4 Implement `buildRangeBody` and the SigV4 signed POST": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976373
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414434770
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414814897
+      }
+    ],
+    "3.1 Implement `metricsHandler.ts` orchestration": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976400
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414830746
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789415000779
+      }
+    ],
+    "4.1 Add the `getRunMetrics` query and metric types": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976425
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413563539
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413648680
+      }
+    ],
+    "5.1 Implement `addMetricsResolver()` in the API stack": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976448
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789415005942
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789415122185
+      }
+    ],
+    "6.1 Add frontend metric types": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976473
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413564883
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413647921
+      }
+    ],
+    "6.2 Add the `getRunMetrics` client query": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976498
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413931660
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414420743
+      }
+    ],
+    "7.1 Implement `joinMetricsToTasks`": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976518
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413932352
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414421876
+      }
+    ],
+    "7.4 Implement `chartSeries`": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976547
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413933452
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414419992
+      }
+    ],
+    "7.6 Implement measured-presentation derivation": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976575
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414435867
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414815591
+      }
+    ],
+    "8.1 Implement `RunMetricsPanel.tsx`": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976598
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789415132550
+      },
+      {
+        "executionId": "170f5ebb-df66-4545-bb9d-d38c9a8e4188",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789416230858
+      },
+      {
+        "executionId": "170f5ebb-df66-4545-bb9d-d38c9a8e4188",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789417141924
+      }
+    ],
+    "8.2 Wire `RunMetricsPanel` into `RunDetailView`": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976625
+      },
+      {
+        "executionId": "170f5ebb-df66-4545-bb9d-d38c9a8e4188",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789417147574
+      },
+      {
+        "executionId": "170f5ebb-df66-4545-bb9d-d38c9a8e4188",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789417439999
+      }
+    ],
+    "9.1 Add an idempotent run-role permission script": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976649
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413934461
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414422531
+      }
+    ],
+    "9.2 Document the run-role script in README and scripts/README": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976675
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414436710
+      },
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414816499
+      }
+    ],
+    "10. Final verification (no deploy)": [
+      {
+        "executionId": "536a9337-4b1d-42bb-920b-8c2991f67e8c",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789412976698
+      },
+      {
+        "executionId": "170f5ebb-df66-4545-bb9d-d38c9a8e4188",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789417445567
+      },
+      {
+        "executionId": "170f5ebb-df66-4545-bb9d-d38c9a8e4188",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789417559051
+      }
+    ],
+    "4. GraphQL schema surface": [
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413648723
+      }
+    ],
+    "1. Backend pure helpers: registry, PromQL selector builder, and parser": [
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789413913870
+      }
+    ],
+    "6. Frontend types and client query": [
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414420774
+      }
+    ],
+    "2. Backend result mapping and signed-request builder": [
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414814937
+      }
+    ],
+    "7. Frontend pure helpers: task-id join, chart shaping, presentation": [
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414815623
+      }
+    ],
+    "9. Run-role metric-emission permission script and docs (deploy path)": [
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789414816531
+      }
+    ],
+    "3. MetricsLambda handler": [
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789415000817
+      }
+    ],
+    "5. CDK wiring and least-privilege IAM (deploy path)": [
+      {
+        "executionId": "c0fdd934-9f98-46f3-9ad4-6556bddfd7e2",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789415122217
+      }
+    ],
+    "8. Frontend RunMetricsPanel and RunDetailView wiring": [
+      {
+        "executionId": "170f5ebb-df66-4545-bb9d-d38c9a8e4188",
+        "chatSessionId": "sess_2767a9bd-4846-4b30-9583-0927671d19fc",
+        "timestamp": 1789417440033
+      }
+    ]
+  }
+}
