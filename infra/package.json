@@ -1,0 +1,36 @@
+{
+  "name": "@healthomics-dashboard/infra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AWS CDK v2 (TypeScript) infrastructure for the HealthOmics Workflow Dashboard.",
+  "bin": {
+    "infra": "bin/infra.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "lint": "eslint .",
+    "test": "jest",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy --all",
+    "destroy": "cdk destroy --all"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.267.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/jest": "30.0.0",
+    "@types/node": "20.19.43",
+    "aws-cdk": "2.1139.0",
+    "esbuild": "0.28.2",
+    "eslint": "9.39.5",
+    "jest": "30.4.2",
+    "ts-jest": "29.4.12",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.68.0"
+  }
+}

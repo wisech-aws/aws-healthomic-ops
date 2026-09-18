@@ -1,0 +1,40 @@
+{
+  "name": "@healthomics-dashboard/ingest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ingest Lambda for the HealthOmics Workflow Dashboard: event normalization, enrichment, persistence, publish, and workflow-definition parsing.",
+  "type": "module",
+  "main": "src/handler.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "5.2.0",
+    "@aws-sdk/client-appsync": "3.1119.0",
+    "@aws-sdk/client-cloudwatch-logs": "3.1119.0",
+    "@aws-sdk/client-dynamodb": "3.1119.0",
+    "@aws-sdk/client-omics": "3.1119.0",
+    "@aws-sdk/client-pricing": "3.1119.0",
+    "@aws-sdk/credential-provider-node": "3.972.81",
+    "@aws-sdk/lib-dynamodb": "3.1119.0",
+    "@aws-sdk/types": "3.974.5",
+    "@smithy/signature-v4": "5.7.3",
+    "fflate": "0.8.3",
+    "js-yaml": "4.3.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/aws-lambda": "8.10.162",
+    "@types/js-yaml": "4.0.9",
+    "@types/node": "20.19.43",
+    "eslint": "9.39.5",
+    "fast-check": "4.9.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.68.0",
+    "vitest": "3.2.7"
+  }
+}

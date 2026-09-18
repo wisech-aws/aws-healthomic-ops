@@ -1,0 +1,47 @@
+{
+  "name": "@healthomics-dashboard/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "React + Vite (TypeScript) single-page app for the HealthOmics Workflow Dashboard.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "inject-config": "node ../scripts/inject-config.mjs --outputs ../cdk-outputs.json --stack HealthOmicsApi --out .env.production",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@aws-amplify/ui-react": "6.15.6",
+    "@cloudscape-design/components": "3.0.1356",
+    "@cloudscape-design/global-styles": "1.0.67",
+    "aws-amplify": "6.20.0",
+    "dagre": "0.8.5",
+    "elkjs": "0.12.0",
+    "graphql": "17.0.2",
+    "graphql-ws": "6.2.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "reactflow": "11.11.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@types/dagre": "0.7.54",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "4.7.0",
+    "eslint": "9.39.5",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "eslint-plugin-react-refresh": "0.4.20",
+    "fast-check": "4.9.0",
+    "jsdom": "30.0.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.68.0",
+    "vite": "7.3.6",
+    "vitest": "3.2.7"
+  }
+}

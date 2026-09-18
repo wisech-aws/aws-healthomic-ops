@@ -1,0 +1,34 @@
+/*
+ * Task-graph styling tweaks for the run detail DAG.
+ *
+ * The Inferred_DAG layer draws NO edges (inferred timing order is not a
+ * dependency), so React Flow's default node connection handles (the small dots
+ * on each node) are pure visual noise — across 150+ nodes they read as a mess
+ * of "connectors". Hide handles inside a graph marked `.no-edges`. The True_DAG
+ * layer keeps handles since it draws real dependency edges.
+ */
+.task-graph-no-edges .react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/*
+ * Give the task-graph canvas a subtle light-slate surface (slightly darker than
+ * the white container behind it) so the status-colored nodes and their shadows
+ * stand out — improving visibility of the DAG. A hairline border + rounded
+ * corners make the canvas read as a distinct diagram surface. Kept light (not a
+ * dark canvas) so the nodes' white text and lighter status fills stay legible
+ * against the surrounding light Cloudscape theme.
+ */
+.task-graph {
+  background-color: #f1f5f9; /* slate-100 */
+  border: 1px solid #e2e8f0; /* slate-200 */
+  border-radius: 8px;
+}
+
+/* Let the React Flow renderer show the canvas surface through it. */
+.task-graph .react-flow,
+.task-graph .react-flow__renderer,
+.task-graph .react-flow__pane {
+  background-color: transparent;
+}

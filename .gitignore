@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# CDK
+infra/cdk.out/
+cdk.out/
+
+# Test / coverage
+coverage/
+
+# Logs
+*.log
+build.log
+
+# Env / local config
+.env
+.env.*
+frontend/src/config.generated.ts
+frontend/public/config.generated.js
+
+# OS / editor
+.DS_Store
+*.swp
+
+# CDK deployment outputs (contains AWS resource identifiers)
+cdk-outputs.json
