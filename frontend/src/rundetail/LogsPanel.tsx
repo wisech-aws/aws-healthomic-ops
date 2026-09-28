@@ -49,6 +49,13 @@ export interface LogsPanelProps {
   readonly runId: string;
   readonly stream: LogStream;
   readonly taskId?: string;
+  /**
+   * OPT-IN tail mode (failed-run triage): when true, the panel asks the backend
+   * for the NEWEST slice of the stream first (fast first paint of the tail,
+   * where a failed run's error lives) and shows a small hint that it is doing
+   * so. Falsy (the default) leaves the panel's behavior exactly as before.
+   */
+  readonly tail?: boolean;
   /** Injectable for tests; defaults to the real client. */
   readonly getRunLogs?: (v: {
     runId: string;
@@ -56,6 +63,7 @@ export interface LogsPanelProps {
     taskId?: string;
     nextToken?: string;
     limit?: number;
+    tail?: boolean;
   }) => Promise<RunLogs>;
 }
 
@@ -68,6 +76,7 @@ export default function LogsPanel({
   runId,
   stream,
   taskId,
+  tail,
   getRunLogs = defaultGetRunLogs,
 }: LogsPanelProps): React.JSX.Element {
   const [phase, setPhase] = useState<Phase>('loading');
@@ -82,7 +91,11 @@ export default function LogsPanel({
     setPhase('loading');
     setError(null);
     try {
-      const result = await getRunLogs({ runId, stream, taskId });
+      // Only pass `tail` when opting in, so the default (non-tail) call is
+      // byte-for-byte the same request the panel has always made.
+      const result = await getRunLogs(
+        tail ? { runId, stream, taskId, tail: true } : { runId, stream, taskId },
+      );
       setEvents(result.events);
       setStreamName(result.logStreamName);
       setPhase('ready');
@@ -90,7 +103,7 @@ export default function LogsPanel({
       setError(e instanceof Error ? e.message : 'Logs could not be loaded.');
       setPhase('error');
     }
-  }, [getRunLogs, runId, stream, taskId]);
+  }, [getRunLogs, runId, stream, taskId, tail]);
 
   useEffect(() => {
     void load();
@@ -147,6 +160,16 @@ export default function LogsPanel({
         {streamName && (
           <Box variant="small" color="text-status-inactive" padding={{ top: 'xs' }}>
             {streamName}
+          </Box>
+        )}
+        {tail && (
+          <Box
+            variant="small"
+            color="text-status-inactive"
+            padding={{ top: 'xs' }}
+            data-testid="logs-tail-hint"
+          >
+            Showing the most recent log lines (newest-first fetch for triage).
           </Box>
         )}
       </SpaceBetween>

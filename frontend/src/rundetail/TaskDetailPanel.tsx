@@ -6,11 +6,14 @@
  * the detail region has a single, testable contract. It renders exactly one of
  * three things, driven purely by the current `selection`:
  *
- *  - `selection.kind === 'TASK'` → the selected task's detail: its resource
- *    detail ({@link TaskResourceDetail}, including the "Resource type
- *    unavailable" affordance when the task has no instance type, Req 4.4), a
- *    best-effort task failure banner ({@link TaskLogsFailureBanner}), and the
- *    task's own log tail ({@link LogsPanel} stream=TASK) (Req 4.3).
+ *  - `selection.kind === 'TASK'` → the selected task's detail, in order: its
+ *    resource detail ({@link TaskResourceDetail}, including start/end/duration
+ *    and the "Resource type unavailable" affordance when the task has no
+ *    instance type, Req 4.4), a best-effort task failure banner
+ *    ({@link TaskLogsFailureBanner}), the task's own log tail
+ *    ({@link LogsPanel} stream=TASK) (Req 4.3), and finally its measured
+ *    utilization ({@link UtilizationBars}) collapsed by default inside an
+ *    `ExpandableSection` so the log tail stays reachable.
  *  - `selection.kind === 'RUN_ENGINE'` → the run + engine logs tabs (Req 4.5).
  *  - `selection === null` → renders nothing (the default run-level context
  *    stays in `RunDetailView` in this stage; see design §Staging).
@@ -27,12 +30,16 @@ import Box from '@cloudscape-design/components/box';
 import Button from '@cloudscape-design/components/button';
 import ColumnLayout from '@cloudscape-design/components/column-layout';
 import Container from '@cloudscape-design/components/container';
+import ExpandableSection from '@cloudscape-design/components/expandable-section';
 import Header from '@cloudscape-design/components/header';
 import SpaceBetween from '@cloudscape-design/components/space-between';
+import Spinner from '@cloudscape-design/components/spinner';
 import Tabs from '@cloudscape-design/components/tabs';
 import { getErrorExcerpt as defaultGetErrorExcerpt } from '../api/client';
+import { formatStartTime, isRunning, taskDuration } from '../fleet/duration';
 import type { ErrorExcerpt, Task } from '../api/types';
 import type { TaskMetrics } from '../metrics/joinMetricsToTasks';
+import ErrorBoundary from '../components/ErrorBoundary';
 import LogsPanel from './LogsPanel';
 import UtilizationBars from './UtilizationBars';
 
@@ -115,6 +122,9 @@ function TaskLogsFailureBanner({
   getErrorExcerpt: GetErrorExcerpt;
 }): React.JSX.Element | null {
   const [excerpt, setExcerpt] = useState<ErrorExcerpt | null>(null);
+  // Whether the task-level error-excerpt fetch is in flight, so the banner can
+  // show a small progress indicator while it reads the task's log stream.
+  const [excerptLoading, setExcerptLoading] = useState(false);
 
   useEffect(() => {
     setExcerpt(null);
@@ -122,6 +132,7 @@ function TaskLogsFailureBanner({
       return;
     }
     let cancelled = false;
+    setExcerptLoading(true);
     getErrorExcerpt({ runId, stream: 'TASK', taskId: task.taskId })
       .then((result) => {
         if (!cancelled) {
@@ -131,6 +142,11 @@ function TaskLogsFailureBanner({
       .catch(() => {
         if (!cancelled) {
           setExcerpt(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setExcerptLoading(false);
         }
       });
     return () => {
@@ -156,7 +172,18 @@ function TaskLogsFailureBanner({
             <span data-testid="task-logs-failure-reason">{task.failureReason}</span>
           </Box>
         )}
-        {excerpt?.found && <ErrorExcerptBlock excerpt={excerpt} testIdPrefix="task" />}
+        {excerptLoading ? (
+          <Box
+            variant="small"
+            color="text-status-inactive"
+            data-testid="task-error-excerpt-loading"
+          >
+            <Spinner size="normal" /> Extracting error details from the log
+            stream…
+          </Box>
+        ) : (
+          excerpt?.found && <ErrorExcerptBlock excerpt={excerpt} testIdPrefix="task" />
+        )}
       </SpaceBetween>
     </Alert>
   );
@@ -170,13 +197,27 @@ function TaskLogsFailureBanner({
  * explicit unavailable affordance ("—") rather than a fabricated value, and the
  * instance type in particular gets a labeled "Resource type unavailable"
  * affordance so the absence is unmistakable — never a zero or blank.
+ *
+ * Alongside the resource fields it surfaces the task's Start time, End time,
+ * and Duration (Req 8.1). These are HONEST: an absent `startedAt` yields the
+ * helper's dash placeholder rather than a fabricated time, a still-running task
+ * shows an explicit "In progress" affordance for its end time (never an
+ * invented stop time), and its duration is elapsed-so-far measured against the
+ * injected `now`.
  */
-function TaskResourceDetail({ task }: { task: Task | null }): React.JSX.Element | null {
+function TaskResourceDetail({
+  task,
+  now,
+}: {
+  task: Task | null;
+  now: number;
+}): React.JSX.Element | null {
   if (task == null) {
     return null;
   }
   const hasInstanceType =
     task.instanceType != null && task.instanceType !== '';
+  const running = isRunning(task.startedAt, task.stoppedAt);
   return (
     <div data-testid="task-resource-detail">
       <ColumnLayout columns={3} variant="text-grid">
@@ -205,6 +246,38 @@ function TaskResourceDetail({ task }: { task: Task | null }): React.JSX.Element 
             </span>
           )}
         </div>
+        <div>
+          <Box variant="awsui-key-label">Start time</Box>
+          <span data-testid="task-detail-start-time">
+            {formatStartTime(task.startedAt)}
+          </span>
+        </div>
+        <div>
+          <Box variant="awsui-key-label">End time</Box>
+          <span data-testid="task-detail-end-time">
+            {task.stoppedAt != null ? (
+              formatStartTime(task.stoppedAt)
+            ) : running ? (
+              <Box variant="small" color="text-status-inactive" display="inline">
+                In progress
+              </Box>
+            ) : (
+              '—'
+            )}
+          </span>
+        </div>
+        <div>
+          <Box variant="awsui-key-label">Duration</Box>
+          <span data-testid="task-detail-duration">
+            {taskDuration(task, now)}
+            {running && (
+              <Box variant="small" color="text-status-inactive" display="inline">
+                {' '}
+                (elapsed)
+              </Box>
+            )}
+          </span>
+        </div>
       </ColumnLayout>
     </div>
   );
@@ -225,6 +298,14 @@ export interface TaskDetailPanelProps {
   /** The current selection driving what the panel renders. */
   readonly selection: DetailSelection;
   /**
+   * Whether the RUN itself failed. Drives OPT-IN tail (newest-first fetch) for
+   * the RUN and ENGINE log tabs, so a failed run's error — at the end of a
+   * possibly huge stream — is reached immediately. The TASK stream instead
+   * tails from the selected task's own FAILED/CANCELLED status. Defaults to
+   * `false` (successful runs keep the unchanged oldest-first retrieval).
+   */
+  readonly runFailed?: boolean;
+  /**
    * The selected task's measured metric slice, joined upstream by
    * `RunDetailView` via `joinMetricsToTasks(...).matched`, or `null` when the
    * task has no matching series. Rendered as that task's compact
@@ -243,6 +324,12 @@ export interface TaskDetailPanelProps {
    * caught and treated as "no excerpt available" — never fatal (Req 8.4).
    */
   readonly getErrorExcerpt?: GetErrorExcerpt;
+  /**
+   * The current instant in epoch milliseconds, injected so the selected task's
+   * running-duration is deterministic and testable. Defaults to `Date.now()`
+   * at render time.
+   */
+  readonly now?: number;
   /** Invoked when the operator closes the detail panel. */
   readonly onClose: () => void;
 }
@@ -260,6 +347,8 @@ export default function TaskDetailPanel({
   runLogsTabId = 'run',
   onRunLogsTabChange,
   getErrorExcerpt = defaultGetErrorExcerpt,
+  runFailed = false,
+  now = Date.now(),
   onClose,
 }: TaskDetailPanelProps): React.JSX.Element | null {
   if (selection == null) {
@@ -288,22 +377,19 @@ export default function TaskDetailPanel({
         </Header>
       }
     >
+      {/* Defense in depth: a render error anywhere in the detail body (driven by
+          real, variable task/metric data) degrades to an inline Cloudscape error
+          Alert instead of propagating to the app root and blanking the whole
+          screen. The panel header/close affordance above stays usable. */}
+      <ErrorBoundary title="Something went wrong displaying this panel.">
       {selection.kind === 'TASK' ? (
         <SpaceBetween size="s">
-          {/* Selected task's resource detail: its captured cpus/memory and the
-              resource (instance) type it ran on, shown above the logs (Req 8.1).
-              A task without an instanceType shows an explicit "Resource type
-              unavailable" affordance rather than a fabricated value (Req 8.2). */}
-          <TaskResourceDetail task={task} />
-          {/* The selected task's measured utilization, rendered ABOVE the log
-              tail (after the resource detail, before the failure banner — per
-              design §Zone 2's stated order: resource detail → utilization bars →
-              failure banner → log tail). Compact peak/mean-vs-limit bars keep
-              the log tail reachable without extended scrolling. When the task
-              has no matching series `UtilizationBars` renders an explicit
-              "utilization unavailable for this task" state instead of a
-              fabricated zero bar. */}
-          <UtilizationBars taskMetrics={taskMetrics} />
+          {/* Selected task's resource detail: its captured cpus/memory, the
+              resource (instance) type it ran on, and its start/end/duration,
+              shown above the logs (Req 8.1). A task without an instanceType
+              shows an explicit "Resource type unavailable" affordance rather
+              than a fabricated value (Req 8.2). */}
+          <TaskResourceDetail task={task} now={now} />
           {/* Task failure detail banner: shows this task's own
               statusMessage/failureReason (when HealthOmics captured one), plus a
               best-effort extracted error excerpt (Option B) from the task's own
@@ -315,7 +401,43 @@ export default function TaskDetailPanel({
             task={task}
             getErrorExcerpt={getErrorExcerpt}
           />
-          <LogsPanel runId={runId} stream="TASK" taskId={selection.taskId} />
+          {/* The raw log tail, now placed directly above the measured metrics
+              so it stays reachable without scrolling past the utilization
+              charts (order: resource detail → failure banner → log tail →
+              collapsible metrics). */}
+          <LogsPanel
+            runId={runId}
+            stream="TASK"
+            taskId={selection.taskId}
+            tail={task?.status === 'FAILED' || task?.status === 'CANCELLED'}
+          />
+          {/* The selected task's measured utilization, now BELOW the log tail
+              and collapsed by default inside an ExpandableSection so it never
+              pushes the tail out of view. When the task has no matching series
+              `UtilizationBars` renders an explicit "utilization unavailable for
+              this task" state instead of a fabricated zero bar.
+
+              NOTE: this uses the DEFAULT ExpandableSection variant, NOT
+              `variant="container"`. The container variant renders a nested
+              Cloudscape `Container` (which registers with the analytics-funnel /
+              sticky-container context); nesting that inside this panel's own
+              `Container` while it is hosted in the shell's `SplitPanel` drove an
+              unrecoverable layout/render loop that unhandled-crashed (white
+              screened) the app in production. The default variant is still
+              collapsible and collapsed-by-default (the three requested UX
+              behaviors — logs above metrics, metrics collapsible + collapsed by
+              default, and start/end/duration in the header — are all preserved),
+              but renders no nested container, so the fragile composition is
+              gone. The `data-testid` lives on a wrapping <div> rather than on
+              the component. */}
+          <div data-testid="task-utilization-section">
+            <ExpandableSection
+              headerText="Measured utilization"
+              defaultExpanded={false}
+            >
+              <UtilizationBars taskMetrics={taskMetrics} />
+            </ExpandableSection>
+          </div>
         </SpaceBetween>
       ) : (
         <Tabs
@@ -327,16 +449,19 @@ export default function TaskDetailPanel({
             {
               id: 'run',
               label: 'Run',
-              content: <LogsPanel runId={runId} stream="RUN" />,
+              content: <LogsPanel runId={runId} stream="RUN" tail={runFailed === true} />,
             },
             {
               id: 'engine',
               label: 'Engine',
-              content: <LogsPanel runId={runId} stream="ENGINE" />,
+              content: (
+                <LogsPanel runId={runId} stream="ENGINE" tail={runFailed === true} />
+              ),
             },
           ]}
         />
       )}
+      </ErrorBoundary>
     </Container>
   );
 }

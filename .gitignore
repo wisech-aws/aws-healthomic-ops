@@ -20,6 +20,9 @@ build.log
 # Env / local config
 .env
 .env.*
+# ...but keep the committed example template trackable.
+!.env.example
+!**/.env.example
 frontend/src/config.generated.ts
 frontend/public/config.generated.js
 

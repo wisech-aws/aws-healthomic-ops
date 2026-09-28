@@ -78,3 +78,29 @@ export function isTaskStatus(value: unknown): value is TaskStatus {
     (Object.values(TaskStatus) as string[]).includes(value)
   );
 }
+
+/**
+ * Terminal (end-of-life) statuses shared by runs and tasks.
+ *
+ * A run or task in one of these states will never transition to any other
+ * state. This set is the source of truth for the repository's status-monotonic
+ * upsert guard: once an item is persisted in a terminal state it must never be
+ * reverted to a non-terminal state by a later-processed but semantically
+ * earlier event (out-of-order EventBridge delivery, at-least-once redelivery,
+ * or same-second `event.time` collisions). `DELETED` applies only to runs.
+ */
+export const TERMINAL_STATUSES: ReadonlySet<string> = new Set<string>([
+  RunStatus.COMPLETED,
+  RunStatus.FAILED,
+  RunStatus.CANCELLED,
+  RunStatus.DELETED,
+]);
+
+/**
+ * Is the given status a terminal (end-of-life) status? Non-string or
+ * unrecognized values are treated as non-terminal (`false`) so an unknown
+ * status never blocks a legitimate write.
+ */
+export function isTerminalStatus(value: unknown): boolean {
+  return typeof value === 'string' && TERMINAL_STATUSES.has(value);
+}

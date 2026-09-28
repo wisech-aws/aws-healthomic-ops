@@ -21,18 +21,38 @@ import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
 import {
   GetCommand,
   PutCommand,
+  QueryCommand,
   UpdateCommand,
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
 
-import type { RunRecord, TaskRecord } from './domain/records.js';
+import type { RunRecord, TaskRecord, RunSummaryRecord } from './domain/records.js';
 import type { Fidelity, StaticGraph } from './parser/types.js';
+import { isTerminalStatus, TERMINAL_STATUSES } from './domain/status.js';
 
 /** Discriminator attribute stored on every item for item-type filtering. */
-export type EntityType = 'RUN' | 'TASK' | 'GRAPH' | 'RATECARD';
+export type EntityType = 'RUN' | 'TASK' | 'GRAPH' | 'RATECARD' | 'SUMMARY' | 'GROUP';
 
 /** GSI1 partition-key constant used by all run items (Req 3.3, 3.7). */
 export const RUNS_GSI1PK = 'RUNS';
+
+/**
+ * Partition key constant for the Group_Registry
+ * (workflow-performance-reports Req 11.4). All Workflow_Group registry items
+ * share this single partition so `listWorkflowGroups` reads one partition
+ * instead of scanning the table for SUMMARY items.
+ */
+export const GROUPS_PK = 'GROUPS';
+
+/**
+ * Derive the Group_Registry item sort key for a Workflow_Group:
+ * `WF#<encoded workflowName>#<encoded workflowVersionName>` — the same
+ * delimiter-safe encoding as {@link groupGsi2Pk} so a name containing `#`
+ * cannot collide two groups. One registry item per distinct `(name, version)`.
+ */
+export function groupRegistrySk(workflowName: string, workflowVersionName: string): string {
+  return `WF#${encodeGroupSegment(workflowName)}#${encodeGroupSegment(workflowVersionName)}`;
+}
 
 /** Derive the run item partition key: `RUN#<runId>`. */
 export function runPk(runId: string): string {
@@ -87,6 +107,53 @@ export function rateCardPk(region: string): string {
 export function rateCardSk(region: string): string {
   return `RATECARD#${region}`;
 }
+
+/**
+ * Derive the Run_Summary item sort key: `SUMMARY#<runId>`
+ * (workflow-performance-reports Req 2.1). The summary is co-located under the
+ * run's partition key (`PK = RUN#<runId>`), so it is a cheap sibling of the run
+ * item and read/written alongside it.
+ */
+export function summarySk(runId: string): string {
+  return `SUMMARY#${runId}`;
+}
+
+/**
+ * Percent-encode a group-key segment so a `workflowName` / `workflowVersionName`
+ * containing the `#` delimiter (or `%`) cannot corrupt the composite `GSI2PK`
+ * key or leak across groups (workflow-performance-reports Req 2.2; design §1
+ * "Key encoding safety"). Only `%` and `#` are encoded, keeping keys readable
+ * for every ordinary name while remaining unambiguous. `%` is encoded first so
+ * the transform is reversible.
+ */
+export function encodeGroupSegment(segment: string): string {
+  return segment.replace(/%/g, '%25').replace(/#/g, '%23');
+}
+
+/**
+ * Derive the Run_Summary GSI2 partition key for a Workflow_Group:
+ * `WF#<encoded workflowName>#<encoded workflowVersionName>`
+ * (workflow-performance-reports Req 2.2). Both segments are delimiter-safe
+ * encoded so distinct groups never collide through a name containing `#`. The
+ * caller passes the already-normalized version (Unversioned_Label when absent).
+ */
+export function groupGsi2Pk(workflowName: string, workflowVersionName: string): string {
+  return `WF#${encodeGroupSegment(workflowName)}#${encodeGroupSegment(workflowVersionName)}`;
+}
+
+/**
+ * Derive the Run_Summary GSI2 sort key: the run's terminal timestamp as an
+ * ISO 8601 string, so a group's summaries are time-ordered for a windowed range
+ * query (workflow-performance-reports Req 2.2). Falls back to `updatedAt` when
+ * `stoppedAt` is absent so every summary is still ordered and queryable.
+ */
+export function groupGsi2Sk(stoppedAt: string | undefined, updatedAt: string): string {
+  const basis = stoppedAt ?? updatedAt;
+  return normalizeGsi1Sk(basis) ?? updatedAt;
+}
+
+/** GSI2 partition-key constant prefix (documentation aid; keys built via {@link groupGsi2Pk}). */
+export const SUMMARY_GSI2_PREFIX = 'WF#';
 
 /**
  * Normalize an `updatedAt` value for use as `GSI1SK`.
@@ -148,6 +215,8 @@ export interface RunItem {
   updatedAt: string;
   workflowId?: string;
   workflowName?: string;
+  /** Workflow version name (from GetRun enrichment); drives report grouping + graph lookup. */
+  workflowVersionName?: string;
   outputUri?: string;
   parameters?: string;
   engineVersion?: string;
@@ -234,6 +303,7 @@ export function buildRunItem(run: RunRecord): RunItem {
   setIfDefined(item, 'stoppedAt', run.stoppedAt);
   setIfDefined(item, 'workflowId', run.workflowId);
   setIfDefined(item, 'workflowName', run.workflowName);
+  setIfDefined(item, 'workflowVersionName', run.workflowVersionName);
   setIfDefined(item, 'outputUri', run.outputUri);
   setIfDefined(item, 'parameters', run.parameters);
   setIfDefined(item, 'engineVersion', run.engineVersion);
@@ -287,6 +357,112 @@ export function buildTaskItem(task: TaskRecord): TaskItem {
   setIfDefined(item, 'failureReason', task.failureReason);
 
   return item;
+}
+
+/**
+ * Shape of a persisted Run_Summary item (workflow-performance-reports Req 1.x,
+ * 2.x). Keyed `PK = RUN#<runId>`, `SK = SUMMARY#<runId>` (co-located with the
+ * run) and indexed on `GSI2` by Workflow_Group + terminal timestamp so a report
+ * is a single time-ordered range query per group. Each Tracked_Metric value is
+ * stored only when available; the paired Availability_Flag is always stored, so
+ * an unavailable metric is recorded as `available=false` with no value — never a
+ * fabricated `0` (Req 1.3, 10.2). Memory is GiB (Req 1.4, 10.4).
+ */
+export interface SummaryItem {
+  PK: string;
+  SK: string;
+  GSI2PK: string;
+  GSI2SK: string;
+  runId: string;
+  workflowName?: string;
+  /** Normalized version label (Unversioned_Label when the run had no version). */
+  workflowVersionName: string;
+  /** Hidden collision guard — not the group label (Req 6.1). */
+  workflowId?: string;
+  status: string;
+  stoppedAt?: string;
+  updatedAt: string;
+  durationMs?: number;
+  durationAvailable: boolean;
+  meanCpu?: number;
+  peakCpu?: number;
+  cpuAvailable: boolean;
+  meanMemoryGiB?: number;
+  peakMemoryGiB?: number;
+  memoryAvailable: boolean;
+  cpuHours?: number;
+  cpuHoursAvailable: boolean;
+  peakConcurrentTasks?: number;
+  concurrencyAvailable: boolean;
+  taskCount: number;
+  failedTaskCount: number;
+  entityType: 'SUMMARY';
+}
+
+/**
+ * Build the DynamoDB item for a Run_Summary: derive `PK`/`SK`, the `GSI2`
+ * Workflow_Group keys, populate the tracked-metric values (only when defined)
+ * and their always-present availability flags, and tag `entityType = "SUMMARY"`
+ * (workflow-performance-reports Req 1.3, 2.1, 2.2). Absent metric values are
+ * omitted from the item rather than stored as `undefined`/`0`.
+ */
+export function buildSummaryItem(summary: RunSummaryRecord): SummaryItem {
+  const item: SummaryItem = {
+    PK: runPk(summary.runId),
+    SK: summarySk(summary.runId),
+    GSI2PK: groupGsi2Pk(
+      summary.workflowName ?? '',
+      summary.workflowVersionName,
+    ),
+    GSI2SK: groupGsi2Sk(summary.stoppedAt, summary.updatedAt),
+    runId: summary.runId,
+    workflowVersionName: summary.workflowVersionName,
+    status: summary.status,
+    updatedAt: summary.updatedAt,
+    durationAvailable: summary.durationAvailable,
+    cpuAvailable: summary.cpuAvailable,
+    memoryAvailable: summary.memoryAvailable,
+    cpuHoursAvailable: summary.cpuHoursAvailable,
+    concurrencyAvailable: summary.concurrencyAvailable,
+    taskCount: summary.taskCount,
+    failedTaskCount: summary.failedTaskCount,
+    entityType: 'SUMMARY',
+  };
+
+  setIfDefined(item, 'workflowName', summary.workflowName);
+  setIfDefined(item, 'workflowId', summary.workflowId);
+  setIfDefined(item, 'stoppedAt', summary.stoppedAt);
+  setIfDefined(item, 'durationMs', summary.durationMs);
+  setIfDefined(item, 'meanCpu', summary.meanCpu);
+  setIfDefined(item, 'peakCpu', summary.peakCpu);
+  setIfDefined(item, 'meanMemoryGiB', summary.meanMemoryGiB);
+  setIfDefined(item, 'peakMemoryGiB', summary.peakMemoryGiB);
+  setIfDefined(item, 'cpuHours', summary.cpuHours);
+  setIfDefined(item, 'peakConcurrentTasks', summary.peakConcurrentTasks);
+
+  return item;
+}
+
+/**
+ * Shape of a persisted Group_Registry item (workflow-performance-reports
+ * Req 11.4). One item per distinct `(workflowName, workflowVersionName)` under
+ * the single `GROUPS` partition. Carries the friendly labels, the set of
+ * observed `workflowId`s (for the Collision_State — a DynamoDB string set), the
+ * run count seen, and a `lastSeen` timestamp. `listWorkflowGroups` reads this
+ * one partition instead of scanning the table for SUMMARY items.
+ */
+export interface GroupRegistryItem {
+  PK: string;
+  SK: string;
+  workflowName: string;
+  versionName: string;
+  /** Distinct workflow ids observed for this friendly group (>1 => collision). */
+  workflowIds: string[];
+  /** Total runs recorded into this group (best-effort counter). */
+  runCount: number;
+  /** ISO 8601 of the most recent registry update. */
+  lastSeen: string;
+  entityType: 'GROUP';
 }
 
 /**
@@ -512,6 +688,138 @@ export class DynamoRepository {
 
     const item = buildTaskItem(task);
     return this.conditionalPut(item, task.runId, task.taskId);
+  }
+
+  /**
+   * Upsert a Run_Summary item with the same monotonic stale-write guard as
+   * runs/tasks (workflow-performance-reports Req 1.5). Rejects the write before
+   * touching the store when `runId` is absent or empty (mirrors `upsertRun`).
+   * Writes only when no summary exists for the key or the incoming `updatedAt`
+   * is strictly greater than the stored value; otherwise the stored summary is
+   * preserved unchanged. Idempotent: re-processing the same terminal run yields
+   * one summary row and never a duplicate or a stale overwrite.
+   */
+  async upsertSummary(summary: RunSummaryRecord): Promise<UpsertResult> {
+    if (!isValidIdentifier(summary.runId)) {
+      throw new InvalidIdentifierError('runId');
+    }
+
+    const item = buildSummaryItem(summary);
+    return this.conditionalPut(item, summary.runId, undefined);
+  }
+
+  /**
+   * List all task items for a run (`PK = RUN#<runId>`, `begins_with(SK, "TASK#")`),
+   * used by the completion hook to compute a Run_Summary rollup
+   * (workflow-performance-reports Req 1.1). Paginates the query fully and
+   * returns the task items as {@link TaskItem}s (empty when the run has none).
+   */
+  async listTaskItemsForRun(runId: string): Promise<TaskItem[]> {
+    const items: TaskItem[] = [];
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+    do {
+      const result = await this.docClient.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          KeyConditionExpression: '#pk = :pk AND begins_with(#sk, :taskPrefix)',
+          ExpressionAttributeNames: { '#pk': 'PK', '#sk': 'SK' },
+          ExpressionAttributeValues: {
+            ':pk': runPk(runId),
+            ':taskPrefix': 'TASK#',
+          },
+          ExclusiveStartKey: exclusiveStartKey,
+        }),
+      );
+      for (const it of (result.Items ?? []) as TaskItem[]) {
+        items.push(it);
+      }
+      exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (exclusiveStartKey !== undefined);
+    return items;
+  }
+
+  /**
+   * Idempotently record a Workflow_Group in the Group_Registry
+   * (workflow-performance-reports Req 11.4). Adds `workflowId` to the group's
+   * `workflowIds` string set (a no-op when already present, so re-processing a
+   * run never duplicates), increments the run counter, and refreshes the
+   * labels + `lastSeen`. Uses a single `UpdateCommand` with `ADD` (set-add +
+   * counter) and `SET`, so concurrent completions for the same group merge
+   * correctly without a read-modify-write race.
+   *
+   * `workflowId` is optional: when absent (a run with no workflow id) the id
+   * set is left untouched (DynamoDB string sets cannot be empty), but the group
+   * is still registered so it is enumerable.
+   */
+  async upsertGroupRegistry(
+    workflowName: string,
+    versionName: string,
+    workflowId: string | undefined,
+    now: string = new Date().toISOString(),
+  ): Promise<void> {
+    const hasId = typeof workflowId === 'string' && workflowId.trim() !== '';
+    const names: Record<string, string> = {
+      '#workflowName': 'workflowName',
+      '#versionName': 'versionName',
+      '#lastSeen': 'lastSeen',
+      '#entityType': 'entityType',
+      '#runCount': 'runCount',
+    };
+    const values: Record<string, unknown> = {
+      ':workflowName': workflowName,
+      ':versionName': versionName,
+      ':lastSeen': now,
+      ':entityType': 'GROUP',
+      ':one': 1,
+    };
+    // ADD on a number with if_not_exists-style accumulation: `ADD #runCount :one`
+    // creates the attribute at :one when absent, else increments.
+    let updateExpr =
+      'SET #workflowName = :workflowName, #versionName = :versionName, ' +
+      '#lastSeen = :lastSeen, #entityType = :entityType ' +
+      'ADD #runCount :one';
+    if (hasId) {
+      names['#workflowIds'] = 'workflowIds';
+      // DynamoDB Document client encodes a JS Set as a DynamoDB string set.
+      values[':wid'] = new Set([workflowId as string]);
+      updateExpr += ', #workflowIds :wid';
+    }
+
+    await this.docClient.send(
+      new UpdateCommand({
+        TableName: this.tableName,
+        Key: { PK: GROUPS_PK, SK: groupRegistrySk(workflowName, versionName) },
+        UpdateExpression: updateExpr,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: values,
+      }),
+    );
+  }
+
+  /**
+   * Read every Group_Registry item (the single `GROUPS` partition), used by
+   * `listWorkflowGroups` to enumerate Workflow_Groups without a table scan
+   * (workflow-performance-reports Req 11.4). Fully paginated.
+   */
+  async listGroupRegistry(): Promise<GroupRegistryItem[]> {
+    const items: GroupRegistryItem[] = [];
+    let exclusiveStartKey: Record<string, unknown> | undefined;
+    do {
+      const result = await this.docClient.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          KeyConditionExpression: '#pk = :pk',
+          ExpressionAttributeNames: { '#pk': 'PK' },
+          ExpressionAttributeValues: { ':pk': GROUPS_PK },
+          ExclusiveStartKey: exclusiveStartKey,
+        }),
+      );
+      for (const it of (result.Items ?? []) as GroupRegistryItem[]) {
+        items.push(it);
+      }
+      exclusiveStartKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (exclusiveStartKey !== undefined);
+    return items;
   }
 
   /**
@@ -746,23 +1054,69 @@ export class DynamoRepository {
    * thrown (Req 3.10).
    */
   private async conditionalPut(
-    item: RunItem | TaskItem,
+    item: RunItem | TaskItem | SummaryItem,
     runId: string,
     taskId: string | undefined,
   ): Promise<UpsertResult> {
+    // Base guard: write when the item is new, or when the incoming updatedAt is
+    // strictly greater than the stored one (monotonic last-writer-wins, Req 3.8).
+    const names: Record<string, string> = {
+      '#storedUpdatedAt': 'updatedAt',
+    };
+    const values: Record<string, unknown> = {
+      ':incomingUpdatedAt': item.updatedAt,
+    };
+
+    // Status-monotonic guard: status transitions are ordered by their position
+    // in the lifecycle, not by `updatedAt`, because HealthOmics `event.time` has
+    // second resolution and EventBridge delivers at-least-once and out of order.
+    // Two rules, independent of updatedAt:
+    //   (a) a TERMINAL status (COMPLETED/FAILED/CANCELLED/DELETED) must win over
+    //       a non-terminal one, so a terminal write is accepted even when its
+    //       updatedAt is not strictly greater than a stored non-terminal item;
+    //   (b) a non-terminal status must never overwrite a stored terminal one.
+    // The normal monotonic `updatedAt` rule still governs same-terminality
+    // transitions (e.g. RUNNING -> STARTING can't go backwards on a stale event,
+    // and a re-emitted COMPLETED with an equal/older time is a no-op).
+    // Applies only to items carrying a status (runs/tasks); summaries have none.
+    const incomingStatus = (item as RunItem | TaskItem).status;
+    let statusClause = '';
+    if (typeof incomingStatus === 'string') {
+      names['#storedStatus'] = 'status';
+      const incomingIsTerminal = isTerminalStatus(incomingStatus);
+      values[':incomingIsTerminal'] = incomingIsTerminal;
+      values[':true'] = true;
+      const terminalKeys: string[] = [];
+      let i = 0;
+      for (const t of TERMINAL_STATUSES) {
+        const k = `:term${i}`;
+        values[k] = t;
+        terminalKeys.push(k);
+        i += 1;
+      }
+      const storedIsTerminal = `#storedStatus IN (${terminalKeys.join(', ')})`;
+      const storedHasStatus = 'attribute_exists(#storedStatus)';
+      // (a) terminal-wins: incoming terminal AND stored exists but is non-terminal
+      const terminalWins =
+        `(:incomingIsTerminal = :true AND ${storedHasStatus} AND NOT (${storedIsTerminal}))`;
+      // (b) no-revert: reject non-terminal-over-terminal by requiring the
+      //     monotonic branch to also satisfy "not reverting a terminal".
+      const noRevert =
+        `(:incomingIsTerminal = :true OR NOT ${storedHasStatus} OR NOT (${storedIsTerminal}))`;
+      // Combined: terminalWins OR (monotonic updatedAt AND noRevert).
+      statusClause =
+        `${terminalWins} OR (:incomingUpdatedAt > #storedUpdatedAt AND ${noRevert})`;
+    } else {
+      // Summaries and any status-less item keep the plain monotonic rule.
+      statusClause = ':incomingUpdatedAt > #storedUpdatedAt';
+    }
+
     const command = new PutCommand({
       TableName: this.tableName,
       Item: item,
-      // Write when the item is new, or when the incoming updatedAt is strictly
-      // greater than the stored one (monotonic last-writer-wins, Req 3.8).
-      ConditionExpression:
-        'attribute_not_exists(PK) OR :incomingUpdatedAt > #storedUpdatedAt',
-      ExpressionAttributeNames: {
-        '#storedUpdatedAt': 'updatedAt',
-      },
-      ExpressionAttributeValues: {
-        ':incomingUpdatedAt': item.updatedAt,
-      },
+      ConditionExpression: `attribute_not_exists(PK) OR (${statusClause})`,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
     });
 
     let lastError: unknown;

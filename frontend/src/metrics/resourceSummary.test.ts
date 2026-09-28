@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
 import {
   summarizeResources,
-  MEMORY_UNITS_UNCONFIRMED_NOTE,
+  MEMORY_METRIC_NOTE,
+  MEMORY_UNIT,
 } from './resourceSummary';
 import { toIntervals, peakConcurrent, type TaskInterval } from './intervals';
 import { makeTask } from '../taskview/testFactories';
@@ -184,39 +185,42 @@ describe('summarizeResources — Property 5: CPU-hours equals the summed area (R
   });
 });
 
-describe('summarizeResources — peak-memory unconfirmed-units caveat (Req 11.1, 11.2, 11.3)', () => {
-  it('attaches the unconfirmed-units note when memory is available', () => {
+describe('summarizeResources — peak-memory metric note + confirmed GiB unit (Req 11.1, 11.2, 11.3)', () => {
+  it('attaches the clarifying note and GiB unit when memory is available', () => {
     const t = makeTask({ startedAt: iso(0), stoppedAt: iso(MS_PER_HOUR), memory: 512 });
     const summary = summarizeResources([t]);
     expect(summary.peakConcurrentMemory.available).toBe(true);
-    expect(summary.peakConcurrentMemory.note).toBe(MEMORY_UNITS_UNCONFIRMED_NOTE);
+    expect(summary.peakConcurrentMemory.value).toBe(512);
+    expect(summary.peakConcurrentMemory.note).toBe(MEMORY_METRIC_NOTE);
+    expect(summary.peakConcurrentMemory.unit).toBe(MEMORY_UNIT);
+    expect(MEMORY_UNIT).toBe('GiB');
   });
 
-  it('attaches the unconfirmed-units note even when memory is unavailable', () => {
+  it('attaches the clarifying note and GiB unit even when memory is unavailable', () => {
     const t = makeTask({ startedAt: iso(0), stoppedAt: iso(MS_PER_HOUR), memory: null });
     const summary = summarizeResources([t]);
     expect(summary.peakConcurrentMemory.available).toBe(false);
     expect(summary.peakConcurrentMemory.value).toBeNull();
-    expect(summary.peakConcurrentMemory.note).toBe(MEMORY_UNITS_UNCONFIRMED_NOTE);
+    expect(summary.peakConcurrentMemory.note).toBe(MEMORY_METRIC_NOTE);
+    expect(summary.peakConcurrentMemory.unit).toBe(MEMORY_UNIT);
   });
 
-  it('always states the unit is unconfirmed regardless of availability', () => {
+  it('always states the confirmed GiB unit regardless of availability', () => {
     fc.assert(
       fc.property(
         fc.array(taskArb, { maxLength: 15 }),
         fc.integer({ min: 0, max: 20_000_000 }),
         (tasks, now) => {
           const summary = summarizeResources(tasks, now);
-          // The caveat is present in every case, available or not.
-          expect(summary.peakConcurrentMemory.note).toBe(
-            MEMORY_UNITS_UNCONFIRMED_NOTE,
-          );
+          // The note + confirmed unit are present in every case, available or not.
+          expect(summary.peakConcurrentMemory.note).toBe(MEMORY_METRIC_NOTE);
+          expect(summary.peakConcurrentMemory.unit).toBe(MEMORY_UNIT);
         },
       ),
     );
   });
 
-  it('reports a unit-agnostic sum with no unit conversion (raw value is the concurrent memory sum)', () => {
+  it('reports the raw GiB sum with no unit conversion (raw value is the concurrent memory sum)', () => {
     fc.assert(
       fc.property(
         fc.array(taskArb, { maxLength: 15 }),

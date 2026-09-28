@@ -10,7 +10,7 @@ This is a TypeScript monorepo with independently buildable and testable packages
 | `ingest/`   | Ingest Lambda (Node.js 20.x, TypeScript) — event normalization, enrichment, persistence, publish, and the workflow-definition parser. |
 | `frontend/` | React + Vite (TypeScript) single-page app styled with the [Cloudscape Design System](https://cloudscape.design/) — fleet view and run detail view. |
 | `fixtures/` | Sample HealthOmics events and workflow definitions used by tests and local verification. |
-| `scripts/`  | Local verification and operational scripts (`send-event.mjs`, `inject-config.mjs`, `ensure-run-metrics-permission.mjs`). |
+| `scripts/`  | Local verification and operational scripts (`deploy.sh`, `dev-local.sh`, `send-event.mjs`, `inject-config.mjs`, `ensure-run-metrics-permission.mjs`, `backfill-run-summaries.mjs`). |
 
 Each package pins its dependencies to exact versions and exposes `build` and `test` scripts.
 
@@ -150,6 +150,20 @@ value.
 - **Inputs & outputs:** the run's parameters as a Parameter/Value table (S3 values link to the console; folder locations complete the prefix with a trailing slash), plus a **Run configuration** table surfacing the IAM role, storage, run cache, networking (VPC + configuration name), and log level captured from `GetRun`. An engine-version badge appears on the header.
 - **Logs:** read-only CloudWatch logs for a selected task (opened by clicking its node) or the run/engine streams, rendered below the DAG.
 
+### Reports view (aggregate performance)
+
+A top-level **Reports** area (reachable from the "Reports" button in the top
+navigation) presents **aggregate performance across many runs of the same
+workflow and version over a time window**, complementing the per-run fleet and
+detail views.
+
+- **Grouping:** runs are grouped by the friendly **workflow name + version**; a run with no version name is bucketed as **"(unversioned)"**. The underlying `workflowId` is tracked (hidden) so that when one friendly name+version maps to more than one workflow, the report flags a **collision** rather than silently blending unrelated workflows.
+- **Time window:** a calendar date-range picker, defaulting to the **last 30 days**.
+- **Statistics:** for each tracked metric — wall-clock duration, mean/peak CPU, mean/peak memory (GiB), CPU-hours, peak concurrent tasks, tasks per run, failed tasks per run — the report shows **mean, median, and p90**. Cost is intentionally out of scope for this view.
+- **Availability honesty:** each metric's statistics are computed only over the runs where that metric was actually available, shown with an explicit **"N of M runs"** denominator; an unavailable metric is never counted as zero. Utilization (CPU/memory) exists only for runs whose IAM run role held `cloudwatch:PutMetricData` at run start (see [section 6](#6-enable-run-metrics-emission), the `ensure-run-metrics-permission.mjs` prerequisite); the view surfaces a note explaining why some runs lack utilization.
+- **Data source:** the pipeline persists a compact **per-run performance rollup** (a `Run_Summary` item) once when a run reaches a terminal state, so reports are fast indexed reads rather than live CloudWatch fan-outs. Existing finished runs can be populated with the one-time [`backfill-run-summaries.mjs`](scripts/README.md#backfill-run-summariesmjs--one-time-run_summary-backfill-workflow-performance-reports-req-9) script.
+- **Downloads:** **CSV** (per-run + aggregate data, for analytics) and **print-to-PDF** (a print-friendly layout of the cards + charts, for executive reporting). Unavailable metrics remain blank (never zero) in both exports, and memory stays in GiB.
+
 ---
 
 ## 2. Prerequisites
@@ -179,6 +193,12 @@ deploy time, and invalidates CloudFront — so there is no separate `s3 sync` or
 config-injection step. Stack names below (`HealthOmicsData`, `HealthOmicsApi`,
 `HealthOmicsIngest`, `HealthOmicsFrontend`) are illustrative; run `cdk list` to
 confirm the names your CDK app defines.
+
+> **One-command deploy:** [`scripts/deploy.sh`](scripts/README.md#deploysh--build-and-deploy-in-one-command)
+> runs the correct sequence for you — build ingest, build the SPA, then
+> `cdk deploy` — so you never publish a stale/missing `frontend/dist`. Use
+> `scripts/deploy.sh` (all stacks), `scripts/deploy.sh --frontend-only`, or
+> `scripts/deploy.sh --stack <Name>`. The manual steps below are equivalent.
 
 **1. Bootstrap the account/region (once per account+region):**
 

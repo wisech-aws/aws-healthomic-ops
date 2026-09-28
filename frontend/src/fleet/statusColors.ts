@@ -8,7 +8,7 @@
 import type { RunStatus, TaskStatus } from '../api/types';
 
 /** Color used when a status is missing/unknown on a run or task. */
-export const UNKNOWN_STATUS_COLOR = '#6b7280';
+export const UNKNOWN_STATUS_COLOR = '#64748b';
 
 /**
  * Accent color for the slowest (longest-running) task highlight on the DAG
@@ -23,14 +23,14 @@ export const SLOWEST_TASK_COLOR = '#db2777';
  * two members share a color (Req 8.7).
  */
 export const RUN_STATUS_COLORS: Record<RunStatus, string> = {
-  PENDING: '#9ca3af',
+  PENDING: '#94a3b8',
   STARTING: '#38bdf8',
-  RUNNING: '#2563eb',
+  RUNNING: '#3b82f6',
   STOPPING: '#f59e0b',
-  COMPLETED: '#16a34a',
-  DELETED: '#111827',
-  CANCELLED: '#a855f7',
-  FAILED: '#dc2626',
+  COMPLETED: '#047857',
+  DELETED: '#1e293b',
+  CANCELLED: '#8b5cf6',
+  FAILED: '#ef4444',
 };
 
 /**
@@ -39,13 +39,13 @@ export const RUN_STATUS_COLORS: Record<RunStatus, string> = {
  * so this map is defined separately from {@link RUN_STATUS_COLORS}.
  */
 export const TASK_STATUS_COLORS: Record<TaskStatus, string> = {
-  PENDING: '#9ca3af',
+  PENDING: '#94a3b8',
   STARTING: '#38bdf8',
-  RUNNING: '#2563eb',
+  RUNNING: '#3b82f6',
   STOPPING: '#f59e0b',
-  COMPLETED: '#16a34a',
-  CANCELLED: '#a855f7',
-  FAILED: '#dc2626',
+  COMPLETED: '#047857',
+  CANCELLED: '#8b5cf6',
+  FAILED: '#ef4444',
 };
 
 /** Returns the color for a run status, or the unknown color when absent. */

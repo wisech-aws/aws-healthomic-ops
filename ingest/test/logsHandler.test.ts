@@ -103,6 +103,65 @@ describe('logsHandler getRunLogs', () => {
     await handler(makeEvent({ runId: 'r1', stream: 'RUN' }));
     expect(capturedInputs[0].limit).toBe(200);
   });
+
+  // Default (non-tail) path protection: WITHOUT `tail`, the successful-run log
+  // retrieval MUST stay oldest-first (`startFromHead: true`) and return the
+  // FORWARD token — asserted explicitly so a future tail change can't silently
+  // regress it.
+  it('without tail, fetches oldest-first (startFromHead:true) and returns the forward token', async () => {
+    sendMock.mockResolvedValue({
+      events: [{ timestamp: 1, message: 'line' }],
+      nextForwardToken: 'fwd',
+      nextBackwardToken: 'bwd',
+    });
+    const res = await handler(makeEvent({ runId: 'r1', stream: 'ENGINE' }));
+    expect(capturedInputs[0].startFromHead).toBe(true);
+    expect(res.nextToken).toBe('fwd');
+  });
+
+  it('with tail:false, also fetches oldest-first and returns the forward token', async () => {
+    sendMock.mockResolvedValue({
+      events: [],
+      nextForwardToken: 'fwd',
+      nextBackwardToken: 'bwd',
+    });
+    const res = await handler(makeEvent({ runId: 'r1', stream: 'RUN', tail: false }));
+    expect(capturedInputs[0].startFromHead).toBe(true);
+    expect(res.nextToken).toBe('fwd');
+  });
+
+  // Opt-in tail path (failed-run triage): with `tail:true`, fetch newest-first
+  // (`startFromHead:false`) and return the BACKWARD token so the client pages
+  // older on demand.
+  it('with tail:true, fetches newest-first (startFromHead:false) and returns the backward token', async () => {
+    sendMock.mockResolvedValue({
+      events: [
+        { timestamp: 111, message: 'earlier in slice' },
+        { timestamp: 222, message: '[ERROR] boom at the end' },
+      ],
+      nextForwardToken: 'fwd',
+      nextBackwardToken: 'bwd',
+    });
+    const res = await handler(makeEvent({ runId: 'r1', stream: 'ENGINE', tail: true }));
+    expect(capturedInputs[0].startFromHead).toBe(false);
+    expect(res.nextToken).toBe('bwd');
+    // Events are surfaced in the ascending order CloudWatch returns them within
+    // the page (not reversed), so the <pre> still reads oldest→newest.
+    expect(res.events).toEqual([
+      { timestamp: 111, message: 'earlier in slice' },
+      { timestamp: 222, message: '[ERROR] boom at the end' },
+    ]);
+  });
+
+  it('with tail:true, still returns an empty page (not an error) when the stream does not exist', async () => {
+    sendMock.mockRejectedValue(new ResourceNotFoundException());
+    const res = await handler(
+      makeEvent({ runId: 'r1', stream: 'TASK', taskId: 't-new', tail: true }),
+    );
+    expect(res.events).toEqual([]);
+    expect(res.nextToken).toBeNull();
+    expect(res.logStreamName).toBe('run/r1/task/t-new');
+  });
 });
 
 describe('logsHandler errorExcerptHandler (getErrorExcerpt)', () => {
@@ -136,21 +195,47 @@ describe('logsHandler errorExcerptHandler (getErrorExcerpt)', () => {
     expect(capturedInputs[0].logStreamName).toBe('run/r1/task/t1');
   });
 
-  it('pages through multiple GetLogEvents calls to scan the whole stream', async () => {
-    // First page returns a fresh token; second page echoes it back, signaling
-    // "no more pages" (matching real CloudWatch stream-end semantics).
+  it('reads the stream tail newest-first (startFromHead:false) in one round-trip when the tail holds the error', async () => {
+    sendMock.mockResolvedValue({
+      events: [
+        { timestamp: 1, message: 'benign line 1' },
+        { timestamp: 2, message: 'nextflow.SomeException: real cause' },
+      ],
+      // No backward token → start-of-stream: the tail fetch stops after one call.
+      nextBackwardToken: null,
+    });
+
+    const result = await errorExcerptHandler(makeEvent({ runId: 'r1', stream: 'ENGINE' }));
+    // Tail-oriented extraction only needs the newest slice: one call, newest-first.
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(capturedInputs[0].startFromHead).toBe(false);
+    expect(result.found).toBe(true);
+    expect(result.lines).toEqual(['nextflow.SomeException: real cause']);
+  });
+
+  it('walks OLDER via the backward token, prepending pages so the assembled lines stay oldest-first', async () => {
+    // Newest page first (page 0), then an older page (page 1); a third call
+    // echoes the same backward token to signal start-of-stream.
     sendMock
       .mockResolvedValueOnce({
-        events: [{ timestamp: 1, message: 'benign line 1' }],
-        nextForwardToken: 'tok-a',
+        events: [{ timestamp: 3, message: '    at nextflow.Foo.bar(Foo.groovy:1)' }],
+        nextBackwardToken: 'bwd-1',
       })
       .mockResolvedValueOnce({
         events: [{ timestamp: 2, message: 'nextflow.SomeException: real cause' }],
-        nextForwardToken: 'tok-a',
+        nextBackwardToken: 'bwd-2',
+      })
+      .mockResolvedValueOnce({
+        events: [{ timestamp: 1, message: 'benign earlier line' }],
+        nextBackwardToken: 'bwd-2',
       });
 
     const result = await errorExcerptHandler(makeEvent({ runId: 'r1', stream: 'ENGINE' }));
-    expect(sendMock).toHaveBeenCalledTimes(2);
+    // Three pages: two with content + one that echoes the backward token (stop).
+    expect(sendMock).toHaveBeenCalledTimes(3);
+    expect(capturedInputs[0].startFromHead).toBe(false);
+    // Headline (from the older page) is returned through the trailing stack
+    // frame (from the newer page) — proving pages were assembled oldest-first.
     expect(result.found).toBe(true);
     expect(result.lines).toEqual(['nextflow.SomeException: real cause']);
   });

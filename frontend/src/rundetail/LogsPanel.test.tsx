@@ -82,4 +82,40 @@ describe('LogsPanel', () => {
     });
     expect(await screen.findByTestId('logs-no-match')).toBeInTheDocument();
   });
+
+  // OPT-IN tail (failed-run triage): the panel requests the newest slice first
+  // and shows an honest hint that it is doing so.
+  it('requests tail:true and renders the tail hint when the tail prop is set', async () => {
+    const getRunLogs = vi.fn().mockResolvedValue(
+      logs([{ timestamp: 1, message: '[ERROR] boom at the end' }]),
+    );
+    render(<LogsPanel runId="r1" stream="ENGINE" tail getRunLogs={getRunLogs} />);
+    await screen.findByTestId('logs-output');
+    expect(getRunLogs).toHaveBeenCalledWith({
+      runId: 'r1',
+      stream: 'ENGINE',
+      taskId: undefined,
+      tail: true,
+    });
+    expect(screen.getByTestId('logs-tail-hint')).toHaveTextContent(
+      /most recent log lines/i,
+    );
+  });
+
+  // Default (successful-run) path protection: WITHOUT the tail prop the panel
+  // must call getRunLogs WITHOUT a tail key, and render no tail hint.
+  it('does not request tail and shows no tail hint by default', async () => {
+    const getRunLogs = vi.fn().mockResolvedValue(
+      logs([{ timestamp: 1, message: 'staging genome.fasta' }]),
+    );
+    render(<LogsPanel runId="r1" stream="ENGINE" getRunLogs={getRunLogs} />);
+    await screen.findByTestId('logs-output');
+    expect(getRunLogs).toHaveBeenCalledWith({
+      runId: 'r1',
+      stream: 'ENGINE',
+      taskId: undefined,
+    });
+    expect(getRunLogs.mock.calls[0][0]).not.toHaveProperty('tail');
+    expect(screen.queryByTestId('logs-tail-hint')).not.toBeInTheDocument();
+  });
 });

@@ -256,6 +256,150 @@ describe('ingest handler pipeline', () => {
     });
   });
 
+  it('THROWS (for EventBridge retry/DLQ) on a terminal task whose enrichment is bare — never persists a status-only task', async () => {
+    const { repo, tasks } = makeRepository();
+    const { publisher, publishedTasks } = makePublisher();
+    // Enrichment fails/throttles => returns just {runId} (no timing).
+    const enricher = makeEnricher({
+      enrichTask: async (runId) => ({ runId }),
+    });
+    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+
+    const detail = {
+      runId: 'run-1',
+      status: TaskStatus.COMPLETED,
+      name: 'align',
+      arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/8888888',
+    };
+
+    // The handler must throw so EventBridge retries and ultimately DLQs the
+    // event, rather than committing a bare (timing-less) terminal task.
+    await expect(createHandler(deps)(taskEvent(detail))).rejects.toThrow(
+      /enrichment incomplete for terminal task/i,
+    );
+    // Nothing persisted or published — the event will be retried intact.
+    expect(tasks).toHaveLength(0);
+    expect(publishedTasks).toHaveLength(0);
+  });
+
+  it('does NOT throw for a non-terminal (RUNNING) task with no timing — persists best-effort', async () => {
+    const { repo, tasks } = makeRepository();
+    const { publisher } = makePublisher();
+    // A RUNNING task legitimately may have no startedAt yet; enrichment returns
+    // just {runId}. This must persist best-effort (status only), not throw.
+    const enricher = makeEnricher({ enrichTask: async (runId) => ({ runId }) });
+    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+
+    const detail = {
+      runId: 'run-1',
+      status: TaskStatus.RUNNING,
+      arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/7777777',
+    };
+    await expect(createHandler(deps)(taskEvent(detail))).resolves.toBeUndefined();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ taskId: '7777777', status: TaskStatus.RUNNING });
+  });
+
+  // --- Selective enrichment: only RUNNING + terminal call GetRunTask ---------
+  // The task event carries only status + identifiers; GetRunTask is the sole
+  // source of name/cpus/memory/timing. Those fields only become available at
+  // RUNNING (name/cpus/memory/startedAt) and at terminal (stoppedAt), so the
+  // intermediate transitions PENDING/STARTING/STOPPING must NOT enrich — that
+  // is the change that removes the per-batch API amplification.
+
+  it.each([TaskStatus.PENDING, TaskStatus.STARTING, TaskStatus.STOPPING])(
+    'does NOT call GetRunTask for a %s task event (cheap status-only update)',
+    async (status) => {
+      const { repo, tasks } = makeRepository();
+      const { publisher, publishedTasks } = makePublisher();
+      let enrichCalls = 0;
+      const enricher = makeEnricher({
+        enrichTask: async (runId, taskId) => {
+          enrichCalls += 1;
+          return { runId, taskId };
+        },
+      });
+      const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+
+      const detail = {
+        runId: 'run-1',
+        status,
+        arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/5555555',
+      };
+      await createHandler(deps)(taskEvent(detail));
+
+      // No enrichment, but the status IS persisted and published.
+      expect(enrichCalls).toBe(0);
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]).toMatchObject({ taskId: '5555555', status });
+      expect(publishedTasks).toHaveLength(1);
+    },
+  );
+
+  it('DOES call GetRunTask exactly once for a RUNNING task event (captures name/timing)', async () => {
+    const { repo, tasks } = makeRepository();
+    const { publisher } = makePublisher();
+    let enrichCalls = 0;
+    const enricher = makeEnricher({
+      enrichTask: async (runId, taskId) => {
+        enrichCalls += 1;
+        return {
+          runId,
+          taskId,
+          name: 'align',
+          startedAt: '2024-01-01T00:01:00.000Z',
+          cpus: 4,
+          memory: 8,
+        };
+      },
+    });
+    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+
+    const detail = {
+      runId: 'run-1',
+      status: TaskStatus.RUNNING,
+      arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/6666666',
+    };
+    await createHandler(deps)(taskEvent(detail));
+
+    expect(enrichCalls).toBe(1);
+    expect(tasks[0]).toMatchObject({
+      taskId: '6666666',
+      status: TaskStatus.RUNNING,
+      name: 'align',
+      startedAt: '2024-01-01T00:01:00.000Z',
+      cpus: 4,
+    });
+  });
+
+  it.each([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED])(
+    'DOES call GetRunTask for a terminal %s task event (captures final timing)',
+    async (status) => {
+      const { repo } = makeRepository();
+      const { publisher } = makePublisher();
+      let enrichCalls = 0;
+      const enricher = makeEnricher({
+        enrichTask: async (runId, taskId) => {
+          enrichCalls += 1;
+          return {
+            runId,
+            taskId,
+            startedAt: '2024-01-01T00:01:00.000Z',
+            stoppedAt: '2024-01-01T00:09:00.000Z',
+          };
+        },
+      });
+      const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+      const detail = {
+        runId: 'run-1',
+        status,
+        arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/4444444',
+      };
+      await createHandler(deps)(taskEvent(detail));
+      expect(enrichCalls).toBe(1);
+    },
+  );
+
   it('ignores a malformed (unknown detail-type) event without persisting or publishing', async () => {
     const { repo, runs, tasks } = makeRepository();
     const { publisher, publishedRuns, publishedTasks } = makePublisher();

@@ -28,10 +28,10 @@ import { SLOWEST_TASK_COLOR } from '../fleet/statusColors';
 // Softer, more layered resting shadow than a single hard drop — reads as gently
 // elevated rather than stamped-on.
 const BASE_SHADOW =
-  '0 1px 2px rgba(15, 23, 42, 0.12), 0 4px 10px rgba(15, 23, 42, 0.10)';
+  '0 1px 2px rgba(15, 23, 42, 0.10), 0 4px 12px rgba(15, 23, 42, 0.10)';
 // Slightly stronger elevation applied on hover, paired with a small lift.
 const HOVER_SHADOW =
-  '0 2px 4px rgba(15, 23, 42, 0.16), 0 8px 18px rgba(15, 23, 42, 0.18)';
+  '0 3px 6px rgba(15, 23, 42, 0.16), 0 12px 24px rgba(15, 23, 42, 0.20)';
 const HIGHLIGHT_GLOW = `0 0 0 3px ${SLOWEST_TASK_COLOR}73`; // ~45% alpha
 // A blue ring for a search match, layered like the slowest-task ring.
 const SEARCH_GLOW = '0 0 0 3px rgba(37, 99, 235, 0.65)';
@@ -43,21 +43,55 @@ const SELECTED_GLOW = '0 0 0 3px rgba(245, 158, 11, 0.55)';
 // subtle bevel and keeps the border legible across all status fills — the old
 // solid-white border washed out on lighter colors (e.g. STARTING #38bdf8).
 const INSET_EDGE =
-  'inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 -1px 0 rgba(15, 23, 42, 0.18)';
+  'inset 0 1px 0 rgba(255, 255, 255, 0.38), inset 0 -1px 0 rgba(15, 23, 42, 0.22)';
 
 /**
- * Build a subtle top-lighter / bottom-darker vertical gradient from the solid
- * status `color`, giving the box depth without altering its status meaning. The
- * gradient is a fixed pair of translucent white/black overlays layered over the
- * base color, so it works for any status color and never changes the hue.
+ * Parse a `#RRGGBB` hex color into its RGB components. Falls back to a neutral
+ * slate if the input is not a 6-digit hex (never throws) so styling is robust
+ * to an unexpected color value.
+ */
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (m == null) {
+    return { r: 100, g: 116, b: 139 }; // slate-500 fallback
+  }
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
+}
+
+/** `rgba()` string from a hex color + alpha (0–1). */
+function rgba(hex: string, alpha: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * Shift a hex color toward white (positive `amount`) or black (negative
+ * `amount`) by |amount| (0–1). Used for the diagonal gradient stops so each box
+ * reads as a lit "material" surface in its own hue: a lightened top-left and a
+ * slightly deepened bottom-right, hue preserved.
+ */
+function shade(hex: string, amount: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  const target = amount >= 0 ? 255 : 0;
+  const a = Math.abs(amount);
+  const mix = (c: number): number => Math.round(c + (target - c) * a);
+  return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
+}
+
+/**
+ * Build a diagonal (135°) gradient from a lightened tint of the status `color`
+ * through the color itself to a slightly deepened shade, giving the box a
+ * modern lit-material look with depth. Derived entirely from the status color
+ * so the hue (and its status meaning) is preserved — only lightness varies.
+ * The top-left lightening is kept modest (16%) so the white node label retains
+ * legible contrast even on lighter status hues.
  */
 function fillGradient(color: string): string {
-  return (
-    `linear-gradient(180deg, ` +
-    `rgba(255, 255, 255, 0.14) 0%, ` +
-    `rgba(255, 255, 255, 0) 45%, ` +
-    `rgba(15, 23, 42, 0.14) 100%), ${color}`
-  );
+  return `linear-gradient(135deg, ${shade(color, 0.16)} 0%, ${color} 55%, ${shade(
+    color,
+    -0.14,
+  )} 100%)`;
 }
 
 export default function TaskNode({
@@ -80,7 +114,15 @@ export default function TaskNode({
   // Resting elevation lifts to HOVER_SHADOW on hover; the state-ring glows
   // (selected/highlighted/search) always take precedence and pair with the
   // current elevation. INSET_EDGE is layered on every variant for the bevel.
-  const elevation = hovered ? HOVER_SHADOW : BASE_SHADOW;
+  // A soft AMBIENT GLOW tinted with the node's own status color is layered
+  // under the neutral elevation so each box appears to float in its own hue —
+  // a subtle modern-material cue that intensifies a touch on hover. It is kept
+  // low-alpha so it reads as ambient light, never a hard ring (the state rings
+  // above own the hard-ring role).
+  const ambientGlow = hovered
+    ? `0 6px 18px ${rgba(color, 0.42)}`
+    : `0 4px 12px ${rgba(color, 0.3)}`;
+  const elevation = `${hovered ? HOVER_SHADOW : BASE_SHADOW}, ${ambientGlow}`;
   const shadow = selected
     ? `${elevation}, ${SELECTED_GLOW}, ${INSET_EDGE}`
     : highlighted
@@ -143,7 +185,7 @@ export default function TaskNode({
           color: '#ffffff',
           border,
           boxShadow: shadow,
-          borderRadius: '10px',
+          borderRadius: '12px',
           padding: '0 10px',
           width: '100%',
           height: '100%',

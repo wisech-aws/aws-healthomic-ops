@@ -266,3 +266,95 @@ export interface RunCostEstimate {
   /** Non-null => query failed. */
   readonly error?: string | null;
 }
+
+// ── Aggregate workflow/version performance reports (workflow-performance-reports) ──
+
+/** A distinct workflow+version group in a window (for the report pickers). */
+export interface WorkflowGroup {
+  readonly workflowName: string;
+  readonly versionName: string;
+  /** Distinct workflow ids observed for this friendly group; >1 => collision. */
+  readonly workflowIds: readonly string[];
+  readonly runCount: number;
+}
+
+/** Aggregated statistics for one tracked metric across a group's runs. */
+export interface AggregateMetric {
+  readonly key: string;
+  readonly unit?: string | null;
+  /** null => Metric_Unavailable_State (no run had this metric). */
+  readonly mean?: number | null;
+  readonly median?: number | null;
+  readonly p90?: number | null;
+  /** N — runs with this metric available. */
+  readonly availableCount: number;
+  /** M — total runs in the group. */
+  readonly totalCount: number;
+}
+
+/** One run's tracked-metric values for trend charts / CSV rows (null = unavailable). */
+export interface RunPoint {
+  readonly runId: string;
+  readonly stoppedAt: string;
+  readonly status?: RunStatus | null;
+  readonly durationMs?: number | null;
+  readonly meanCpu?: number | null;
+  readonly peakCpu?: number | null;
+  readonly meanMemoryGiB?: number | null;
+  readonly peakMemoryGiB?: number | null;
+  readonly cpuHours?: number | null;
+  readonly peakConcurrentTasks?: number | null;
+  readonly taskCount?: number | null;
+  readonly failedTaskCount?: number | null;
+}
+
+/** One bucket of a fixed-size metric distribution. */
+export interface HistogramBucket {
+  readonly lo: number;
+  readonly hi: number;
+  readonly count: number;
+}
+
+/** A server-computed, fixed-size distribution of one metric (bounded buckets). */
+export interface MetricHistogram {
+  readonly key: string;
+  readonly unit?: string | null;
+  readonly buckets: readonly HistogramBucket[];
+  readonly availableCount: number;
+  readonly totalCount: number;
+}
+
+/** A server-computed, fixed-size time bin (bounded bin count). */
+export interface TimeBin {
+  readonly start: string;
+  readonly end: string;
+  readonly runCount: number;
+  readonly durationMeanMs?: number | null;
+  readonly durationP90Ms?: number | null;
+}
+
+/** A paginated page of per-run rows for the CSV export path. */
+export interface RunPointConnection {
+  readonly items: readonly RunPoint[];
+  readonly nextToken?: string | null;
+}
+
+/** Aggregated report for one workflow+version over a window (size-bounded). */
+export interface WorkflowReport {
+  readonly workflowName: string;
+  readonly versionName: string;
+  readonly window: MetricWindow;
+  readonly runCount: number;
+  readonly succeeded: number;
+  readonly failed: number;
+  readonly cancelled: number;
+  /** true => multiple workflow ids share this friendly (name, version). */
+  readonly collision: boolean;
+  readonly metrics: readonly AggregateMetric[];
+  /** Fixed-size chart series (bounded regardless of run count). */
+  readonly durationHistogram?: MetricHistogram | null;
+  readonly timeBins: readonly TimeBin[];
+  /** A small bounded recent-run sample for on-screen context only. */
+  readonly sample: readonly RunPoint[];
+  readonly sampleCapped: boolean;
+}

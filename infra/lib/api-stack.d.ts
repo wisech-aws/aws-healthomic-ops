@@ -93,6 +93,44 @@ export declare class ApiStack extends Stack {
      */
     private addMetricsResolver;
     /**
+     * Lambda-backed resolver for the `getRunCostEstimate` query.
+     *
+     * Mirrors `addMetricsResolver()`: a NodejsFunction
+     * (ingest/src/costHandler.ts) exposed as an AppSync Lambda data source,
+     * Cognito-authorized like the other reads. It bundles the same
+     * `@smithy/signature-v4`/`@aws-crypto/sha256-js` CJS-in-ESM deps (for the
+     * DYNAMIC-storage RUN_FILESYSTEM PromQL query), so it carries the identical
+     * ESM `createRequire` banner shim.
+     *
+     * Least-privilege IAM:
+     * - `pricing:GetProducts`/`pricing:DescribeServices` on Resource '*' — the
+     *   Price List API does NOT support resource-level scoping, a DOCUMENTED
+     *   exception to the no-wildcard-resource pattern (like the CloudWatch
+     *   metrics grant). NOT a wildcard action.
+     * - `cloudwatch:GetMetricData`/`cloudwatch:ListMetrics` on Resource '*' — the
+     *   same CloudWatch PromQL grant as the metrics Lambda (no resource-level
+     *   scoping). NOT a wildcard action.
+     * - `omics:GetRun` scoped to run ARNs for the run window/storage fields.
+     * - a DynamoDB grant scoped to the single-table ARN, limited to
+     *   GetItem/PutItem/UpdateItem for the rate-card cache item.
+     *
+     * No statement carries `Action: '*'`.
+     */
+    private addCostResolver;
+    /**
+     * Lambda-backed resolver for the `listWorkflowGroups` and `getWorkflowReport`
+     * queries (workflow-performance-reports). One NodejsFunction backs both
+     * fields, dispatched on `info.fieldName` (direct-Lambda-resolver router, like
+     * `addLogsResolver`). Both queries are Cognito-authorized like the other
+     * reads.
+     *
+     * Least-privilege IAM: the Lambda only reads the single table — a `Query` on
+     * GSI2 (per-group windowed report) and a `Scan` (the group picker). No
+     * CloudWatch/pricing/omics grants are needed because the Run_Summary rollups
+     * are pre-computed at ingest time; the report is a pure read-and-aggregate.
+     */
+    private addReportsResolver;
+    /**
      * Stack outputs consumed by the frontend build (task 12.1).
      *
      * The AppSync GraphQL endpoint URL, Cognito user pool ID, app client ID, and

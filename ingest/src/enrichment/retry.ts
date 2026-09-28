@@ -18,6 +18,8 @@
  * like any other error (Req 2.5).
  */
 
+import { omicsRateLimiter } from './rateLimiter.js';
+
 /** Per-call timeout budget in milliseconds (Req 2.5). */
 export const CALL_TIMEOUT_MS = 10_000;
 
@@ -86,6 +88,14 @@ export interface RetryOptions {
    * identifier are logged (Req 2.5).
    */
   logger?: (message: string, error?: unknown) => void;
+  /**
+   * Optional rate limiter awaited before EACH attempt so all enrichment calls
+   * are paced within the HealthOmics API budget (~10 TPS). Defaults to the
+   * process-global {@link omicsRateLimiter}; pass a no-op/custom limiter in
+   * tests. Awaiting before every attempt (not just the first) ensures retries
+   * also consume from the budget rather than bursting past it.
+   */
+  rateLimiter?: { acquire: () => Promise<void> };
 }
 
 /** Default real sleep. Unref'd not needed here since it always resolves. */
@@ -182,10 +192,15 @@ export async function callWithRetry<T>(
   const maxDelayMs = options.maxDelayMs ?? MAX_RETRY_DELAY_MS;
   const sleep = options.sleep ?? defaultSleep;
   const log = options.logger ?? ((message, error) => console.warn(message, error));
+  const rateLimiter = options.rateLimiter ?? omicsRateLimiter;
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
+      // Pace within the HealthOmics API budget before every attempt so a burst
+      // of concurrent enrichments (e.g. a several-thousand-run batch) cannot
+      // exceed ~10 TPS and self-inflict a throttling storm.
+      await rateLimiter.acquire();
       const value = await withTimeout(fn, operation, identifier, timeoutMs);
       return { ok: true, value };
     } catch (err) {

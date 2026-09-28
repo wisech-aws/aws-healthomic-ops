@@ -13,10 +13,14 @@
  * interval is still open the summary is flagged `partial` because the values
  * are provisional lower bounds (Req 2.7, 10.4).
  *
- * The peak-memory metric always carries an unconfirmed-units note and is
- * computed as a unit-agnostic sum with no unit conversion, so only its display
- * label changes if the confirmed unit differs (Req 11.1, 11.2, 11.3;
- * CONFIRM AGAINST AWS DOCS).
+ * The peak-memory metric is a sum of each concurrently-running task's reserved
+ * memory, reported in gibibytes (GiB). The unit is confirmed against the AWS
+ * HealthOmics API reference — `TaskListItem.memory` / `GetRunTask` `memory` is
+ * documented as the task's memory in gigabytes (HealthOmics uses gibibytes in
+ * practice, e.g. a task reporting `6` maps to the 6,442,450,944-byte / 6 GiB
+ * reservation surfaced by the run-utilization metrics). The raw integer sum is
+ * therefore already in GiB and is surfaced with that unit (Req 11.1, 11.2,
+ * 11.3).
  */
 
 import type { Task } from '../api/types';
@@ -26,13 +30,21 @@ import { peakConcurrent, toIntervals } from './intervals';
 const MS_PER_HOUR = 3_600_000;
 
 /**
- * The unconfirmed-units caveat attached to the peak memory metric. The memory
- * unit reported by AWS HealthOmics is not yet confirmed against AWS docs, so
- * the raw aggregated value is surfaced under this note rather than converted
- * into any unit (Req 11.1, 11.2).
+ * The unit of the peak-memory metric, confirmed against the AWS HealthOmics API
+ * reference (`TaskListItem` / `GetRunTask` `memory` = the task's memory in
+ * gibibytes). The raw summed value is already in this unit, so it is surfaced
+ * directly with the `GiB` label — no conversion is applied.
  */
-export const MEMORY_UNITS_UNCONFIRMED_NOTE =
-  'Memory unit is unconfirmed pending AWS documentation confirmation; the raw value is not unit-converted.';
+export const MEMORY_UNIT = 'GiB';
+
+/**
+ * A short clarifying note for the peak-memory metric: it is the peak SUM of
+ * reserved memory across concurrently-running tasks (a reservation-based
+ * footprint), in GiB. This documents what the number means rather than
+ * flagging an unknown unit — the unit is now confirmed (see {@link MEMORY_UNIT}).
+ */
+export const MEMORY_METRIC_NOTE =
+  'Peak sum of reserved memory across concurrently-running tasks, in gibibytes (GiB).';
 
 /**
  * A resource metric that may be unavailable. `available` distinguishes a real
@@ -44,8 +56,10 @@ export interface ResourceMetric {
   readonly value: number | null;
   /** True when the metric's input field exists on at least one started task. */
   readonly available: boolean;
-  /** Optional caveat (e.g. the memory unconfirmed-units note). */
+  /** Optional caveat or clarifying note (e.g. the memory metric note). */
   readonly note?: string;
+  /** Optional unit label for the value (e.g. `GiB` for memory). */
+  readonly unit?: string;
 }
 
 /** A run's aggregated resource footprint. */
@@ -56,7 +70,7 @@ export interface ResourceSummary {
   readonly peakConcurrentCpus: ResourceMetric;
   /** Total CPU-hours = Σ (interval duration hours × interval cpus). */
   readonly cpuHours: ResourceMetric;
-  /** Peak sum of `memory` across concurrently-running tasks (units unconfirmed). */
+  /** Peak sum of reserved `memory` (GiB) across concurrently-running tasks. */
   readonly peakConcurrentMemory: ResourceMetric;
   /** True when any interval is still open (values are provisional lower bounds). */
   readonly partial: boolean;
@@ -71,9 +85,10 @@ export interface ResourceSummary {
  *   unavailable (value `null`) when no interval carries a non-null `cpus`.
  * - `cpuHours`: `Σ (durationMs(i)/3_600_000 × i.cpus)` over intervals with
  *   non-null `cpus`; unavailable when none carry a non-null `cpus`.
- * - `peakConcurrentMemory`: peak summed `memory` over concurrent intervals,
- *   a unit-agnostic sum with no conversion; always carries the unconfirmed
- *   units note; unavailable when no interval carries a non-null `memory`.
+ * - `peakConcurrentMemory`: peak summed `memory` over concurrent intervals, in
+ *   GiB (the confirmed unit; the raw integer sum is already in GiB, no
+ *   conversion); carries the clarifying note and `GiB` unit; unavailable when
+ *   no interval carries a non-null `memory`.
  * - `partial`: true iff any interval is `open`.
  */
 export function summarizeResources(
@@ -111,19 +126,23 @@ export function summarizeResources(
     ? { value: cpuHoursValue, available: true }
     : { value: null, available: false };
 
-  // Peak concurrent memory: unit-agnostic sum, no conversion (Req 11.1–11.3).
-  // The units note is attached ALWAYS, whether or not the metric is available.
+  // Peak concurrent memory: sum of reserved memory (GiB) over concurrent
+  // intervals. The unit is confirmed (GiB, see MEMORY_UNIT) so the raw integer
+  // sum is surfaced directly with that unit; the clarifying note documents what
+  // the number means. Attached whether or not the metric is available.
   const peakMemory = peakConcurrent(intervals, (i) => i.memory ?? 0).peakWeight;
   const peakConcurrentMemory: ResourceMetric = hasMemory
     ? {
         value: peakMemory,
         available: true,
-        note: MEMORY_UNITS_UNCONFIRMED_NOTE,
+        note: MEMORY_METRIC_NOTE,
+        unit: MEMORY_UNIT,
       }
     : {
         value: null,
         available: false,
-        note: MEMORY_UNITS_UNCONFIRMED_NOTE,
+        note: MEMORY_METRIC_NOTE,
+        unit: MEMORY_UNIT,
       };
 
   return {

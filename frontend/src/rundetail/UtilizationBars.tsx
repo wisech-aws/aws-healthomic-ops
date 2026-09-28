@@ -24,10 +24,11 @@
  * limit series was measured, the bar shows peak+mean with NO ceiling — never a
  * fabricated limit (Req 3.3, 8.4).
  *
- * The MEMORY family's bar carries the same units caveat the rest of the app
- * applies to memory ({@link MEMORY_UNITS_UNCONFIRMED_NOTE} from
- * `metrics/resourceSummary.ts`) so the compact view is no less honest than the
- * line charts it replaces.
+ * The MEMORY family's values are raw byte counts (CloudWatch `__unit__` = `By`)
+ * and are formatted into adaptive binary units (…/MiB/GiB) by
+ * {@link formatMetricValue}, so the bar reads e.g. "6.00 GiB". A short note
+ * ({@link MEASURED_MEMORY_NOTE}) clarifies these are measured (actual) bytes,
+ * distinguishing them from the reservation-based derived resource summary.
  *
  * When `taskMetrics` is `null` OR yields no chart pairs, it renders an explicit
  * "utilization unavailable for this task" state
@@ -46,7 +47,16 @@ import type { TaskMetrics } from '../metrics/joinMetricsToTasks';
 import { chartSeries } from '../metrics/chartSeries';
 import type { ChartSeriesPair } from '../metrics/chartSeries';
 import { formatMetricValue } from '../metrics/formatMetricValue';
-import { MEMORY_UNITS_UNCONFIRMED_NOTE } from '../metrics/resourceSummary';
+
+/**
+ * Clarifying note for the measured MEMORY bar. These are ACTUAL measured byte
+ * counts from CloudWatch (`__unit__` = `By`), formatted into binary units
+ * (MiB/GiB) for display — distinct from the reservation-based derived resource
+ * summary (which reports reserved GiB). The unit is confirmed, so this states
+ * what the number is rather than flagging it as unknown.
+ */
+export const MEASURED_MEMORY_NOTE =
+  'Measured (actual) memory use, reported by CloudWatch in bytes and shown here in binary units (MiB/GiB).';
 
 /**
  * Turns a dotted metric name (e.g. `aws.omics.task.cpu.usage`) into a short
@@ -183,7 +193,7 @@ function UtilizationBar({
             color="text-status-inactive"
             data-testid={`task-metric-bar-${taskId}-${pair.metricName}-units-note`}
           >
-            {MEMORY_UNITS_UNCONFIRMED_NOTE}
+            {MEASURED_MEMORY_NOTE}
           </Box>
         )}
       </SpaceBetween>

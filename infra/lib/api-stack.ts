@@ -25,6 +25,7 @@ const INGEST_PROJECT_ROOT = path.join(__dirname, '..', '..', 'ingest');
 const LOGS_HANDLER_ENTRY = path.join(INGEST_PROJECT_ROOT, 'src', 'logsHandler.ts');
 const METRICS_HANDLER_ENTRY = path.join(INGEST_PROJECT_ROOT, 'src', 'metricsHandler.ts');
 const COST_HANDLER_ENTRY = path.join(INGEST_PROJECT_ROOT, 'src', 'costHandler.ts');
+const REPORTS_HANDLER_ENTRY = path.join(INGEST_PROJECT_ROOT, 'src', 'reportsHandler.ts');
 const INGEST_DEPS_LOCK_FILE = path.join(INGEST_PROJECT_ROOT, 'package-lock.json');
 
 /** HealthOmics writes all run logs to this CloudWatch log group. */
@@ -153,6 +154,7 @@ export class ApiStack extends Stack {
     this.addLogsResolver();
     this.addMetricsResolver();
     this.addCostResolver(props.dataStack.table);
+    this.addReportsResolver(props.dataStack.table, props.dataStack.gsi2Name);
 
     this.addOutputs();
   }
@@ -188,6 +190,16 @@ export class ApiStack extends Stack {
       bundling: {
         format: OutputFormat.ESM,
         externalModules: ['@aws-sdk/*'],
+        // The @smithy HTTP handler (bundled via `NodeHttpHandler`, used to set
+        // the CloudWatch Logs client's connect/request timeouts) internally uses
+        // CommonJS `require(...)` (e.g. `node:https`). Bundling that CJS into an
+        // ESM output makes those dynamic requires fail at runtime ("Dynamic
+        // require of \"node:https\" is not supported"), which crashes the
+        // function at INIT and surfaces in the UI as "Logs could not be loaded".
+        // Inject a createRequire shim so the bundled CJS modules can resolve
+        // their requires under ESM (same fix the ingest Lambda uses).
+        banner:
+          "import{createRequire as __createRequire}from'module';const require=__createRequire(import.meta.url);",
       },
     });
 
@@ -430,6 +442,66 @@ export class ApiStack extends Stack {
     costDataSource.createResolver('getRunCostEstimateResolver', {
       typeName: 'Query',
       fieldName: 'getRunCostEstimate',
+    });
+  }
+
+  /**
+   * Lambda-backed resolver for the `listWorkflowGroups` and `getWorkflowReport`
+   * queries (workflow-performance-reports). One NodejsFunction backs both
+   * fields, dispatched on `info.fieldName` (direct-Lambda-resolver router, like
+   * `addLogsResolver`). Both queries are Cognito-authorized like the other
+   * reads.
+   *
+   * Least-privilege IAM: the Lambda only reads the single table — a `Query` on
+   * GSI2 (per-group windowed report) and a `Scan` (the group picker). No
+   * CloudWatch/pricing/omics grants are needed because the Run_Summary rollups
+   * are pre-computed at ingest time; the report is a pure read-and-aggregate.
+   */
+  private addReportsResolver(
+    table: DataStack['table'],
+    gsi2Name: string,
+  ): void {
+    const reportsFn = new NodejsFunction(this, 'ReportsFunction', {
+      runtime: Runtime.NODEJS_20_X,
+      entry: REPORTS_HANDLER_ENTRY,
+      handler: 'handler',
+      projectRoot: INGEST_PROJECT_ROOT,
+      depsLockFilePath: INGEST_DEPS_LOCK_FILE,
+      timeout: Duration.seconds(30),
+      environment: {
+        REPORTS_REGION: Stack.of(this).region,
+        REPORTS_TABLE_NAME: table.tableName,
+        REPORTS_GSI2_NAME: gsi2Name,
+      },
+      bundling: {
+        format: OutputFormat.ESM,
+        externalModules: ['@aws-sdk/*'],
+        banner:
+          "import{createRequire as __createRequire}from'module';const require=__createRequire(import.meta.url);",
+      },
+    });
+
+    // Read-only DynamoDB access scoped to the table (and its indexes, which
+    // `grant` covers via the table ARN + `/index/*`). Query backs the per-group
+    // GSI2 report; Scan backs the group picker. No write actions.
+    table.grant(reportsFn, 'dynamodb:Query', 'dynamodb:Scan');
+
+    const reportsDataSource = this.api.addLambdaDataSource(
+      'ReportsDataSource',
+      reportsFn,
+    );
+
+    reportsDataSource.createResolver('listWorkflowGroupsResolver', {
+      typeName: 'Query',
+      fieldName: 'listWorkflowGroups',
+    });
+    reportsDataSource.createResolver('getWorkflowReportResolver', {
+      typeName: 'Query',
+      fieldName: 'getWorkflowReport',
+    });
+    reportsDataSource.createResolver('listWorkflowRunPointsResolver', {
+      typeName: 'Query',
+      fieldName: 'listWorkflowRunPoints',
     });
   }
 

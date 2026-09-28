@@ -21,9 +21,10 @@
  * against the surrounding light Cloudscape theme.
  */
 .task-graph {
-  background-color: #f1f5f9; /* slate-100 */
-  border: 1px solid #e2e8f0; /* slate-200 */
-  border-radius: 8px;
+  background-color: #eef2f7; /* fallback for the gradient below */
+  background-image: linear-gradient(180deg, #eef2f7 0%, #e5ebf2 100%);
+  border: 1px solid #dbe2ec; /* soft slate hairline */
+  border-radius: 10px;
 }
 
 /* Let the React Flow renderer show the canvas surface through it. */

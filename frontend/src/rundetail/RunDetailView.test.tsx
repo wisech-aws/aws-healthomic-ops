@@ -58,6 +58,7 @@ vi.mock('reactflow', () => ({
   useReactFlow: () => ({ fitView: () => {} }),
   // Named exports used by the component / graph layout, stubbed for jsdom.
   Background: () => null,
+  BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
   Controls: () => null,
   MarkerType: { ArrowClosed: 'arrowclosed' },
   Position: { Top: 'top', Bottom: 'bottom', Left: 'left', Right: 'right' },
@@ -1370,30 +1371,56 @@ describe('RunDetailView', () => {
     expect(screen.queryByTestId('node-search-count')).not.toBeInTheDocument();
 
     // Type a query that matches only the "align_reads" node.
-    fireEvent.change(input.querySelector('input')!, {
+    const inputEl = input.querySelector('input')!;
+    fireEvent.change(inputEl, {
       target: { value: 'align' },
     });
 
-    // Match count badge shows 1 match.
-    expect(screen.getByTestId('node-search-count')).toHaveTextContent('1 match');
+    // The INPUT itself is fully controlled and instant: its value reflects the
+    // typed text SYNCHRONOUSLY (no wait), proving the box is not debounced —
+    // only the downstream matching/dimming/fit work is.
+    expect(inputEl).toHaveValue('align');
 
-    // The matching node is emphasized and not dimmed; the other is dimmed.
-    expect(screen.getByTestId('node-align')).toHaveAttribute(
-      'data-search-match',
-      'true',
-    );
-    expect(screen.getByTestId('node-align')).toHaveAttribute('data-dimmed', 'false');
-    expect(screen.getByTestId('node-call')).toHaveAttribute(
-      'data-search-match',
-      'false',
-    );
-    expect(screen.getByTestId('node-call')).toHaveAttribute('data-dimmed', 'true');
+    // Matching/dimming is driven by the debounced query (~200ms), so wait for
+    // the downstream update. The matching node is emphasized and not dimmed;
+    // the other is dimmed. The match count badge shows 1 match.
+    await waitFor(() => {
+      expect(screen.getByTestId('node-search-count')).toHaveTextContent(
+        '1 match',
+      );
+      expect(screen.getByTestId('node-align')).toHaveAttribute(
+        'data-search-match',
+        'true',
+      );
+      expect(screen.getByTestId('node-align')).toHaveAttribute(
+        'data-dimmed',
+        'false',
+      );
+      expect(screen.getByTestId('node-call')).toHaveAttribute(
+        'data-search-match',
+        'false',
+      );
+      expect(screen.getByTestId('node-call')).toHaveAttribute(
+        'data-dimmed',
+        'true',
+      );
+    });
 
-    // Clearing the query restores the normal (undimmed) view.
-    fireEvent.change(input.querySelector('input')!, { target: { value: '' } });
-    expect(screen.getByTestId('node-align')).toHaveAttribute('data-dimmed', 'false');
-    expect(screen.getByTestId('node-call')).toHaveAttribute('data-dimmed', 'false');
-    expect(screen.queryByTestId('node-search-count')).not.toBeInTheDocument();
+    // Clearing the query restores the normal (undimmed) view after the debounce
+    // settles back to an empty query (searchActive => false).
+    fireEvent.change(inputEl, { target: { value: '' } });
+    expect(inputEl).toHaveValue('');
+    await waitFor(() => {
+      expect(screen.getByTestId('node-align')).toHaveAttribute(
+        'data-dimmed',
+        'false',
+      );
+      expect(screen.getByTestId('node-call')).toHaveAttribute(
+        'data-dimmed',
+        'false',
+      );
+      expect(screen.queryByTestId('node-search-count')).not.toBeInTheDocument();
+    });
   });
 
   it('resolves a stale TASK selection (taskId no longer in the list) to the run-level context rather than erroring (Req 4.7)', async () => {

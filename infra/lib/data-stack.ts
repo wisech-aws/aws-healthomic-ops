@@ -12,6 +12,14 @@ import { Construct } from 'constructs';
 const GSI1_INDEX_NAME = 'GSI1';
 
 /**
+ * Name of the Workflow_Group index for aggregate reports
+ * (workflow-performance-reports Req 2.2). Run_Summary items are indexed by
+ * `GSI2PK = WF#<name>#<version>` and `GSI2SK = <terminal timestamp>` so a
+ * report is a single time-ordered range query per group.
+ */
+const GSI2_INDEX_NAME = 'GSI2';
+
+/**
  * DataStack — the stateful layer.
  *
  * Owns the DynamoDB single table (on-demand, PITR, GSI1) that holds run, task,
@@ -41,6 +49,12 @@ export class DataStack extends Stack {
   /** Name of the recency-ordered global secondary index. */
   public readonly gsi1Name: string = GSI1_INDEX_NAME;
 
+  /** ARN of the GSI2 Workflow_Group index (table ARN + `/index/GSI2`). */
+  public readonly gsi2Arn: string;
+
+  /** Name of the Workflow_Group index used by aggregate reports. */
+  public readonly gsi2Name: string = GSI2_INDEX_NAME;
+
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
@@ -67,9 +81,23 @@ export class DataStack extends Stack {
       projectionType: ProjectionType.ALL,
     });
 
+    // GSI2 supports the aggregate Reports feature: all Run_Summary rows for one
+    // Workflow_Group (`GSI2PK = WF#<name>#<version>`) ordered by terminal
+    // timestamp (`GSI2SK`), so a windowed report is a single range query per
+    // group (workflow-performance-reports Req 2.2). ALL projection so the
+    // Reports Lambda can aggregate every summary attribute without a follow-up
+    // GetItem. On-demand capacity is inherited from the table's billing mode.
+    this.table.addGlobalSecondaryIndex({
+      indexName: GSI2_INDEX_NAME,
+      partitionKey: { name: 'GSI2PK', type: AttributeType.STRING },
+      sortKey: { name: 'GSI2SK', type: AttributeType.STRING },
+      projectionType: ProjectionType.ALL,
+    });
+
     this.tableName = this.table.tableName;
     this.tableArn = this.table.tableArn;
     this.gsi1Arn = `${this.table.tableArn}/index/${GSI1_INDEX_NAME}`;
+    this.gsi2Arn = `${this.table.tableArn}/index/${GSI2_INDEX_NAME}`;
 
     // Stack outputs: resource names and ARNs are exposed for downstream stacks
     // and injection into the frontend build configuration (Req 11.7).
@@ -89,6 +117,12 @@ export class DataStack extends Stack {
       value: this.gsi1Arn,
       description: 'ARN of the GSI1 recency-ordered global secondary index.',
       exportName: `${this.stackName}-Gsi1Arn`,
+    });
+
+    new CfnOutput(this, 'Gsi2Arn', {
+      value: this.gsi2Arn,
+      description: 'ARN of the GSI2 Workflow_Group index used by aggregate reports.',
+      exportName: `${this.stackName}-Gsi2Arn`,
     });
   }
 }

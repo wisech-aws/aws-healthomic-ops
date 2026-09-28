@@ -47,9 +47,10 @@
  * state, and the panel itself is responsible for its own
  * loading/error/unavailable/ready presentation.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactFlow, {
   Background,
+  BackgroundVariant,
   Controls,
   type Node,
   type ReactFlowInstance,
@@ -427,6 +428,11 @@ export default function RunDetailView({
   // failure/absence just means no excerpt is shown, never an error banner of
   // its own (the run-failure banner above it already reports the failure).
   const [runErrorExcerpt, setRunErrorExcerpt] = useState<ErrorExcerpt | null>(null);
+  // Whether the run-level error-excerpt fetch (`getErrorExcerpt`, ENGINE stream)
+  // is currently in flight, so the failure banner can show a progress indicator
+  // ("Extracting error details…") instead of silently showing nothing during
+  // the brief backend read. Independent of the run/tasks load.
+  const [runExcerptLoading, setRunExcerptLoading] = useState(false);
   // When on, the operator has chosen to view the Static DAG even though the
   // Inferred (timing) DAG is shown by default. A view-only override of the
   // default layer with no refetch (Req 8.3). Defaults to false, so the Inferred
@@ -452,7 +458,15 @@ export default function RunDetailView({
   // DAG node search (case-insensitive substring on task name). Empty query =>
   // no active search (nothing dimmed). Matches are emphasized and the rest
   // dimmed; the view fits to the matches.
-  const [nodeSearchQuery, setNodeSearchQuery] = useState('');
+  //
+  // PERF: this holds the DEBOUNCED query only. The immediate, per-keystroke
+  // input value and its debounce live entirely inside {@link NodeSearchBox} so
+  // typing re-renders just that small box — NOT this large view (which would
+  // otherwise reconcile the whole ReactFlow graph, the analysis stack, and the
+  // unmemoized toolbar/legend on every keystroke, causing the typing lag). The
+  // box only pushes its settled value up here (~200ms after typing stops), so
+  // this view re-renders once per settled query rather than once per keystroke.
+  const [debouncedNodeSearchQuery, setDebouncedNodeSearchQuery] = useState('');
   // The live React Flow instance, captured on init so a search can fit the view
   // to the matching nodes.
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null);
@@ -580,11 +594,14 @@ export default function RunDetailView({
       // excerpt is shown, never an error of its own.
       setRunErrorExcerpt(null);
       if (loadedRun?.status === 'FAILED') {
+        setRunExcerptLoading(true);
         try {
           const excerpt = await getErrorExcerpt({ runId, stream: 'ENGINE' });
           setRunErrorExcerpt(excerpt);
         } catch {
           setRunErrorExcerpt(null);
+        } finally {
+          setRunExcerptLoading(false);
         }
       }
     } catch (error) {
@@ -711,10 +728,16 @@ export default function RunDetailView({
     [showFailedOnly, failedTasks, tasks],
   );
 
-  // Resolve `now` once per render pass so every analytics panel below computes
-  // deterministically against the same instant (Req 1.5, 10.4). Injectable via
-  // the `now` prop for tests; defaults to the current time.
-  const nowMs = now ?? Date.now();
+  // Resolve `now` ONCE per mount (or when the injected `now` prop changes) so
+  // every analytics panel below computes deterministically against the same
+  // instant (Req 1.5, 10.4). Injectable via the `now` prop for tests; defaults
+  // to the current time. Memoized so `nowMs` is a STABLE reference across
+  // renders: a bare `now ?? Date.now()` would mint a fresh timestamp every
+  // render, giving `detailPanel` → `flyoutNode` new identities and retriggering
+  // the fly-out slot-registration effect below, which sets parent state and
+  // re-renders us — an infinite render loop (React #185) the moment a task is
+  // selected. The memo preserves the "same instant" semantic and breaks that loop.
+  const nowMs = useMemo(() => now ?? Date.now(), [now]);
 
   // Per-run resource summary (peak concurrent CPUs, CPU-hours, peak memory) —
   // each metric reports "unavailable" rather than a fabricated 0 when its input
@@ -868,18 +891,22 @@ export default function RunDetailView({
           runLogsTabId={runLogsTabId}
           onRunLogsTabChange={setRunLogsTabId}
           getErrorExcerpt={getErrorExcerpt}
+          runFailed={run?.status === 'FAILED'}
+          now={nowMs}
           onClose={() => setLogsSelection(null)}
         />
       ) : null,
     [
       splitPanelOpen,
       run?.runId,
+      run?.status,
       runId,
       selectedTask,
       logsSelection,
       selectedTaskMetrics,
       runLogsTabId,
       getErrorExcerpt,
+      nowMs,
     ],
   );
 
@@ -959,13 +986,15 @@ export default function RunDetailView({
     return { nodes: [], edges: [] };
   }, [layer, staticGraph, visibleTasks, slowestId, selectedTaskId]);
 
-  // Node-search matches over the current flow nodes (Req: node search). Empty
-  // query yields an empty set (no active search).
+  // Node-search matches over the current flow nodes (Req: node search). Keyed off
+  // the debounced query so matching/dimming/fit only recompute after typing
+  // settles. An empty (debounced) query yields an empty set (no active search).
   const searchMatchIds = useMemo(
-    () => matchNodeIds(flow.nodes, nodeSearchQuery),
-    [flow.nodes, nodeSearchQuery],
+    () => matchNodeIds(flow.nodes, debouncedNodeSearchQuery),
+    [flow.nodes, debouncedNodeSearchQuery],
   );
-  const searchActive = searchMatchIds.size > 0 || nodeSearchQuery.trim() !== '';
+  const searchActive =
+    searchMatchIds.size > 0 || debouncedNodeSearchQuery.trim() !== '';
 
   // Decorate flow nodes with search emphasis/dimming. When no search is active,
   // nodes are returned unchanged (referentially, per node) so nothing dims.
@@ -1191,8 +1220,23 @@ export default function RunDetailView({
                   statusMessage above ("...review the CloudWatch logs to debug
                   the failure") actionable without a manual log dig. Never
                   shown when nothing was found (never a fabricated excerpt). */}
-              {runErrorExcerpt?.found && (
-                <ErrorExcerptBlock excerpt={runErrorExcerpt} testIdPrefix="run" />
+              {/* While the excerpt is being extracted from the engine log
+                  stream, show a small progress indicator so the operator knows
+                  error details are being fetched (the read is fast but not
+                  instant). Once done, either the excerpt or nothing is shown. */}
+              {runExcerptLoading ? (
+                <Box
+                  variant="small"
+                  color="text-status-inactive"
+                  data-testid="run-error-excerpt-loading"
+                >
+                  <Spinner size="normal" /> Extracting error details from the
+                  engine log…
+                </Box>
+              ) : (
+                runErrorExcerpt?.found && (
+                  <ErrorExcerptBlock excerpt={runErrorExcerpt} testIdPrefix="run" />
+                )
               )}
             </SpaceBetween>
           </Alert>
@@ -1222,8 +1266,7 @@ export default function RunDetailView({
                 showFailedOnly={showFailedOnly}
                 onShowFailedOnlyChange={setShowFailedOnly}
                 failedCount={failedCount}
-                nodeSearchQuery={nodeSearchQuery}
-                onNodeSearchQueryChange={setNodeSearchQuery}
+                onDebouncedQueryChange={setDebouncedNodeSearchQuery}
                 searchMatchCount={searchMatchIds.size}
                 showNodeSearch={
                   visibleTasks.length > 0 && layer !== 'Timeline_View'
@@ -1253,7 +1296,12 @@ export default function RunDetailView({
               elementsSelectable={false}
               proOptions={{ hideAttribution: true }}
             >
-              <Background gap={16} color="#cbd5e1" />
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={20}
+                size={1.4}
+                color="#c3ccd8"
+              />
               <Controls showInteractive={false} />
             </ReactFlow>
           </div>
@@ -1302,7 +1350,12 @@ export default function RunDetailView({
               elementsSelectable
               proOptions={{ hideAttribution: true }}
             >
-              <Background gap={16} color="#cbd5e1" />
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={20}
+                size={1.4}
+                color="#c3ccd8"
+              />
               <Controls showInteractive={false} />
             </ReactFlow>
           </div>
@@ -1833,6 +1886,85 @@ function TaskStatusLegend({
 }
 
 /**
+ * Self-contained DAG node-search box (perf isolation).
+ *
+ * PROBLEM this solves: previously the search input was bound directly to a
+ * state variable owned by {@link RunDetailView}. That view is very large — it
+ * renders the full-width ReactFlow DAG (which can hold hundreds of nodes), the
+ * analysis stack, the run-level context band, and the (unmemoized) toolbar +
+ * legend. Binding the input at that level meant EVERY keystroke re-rendered the
+ * entire view and forced React to reconcile that whole subtree, which is the
+ * source of the typing lag in the search box.
+ *
+ * FIX: this component owns the immediate, per-keystroke input value locally, so
+ * typing re-renders ONLY this small box. It debounces that value internally
+ * (~200ms) and pushes just the settled value up to the parent via
+ * `onDebouncedQueryChange`. The parent therefore re-renders (and recomputes the
+ * expensive match/dim/fitView work) at most once per settled query rather than
+ * once per keystroke. The component is wrapped in `React.memo` so a parent
+ * re-render for unrelated reasons (e.g. a live task update) does not re-render
+ * or reset the box while the operator is typing.
+ *
+ * The match-count badge is rendered here (keyed off the local query being
+ * non-empty, matching the previous "show while typing" behavior) using the
+ * `searchMatchCount` the parent computes from the debounced query.
+ */
+const NodeSearchBox = memo(function NodeSearchBox({
+  onDebouncedQueryChange,
+  searchMatchCount,
+}: {
+  onDebouncedQueryChange: (value: string) => void;
+  searchMatchCount: number;
+}): React.JSX.Element {
+  // Instant, fully-controlled input value — updates synchronously on every
+  // keystroke so the box never feels laggy. Local to this small component.
+  const [query, setQuery] = useState('');
+
+  // Debounce the local query and push only the settled value to the parent.
+  // A pending timeout is cleared on each change (and on unmount) so only the
+  // last keystroke takes effect, throttling the parent's expensive downstream
+  // work (match computation, per-node re-decoration, animated fitView).
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      onDebouncedQueryChange(query);
+    }, 200);
+    return () => clearTimeout(handle);
+  }, [query, onDebouncedQueryChange]);
+
+  return (
+    <div
+      data-testid="node-search"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        maxWidth: 420,
+        flex: '1 1 240px',
+      }}
+    >
+      <div style={{ flex: 1 }}>
+        <Input
+          type="search"
+          value={query}
+          onChange={({ detail }) => setQuery(detail.value)}
+          placeholder="Search tasks by name…"
+          ariaLabel="Search task nodes by name"
+          data-testid="node-search-input"
+        />
+      </div>
+      {query.trim() !== '' && (
+        <span data-testid="node-search-count">
+          <Badge color={searchMatchCount > 0 ? 'blue' : 'grey'}>
+            {searchMatchCount} match
+            {searchMatchCount === 1 ? '' : 'es'}
+          </Badge>
+        </span>
+      )}
+    </div>
+  );
+});
+
+/**
  * Consolidated DAG toolbar (Req 3.3): the DAG's controls presented as a single
  * compact toolbar ON the DAG rather than as separate stacked blocks. It groups,
  * on one wrapping row directly above the diagram:
@@ -1856,8 +1988,7 @@ function DagToolbar({
   showFailedOnly,
   onShowFailedOnlyChange,
   failedCount,
-  nodeSearchQuery,
-  onNodeSearchQueryChange,
+  onDebouncedQueryChange,
   searchMatchCount,
   showNodeSearch,
 }: {
@@ -1866,8 +1997,13 @@ function DagToolbar({
   showFailedOnly: boolean;
   onShowFailedOnlyChange: (checked: boolean) => void;
   failedCount: number;
-  nodeSearchQuery: string;
-  onNodeSearchQueryChange: (value: string) => void;
+  /**
+   * Called with the DEBOUNCED search query (~200ms after typing settles). The
+   * immediate per-keystroke value is owned by {@link NodeSearchBox}, so the
+   * parent view only re-renders on the settled value — see the perf note on
+   * `debouncedNodeSearchQuery` in {@link RunDetailView}.
+   */
+  onDebouncedQueryChange: (value: string) => void;
   searchMatchCount: number;
   showNodeSearch: boolean;
 }): React.JSX.Element {
@@ -1885,31 +2021,14 @@ function DagToolbar({
     >
       {/* Node search: emphasize matching task nodes, dim the rest, and fit the
           view to the matches. Empty query restores the normal view. Hidden for
-          the Timeline_View fallback, where there are no diagram nodes. */}
+          the Timeline_View fallback, where there are no diagram nodes. The box
+          owns its own instant input + debounce so typing does not re-render the
+          parent view (perf). */}
       {showNodeSearch && (
-        <div
-          data-testid="node-search"
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', maxWidth: 420, flex: '1 1 240px' }}
-        >
-          <div style={{ flex: 1 }}>
-            <Input
-              type="search"
-              value={nodeSearchQuery}
-              onChange={({ detail }) => onNodeSearchQueryChange(detail.value)}
-              placeholder="Search tasks by name…"
-              ariaLabel="Search task nodes by name"
-              data-testid="node-search-input"
-            />
-          </div>
-          {nodeSearchQuery.trim() !== '' && (
-            <span data-testid="node-search-count">
-              <Badge color={searchMatchCount > 0 ? 'blue' : 'grey'}>
-                {searchMatchCount} match
-                {searchMatchCount === 1 ? '' : 'es'}
-              </Badge>
-            </span>
-          )}
-        </div>
+        <NodeSearchBox
+          onDebouncedQueryChange={onDebouncedQueryChange}
+          searchMatchCount={searchMatchCount}
+        />
       )}
 
       {/* Failed-task quick filter and count badge (Req 4.1, 4.2). The badge
@@ -2040,9 +2159,10 @@ function ResourceSummaryCard({
     </span>
   );
 
-  // The memory units caveat is always disclosed (Req 11.1), but tucked behind an
-  // info popover so it costs no vertical space in the strip. The caveat text
-  // keeps its `memory-units-caveat` testid inside the popover content.
+  // The memory metric now carries a confirmed unit (GiB) plus a short note
+  // explaining it is the peak SUM of reserved memory across concurrent tasks.
+  // The note is tucked behind an info popover so it costs no vertical space in
+  // the strip; the unit is shown inline next to the value (below).
   const memoryCaveat =
     summary.peakConcurrentMemory.note != null ? (
       <Popover
@@ -2065,6 +2185,15 @@ function ResourceSummaryCard({
         </Box>
       </Popover>
     ) : undefined;
+
+  // Format the peak-memory value with its confirmed unit (e.g. "128 GiB"); an
+  // unavailable metric renders the "n/a" affordance instead (handled below).
+  const memoryValueText =
+    summary.peakConcurrentMemory.value != null
+      ? summary.peakConcurrentMemory.unit != null
+        ? `${summary.peakConcurrentMemory.value} ${summary.peakConcurrentMemory.unit}`
+        : String(summary.peakConcurrentMemory.value)
+      : '';
 
   return (
     <div
@@ -2103,7 +2232,7 @@ function ResourceSummaryCard({
         'Peak memory',
         'metric-peak-memory',
         summary.peakConcurrentMemory.available,
-        metricText(summary.peakConcurrentMemory.value),
+        memoryValueText,
         memoryCaveat,
       )}
       {summary.partial && (
@@ -2152,6 +2281,7 @@ function FailedTasksList({
           {
             id: 'name',
             header: 'Task',
+            width: 240,
             cell: (item) => (
               <SpaceBetween direction="horizontal" size="xs">
                 <span>{item.name ?? item.taskId}</span>
@@ -2166,15 +2296,22 @@ function FailedTasksList({
             header: 'Status detail',
             cell: (item) =>
               item.statusMessage != null ? (
-                <SpaceBetween size="xxs">
-                  <span data-testid="failed-task-message">{item.statusMessage}</span>
-                  {item.failureReason != null && (
-                    <Box variant="small" color="text-status-inactive">
-                      Reason code:{' '}
-                      <span data-testid="failed-task-reason">{item.failureReason}</span>
-                    </Box>
-                  )}
-                </SpaceBetween>
+                // Wrap long status messages instead of forcing horizontal
+                // scroll: `overflowWrap: anywhere` breaks even long unbroken
+                // tokens (e.g. ARNs / paths) so the cell grows in height, not
+                // width, keeping the actions column (the View logs button)
+                // visible without sideways scrolling.
+                <div style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+                  <SpaceBetween size="xxs">
+                    <span data-testid="failed-task-message">{item.statusMessage}</span>
+                    {item.failureReason != null && (
+                      <Box variant="small" color="text-status-inactive">
+                        Reason code:{' '}
+                        <span data-testid="failed-task-reason">{item.failureReason}</span>
+                      </Box>
+                    )}
+                  </SpaceBetween>
+                </div>
               ) : (
                 <Box variant="small" color="text-status-inactive">
                   No status detail captured.
@@ -2184,6 +2321,8 @@ function FailedTasksList({
           {
             id: 'actions',
             header: '',
+            width: 130,
+            minWidth: 130,
             cell: (item) => (
               <Button
                 onClick={() => onViewLogs(item.taskId, item.name ?? item.taskId)}

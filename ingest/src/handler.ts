@@ -29,8 +29,15 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { OmicsClient } from '@aws-sdk/client-omics';
 
-import type { RunRecord, TaskRecord } from './domain/records.js';
-import { TaskStatus } from './domain/status.js';
+import type { RunRecord, TaskRecord, RunSummaryRecord } from './domain/records.js';
+import { RunStatus, TaskStatus } from './domain/status.js';
+import { computeRunSummary } from './metrics/computeRunSummary.js';
+import type { MetricSeries } from './metrics/parse.js';
+import { parseMatrix } from './metrics/parse.js';
+import { CORE_FAMILIES, resolveSelectors } from './metrics/registry.js';
+import { buildSelector } from './metrics/promql.js';
+import { buildRangeBody, clampStepSeconds, signAndPost } from './metrics/signedQuery.js';
+import type { TaskItem } from './repository.js';
 import {
   detectKind,
   mapRunEvent,
@@ -76,6 +83,40 @@ export interface IngestRepository {
     workflowVersionName: string,
     reason: string,
   ): Promise<void>;
+  /**
+   * Persist a per-run performance rollup at terminal state
+   * (workflow-performance-reports Req 1.1, 1.5). Idempotent via the monotonic
+   * guard. Optional on the interface so tests that don't exercise the
+   * completion hook need not implement it.
+   */
+  upsertSummary?(summary: RunSummaryRecord): Promise<unknown>;
+  /**
+   * List a run's task items, used by the completion hook to compute the rollup
+   * (workflow-performance-reports Req 1.1). Optional for the same reason.
+   */
+  listTaskItemsForRun?(runId: string): Promise<TaskItem[]>;
+  /**
+   * Idempotently record a Workflow_Group in the Group_Registry so
+   * `listWorkflowGroups` needs no table scan (workflow-performance-reports
+   * Req 11.4). Optional so tests that don't exercise it need not implement it.
+   */
+  upsertGroupRegistry?(
+    workflowName: string,
+    versionName: string,
+    workflowId: string | undefined,
+  ): Promise<unknown>;
+}
+
+/**
+ * The measured-utilization sweep the completion hook uses to derive mean/peak
+ * CPU & memory for a terminal run (workflow-performance-reports design §"Ingest
+ * completion hook"). It MUST be best-effort: an implementation returns an empty
+ * series list on any failure (never throws), so utilization is flagged
+ * unavailable rather than fabricated. Optional on the deps so the summary can
+ * still be written (with utilization unavailable) when no summarizer is wired.
+ */
+export interface IngestSummarizer {
+  fetchRunMetricSeries(run: RunRecord): Promise<MetricSeries[]>;
 }
 
 /**
@@ -111,6 +152,12 @@ export interface HandlerDependencies {
   publisher: IngestPublisher;
   /** Budget for graph resolution; overridable in tests. Defaults to 30s. */
   graphBudgetMs?: number;
+  /**
+   * Optional measured-utilization sweep for the terminal-state Run_Summary
+   * rollup. When absent, the summary is still written with utilization flagged
+   * unavailable (workflow-performance-reports Req 1.1).
+   */
+  summarizer?: IngestSummarizer;
 }
 
 /** The Lambda handler signature. */
@@ -296,6 +343,119 @@ function errorMessage(err: unknown): string {
 }
 
 /**
+ * Whether a run status is terminal (COMPLETED/FAILED/CANCELLED) — the trigger
+ * for computing the Run_Summary rollup (workflow-performance-reports Req 1.1).
+ * DELETED is intentionally excluded: a deleted run has no meaningful
+ * performance rollup.
+ */
+function isTerminalRunStatus(status: RunRecord['status'] | undefined): boolean {
+  return (
+    status === RunStatus.COMPLETED ||
+    status === RunStatus.FAILED ||
+    status === RunStatus.CANCELLED
+  );
+}
+
+/** Map a persisted {@link TaskItem} back to a {@link TaskRecord} for computation. */
+function taskItemToRecord(item: TaskItem): TaskRecord {
+  return {
+    runId: item.runId,
+    taskId: item.taskId,
+    status: item.status as TaskRecord['status'],
+    name: item.name,
+    createdAt: item.createdAt,
+    startedAt: item.startedAt,
+    stoppedAt: item.stoppedAt,
+    updatedAt: item.updatedAt,
+    cpus: item.cpus,
+    memory: item.memory,
+    instanceType: item.instanceType,
+    statusMessage: item.statusMessage,
+    failureReason: item.failureReason,
+  };
+}
+
+/**
+ * Compute and persist the per-run performance rollup when a run reaches a
+ * terminal state (workflow-performance-reports Req 1.1, 1.5, 1.6).
+ *
+ * FAILURE ISOLATION: this is best-effort and fully wrapped — any failure
+ * (missing repository capability, task-list read error, metrics sweep error,
+ * or summary write error) is logged and swallowed so it NEVER affects the
+ * run/task upsert or publish that already succeeded (Req 1.6). Utilization is
+ * derived from a best-effort sweep; when the summarizer is absent or returns no
+ * series, utilization is flagged unavailable rather than fabricated. The write
+ * is idempotent via the repository's monotonic guard (Req 1.5).
+ */
+async function maybePersistRunSummary(
+  deps: HandlerDependencies,
+  run: RunRecord,
+): Promise<void> {
+  if (!isTerminalRunStatus(run.status)) {
+    return;
+  }
+  // The completion hook needs both capabilities; if the wired repository does
+  // not provide them, skip silently (e.g. a test fake that doesn't exercise it).
+  if (
+    typeof deps.repository.upsertSummary !== 'function' ||
+    typeof deps.repository.listTaskItemsForRun !== 'function'
+  ) {
+    return;
+  }
+
+  try {
+    const taskItems = await deps.repository.listTaskItemsForRun(run.runId);
+    const tasks = taskItems.map(taskItemToRecord);
+
+    // Best-effort measured-utilization sweep; empty on absence/any failure so
+    // utilization is flagged unavailable, never fabricated.
+    let series: MetricSeries[] = [];
+    if (deps.summarizer !== undefined) {
+      try {
+        series = await deps.summarizer.fetchRunMetricSeries(run);
+      } catch (err) {
+        console.error(
+          `handler: metrics sweep for run ${run.runId} summary failed; ` +
+            `utilization will be unavailable`,
+          err,
+        );
+        series = [];
+      }
+    }
+
+    const summary = computeRunSummary(run, tasks, series, Date.now());
+    await deps.repository.upsertSummary(summary);
+
+    // Maintain the Group_Registry so listWorkflowGroups needs no table scan at
+    // scale (Req 11.4). Best-effort and separately isolated: a registry failure
+    // must not undo the already-persisted summary.
+    if (typeof deps.repository.upsertGroupRegistry === 'function') {
+      try {
+        await deps.repository.upsertGroupRegistry(
+          summary.workflowName ?? '',
+          summary.workflowVersionName,
+          summary.workflowId,
+        );
+      } catch (err) {
+        console.error(
+          `handler: Group_Registry upsert for run ${run.runId} failed; ` +
+            `summary retained`,
+          err,
+        );
+      }
+    }
+  } catch (err) {
+    // Never let a summary failure disturb the already-persisted run/task state
+    // or the publish (Req 1.6).
+    console.error(
+      `handler: computing/persisting Run_Summary for run ${run.runId} failed; ` +
+        `run/task state retained`,
+      err,
+    );
+  }
+}
+
+/**
  * Process a run status-change event (design steps 1–5 for a run).
  */
 async function processRunEvent(
@@ -352,6 +512,11 @@ async function processRunEvent(
         `persisted data retained`,
     );
   }
+
+  // Step 6 (workflow-performance-reports Req 1.1): when the run is terminal,
+  // compute and persist its performance rollup. Best-effort and failure-isolated
+  // — it never disturbs the run/task state or publish above (Req 1.6).
+  await maybePersistRunSummary(deps, run);
 }
 
 /**
@@ -375,21 +540,46 @@ async function processTaskEvent(
     return;
   }
 
-  // Step 2: enrich on demand (event-triggered) when render fields are missing.
-  // Fetch ONLY the task named by this event (one GetRunTask), not the whole
-  // run, then merge with the event winning on conflict (Req 2.4). Fetching per
-  // task avoids the amplification storm (a full-run sweep on every task event
-  // throttles HealthOmics and drops timing/name for large runs).
+  // Step 2: enrich on demand — but ONLY for the status transitions that
+  // actually carry new metadata a bare status update cannot supply. A task's
+  // lifecycle is PENDING -> STARTING -> RUNNING -> (STOPPING) -> terminal, and
+  // GetRunTask only ever adds:
+  //   - at RUNNING: name, cpus, memory, instanceType, createdAt, startedAt
+  //     (the task has now been scheduled/started, so these first exist);
+  //   - at a terminal status (COMPLETED/FAILED/CANCELLED): stoppedAt +
+  //     failureReason (plus a backstop for a missed RUNNING enrichment).
+  // PENDING, STARTING and STOPPING add nothing beyond `status` (no new timing
+  // or metadata), so they are persisted as a cheap status-only DynamoDB update
+  // with NO GetRunTask call. This cuts per-task API calls from ~one-per-event
+  // (5+) down to ~2 (RUNNING + terminal), removing the enrichment amplification
+  // that dominated the HealthOmics call volume for a batch.
+  //
+  // A safety net covers the (rare) case where a very fast task never emits a
+  // standalone RUNNING event: the terminal event still enriches, so timing/name
+  // is captured. And if an event unexpectedly arrives already missing its
+  // status (should not happen for a well-formed task event) we still enrich so
+  // we never persist a status-less task.
   let record: Partial<TaskRecord> = mapped;
-  // Always enrich when render fields are missing, AND always enrich on a
-  // terminal status (COMPLETED/FAILED/CANCELLED) so the final timing
-  // (startedAt/stoppedAt) and name are captured even if an earlier event's
-  // enrichment failed. The terminal event carries the freshest `updatedAt`, so
-  // the monotonic upsert lets this fully-enriched record overwrite any earlier
-  // status-only record for the task.
-  if (taskNeedsEnrichment(mapped) || isTerminalTaskStatus(mapped.status)) {
+  const terminal = isTerminalTaskStatus(mapped.status);
+  if (taskEventNeedsEnrichment(mapped)) {
     const enriched = await deps.enricher.enrichTask(mapped.runId, mapped.taskId);
     record = mergeRecords<TaskRecord>(mapped, enriched);
+
+    // Do NOT silently persist a BARE terminal task (status only, no timing):
+    // that permanently loses the task's timing/name and produces the "weird"
+    // empty rows in the task timeline. When a terminal task still has no
+    // `startedAt` after enrichment, the enrichment call was throttled/failed —
+    // THROW so EventBridge retries (and ultimately DLQs) this event rather than
+    // committing an unenriched record. The global 10 TPS rate limiter means the
+    // retry is very likely to succeed once the burst subsides. A non-terminal
+    // task (e.g. PENDING) legitimately has no timing yet, so it is unaffected.
+    if (terminal && record.startedAt === undefined) {
+      throw new Error(
+        `enrichment incomplete for terminal task ${mapped.runId}/${mapped.taskId} ` +
+          `(no startedAt after GetRunTask); throwing so the event is retried/DLQ'd ` +
+          `rather than persisting a bare task`,
+      );
+    }
   }
 
   // Assemble the full record: identifiers (validated above) + updatedAt.
@@ -427,18 +617,33 @@ function isTerminalTaskStatus(status: TaskRecord['status'] | undefined): boolean
 }
 
 /**
- * Whether a mapped task record is missing fields needed to render it and should
- * be enriched on demand (Req 2, design step 2).
+ * Whether a task status-change event should trigger a GetRunTask enrichment.
+ *
+ * Enrichment is the sole source of `name`, `cpus`, `memory`, `instanceType`,
+ * `createdAt`, `startedAt`, `stoppedAt`, and `failureReason` (the event itself
+ * carries only `status` + identifiers). Those fields only *become available* at
+ * two points in a task's lifecycle, so we enrich ONLY at those transitions:
+ *
+ *   - RUNNING  — the task has been scheduled and started, so name/cpus/memory/
+ *                instanceType/createdAt/startedAt first exist.
+ *   - terminal (COMPLETED/FAILED/CANCELLED) — stoppedAt + failureReason exist,
+ *                and this also backstops a task that never emitted a standalone
+ *                RUNNING event (e.g. a very fast task).
+ *
+ * PENDING, STARTING and STOPPING add no new metadata over their `status`, so
+ * they are persisted as a cheap status-only update with NO API call — the
+ * change that removes the enrichment amplification.
+ *
+ * As a safety net, an event that somehow lacks a recognized status is enriched
+ * too, so a status-less task is never persisted bare.
  */
-function taskNeedsEnrichment(task: Partial<TaskRecord>): boolean {
-  return (
-    task.status === undefined ||
-    task.name === undefined ||
-    task.createdAt === undefined ||
-    task.startedAt === undefined ||
-    task.cpus === undefined ||
-    task.memory === undefined
-  );
+function taskEventNeedsEnrichment(task: Partial<TaskRecord>): boolean {
+  const status = task.status;
+  if (status === undefined) {
+    // Unrecognized/absent status: enrich defensively rather than persist bare.
+    return true;
+  }
+  return status === TaskStatus.RUNNING || isTerminalTaskStatus(status);
 }
 
 /**
@@ -522,7 +727,52 @@ function buildDefaultHandler(): IngestHandler {
 
   const publisher = new AppSyncPublisher({ endpoint, region });
 
-  return createHandler({ repository, enricher, publisher });
+  // Best-effort measured-utilization sweep for the terminal-state Run_Summary
+  // rollup (workflow-performance-reports Req 1.1). Reuses the same signed
+  // CloudWatch PromQL building blocks as `getRunMetrics`; returns [] on any
+  // failure so utilization is flagged unavailable rather than fabricated.
+  const monitoringHost =
+    process.env.MONITORING_HOST ?? `monitoring.${region}.amazonaws.com`;
+  const signingService = process.env.SIGNING_SERVICE ?? 'monitoring';
+  const summarizer: IngestSummarizer = {
+    async fetchRunMetricSeries(run) {
+      // Need a resolved window; a terminal run normally has both timestamps.
+      if (run.startedAt == null || run.stoppedAt == null) {
+        return [];
+      }
+      try {
+        const selectors = resolveSelectors(CORE_FAMILIES);
+        const step = clampStepSeconds(30);
+        const perSelector = await Promise.all(
+          selectors.map(async (sel) => {
+            const body = buildRangeBody({
+              query: buildSelector(sel.metricName, run.runId),
+              start: run.startedAt as string,
+              end: run.stoppedAt as string,
+              step,
+            });
+            const result = await signAndPost(
+              monitoringHost,
+              region,
+              signingService,
+              '/api/v1/query_range',
+              body,
+            );
+            if (!result.ok) {
+              return [] as MetricSeries[];
+            }
+            return parseMatrix(result.envelope, sel.family, sel.role);
+          }),
+        );
+        return perSelector.flat();
+      } catch (err) {
+        console.error('handler: run-summary metrics sweep failed', err);
+        return [];
+      }
+    },
+  };
+
+  return createHandler({ repository, enricher, publisher, summarizer });
 }
 
 /**

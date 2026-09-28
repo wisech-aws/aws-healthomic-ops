@@ -29,8 +29,17 @@ import type {
   RunMetrics,
   StaticGraph,
   Task,
+  WorkflowGroup,
+  WorkflowReport,
+  RunPointConnection,
 } from './types';
-import { MOCK_GRAPHS_BY_RUN, MOCK_RUNS, MOCK_TASKS_BY_RUN } from './mockData';
+import {
+  MOCK_GRAPHS_BY_RUN,
+  MOCK_RUNS,
+  MOCK_TASKS_BY_RUN,
+  MOCK_WORKFLOW_GROUPS,
+  mockWorkflowReport,
+} from './mockData';
 
 /**
  * Minimal observable shape for a GraphQL subscription. Declared locally so the
@@ -274,6 +283,7 @@ const GET_RUN_LOGS = /* GraphQL */ `
     $taskId: ID
     $nextToken: String
     $limit: Int
+    $tail: Boolean
   ) {
     getRunLogs(
       runId: $runId
@@ -281,6 +291,7 @@ const GET_RUN_LOGS = /* GraphQL */ `
       taskId: $taskId
       nextToken: $nextToken
       limit: $limit
+      tail: $tail
     ) {
       logStreamName
       events {
@@ -363,6 +374,85 @@ const GET_STATIC_GRAPH = /* GraphQL */ `
   }
 `;
 
+const LIST_WORKFLOW_GROUPS = /* GraphQL */ `
+  query ListWorkflowGroups($start: String!, $end: String!) {
+    listWorkflowGroups(start: $start, end: $end) {
+      workflowName
+      versionName
+      workflowIds
+      runCount
+    }
+  }
+`;
+
+const GET_WORKFLOW_REPORT = /* GraphQL */ `
+  query GetWorkflowReport(
+    $workflowName: String!
+    $versionName: String!
+    $start: String!
+    $end: String!
+  ) {
+    getWorkflowReport(
+      workflowName: $workflowName
+      versionName: $versionName
+      start: $start
+      end: $end
+    ) {
+      workflowName
+      versionName
+      window { start end stepSeconds }
+      runCount
+      succeeded
+      failed
+      cancelled
+      collision
+      metrics {
+        key unit mean median p90 availableCount totalCount
+      }
+      durationHistogram {
+        key unit availableCount totalCount
+        buckets { lo hi count }
+      }
+      timeBins {
+        start end runCount durationMeanMs durationP90Ms
+      }
+      sample {
+        runId stoppedAt status durationMs meanCpu peakCpu
+        meanMemoryGiB peakMemoryGiB cpuHours peakConcurrentTasks
+        taskCount failedTaskCount
+      }
+      sampleCapped
+    }
+  }
+`;
+
+const LIST_WORKFLOW_RUN_POINTS = /* GraphQL */ `
+  query ListWorkflowRunPoints(
+    $workflowName: String!
+    $versionName: String!
+    $start: String!
+    $end: String!
+    $limit: Int
+    $nextToken: String
+  ) {
+    listWorkflowRunPoints(
+      workflowName: $workflowName
+      versionName: $versionName
+      start: $start
+      end: $end
+      limit: $limit
+      nextToken: $nextToken
+    ) {
+      items {
+        runId stoppedAt status durationMs meanCpu peakCpu
+        meanMemoryGiB peakMemoryGiB cpuHours peakConcurrentTasks
+        taskCount failedTaskCount
+      }
+      nextToken
+    }
+  }
+`;
+
 // --- Query/subscription payload shapes -------------------------------------
 
 interface ListRunsData {
@@ -394,6 +484,15 @@ interface GetRunCostEstimateData {
 }
 interface GetStaticGraphData {
   getStaticGraph: StaticGraph | null;
+}
+interface ListWorkflowGroupsData {
+  listWorkflowGroups: WorkflowGroup[];
+}
+interface GetWorkflowReportData {
+  getWorkflowReport: WorkflowReport | null;
+}
+interface ListWorkflowRunPointsData {
+  listWorkflowRunPoints: RunPointConnection | null;
 }
 
 // --- One-shot query functions (call exactly once per view mount, Req 10.4) --
@@ -483,6 +582,13 @@ export async function getRunLogs(variables: {
   taskId?: string;
   nextToken?: string;
   limit?: number;
+  /**
+   * OPT-IN tail mode (failed-run triage): when true, the backend fetches the
+   * newest slice of the stream first. Absent/false keeps the default
+   * oldest-first behavior; AppSync treats an absent Boolean as null, which the
+   * backend reads as falsy — so successful-run retrieval is unchanged.
+   */
+  tail?: boolean;
 }): Promise<RunLogs> {
   if (isLocalMockMode()) {
     return {
@@ -589,6 +695,75 @@ export async function getRunCostEstimate(variables: {
     variables,
   );
   return data.getRunCostEstimate;
+}
+
+/**
+ * Enumerate the workflow+version groups with runs in a window (report pickers).
+ * In local mock mode, derives groups from the sample runs so the Reports view
+ * is browsable with no backend.
+ */
+export async function listWorkflowGroups(variables: {
+  start: string;
+  end: string;
+}): Promise<WorkflowGroup[]> {
+  if (isLocalMockMode()) {
+    return MOCK_WORKFLOW_GROUPS;
+  }
+  const data = await runQuery<ListWorkflowGroupsData>(
+    LIST_WORKFLOW_GROUPS,
+    variables,
+  );
+  return data.listWorkflowGroups;
+}
+
+/**
+ * Fetch the aggregated report for one workflow+version over a window. Returns
+ * null when the group has no runs in the window. In local mock mode, returns a
+ * small deterministic sample report (honest availability preserved).
+ */
+export async function getWorkflowReport(variables: {
+  workflowName: string;
+  versionName: string;
+  start: string;
+  end: string;
+}): Promise<WorkflowReport | null> {
+  if (isLocalMockMode()) {
+    return mockWorkflowReport(variables.workflowName, variables.versionName, variables.start, variables.end);
+  }
+  const data = await runQuery<GetWorkflowReportData>(
+    GET_WORKFLOW_REPORT,
+    variables,
+  );
+  return data.getWorkflowReport;
+}
+
+/**
+ * Fetch one paginated page of per-run rows for the CSV export path (kept out of
+ * the size-bounded report). In local mock mode, returns the mock report's
+ * sample as a single page (no `nextToken`).
+ */
+export async function listWorkflowRunPoints(variables: {
+  workflowName: string;
+  versionName: string;
+  start: string;
+  end: string;
+  limit?: number;
+  nextToken?: string | null;
+}): Promise<RunPointConnection> {
+  if (isLocalMockMode()) {
+    const rep = mockWorkflowReport(
+      variables.workflowName,
+      variables.versionName,
+      variables.start,
+      variables.end,
+    );
+    return { items: rep.sample, nextToken: null };
+  }
+  const data = await runQuery<ListWorkflowRunPointsData>(
+    LIST_WORKFLOW_RUN_POINTS,
+    variables,
+  );
+  return data.listWorkflowRunPoints ?? { items: [], nextToken: null };
 }
 
 // --- Long-lived subscription helpers (all subsequent changes, Req 10.4) -----

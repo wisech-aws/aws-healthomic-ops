@@ -60,6 +60,8 @@ const fastOptions = {
   maxAttempts: 3,
   sleep: async () => {},
   logger: () => undefined,
+  // No-op limiter so tests aren't paced by the real 10 TPS (100ms/call) budget.
+  rateLimiter: { acquire: async () => {} },
 };
 
 describe('mergeRecords', () => {

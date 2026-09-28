@@ -115,6 +115,14 @@ export class IngestStack extends Stack {
       projectRoot: INGEST_PROJECT_ROOT,
       depsLockFilePath: INGEST_DEPS_LOCK_FILE,
       timeout: Duration.seconds(60),
+      // Cap concurrency so the FLEET of ingest instances cannot collectively
+      // exceed the HealthOmics ~10 TPS read budget: each instance paces its own
+      // enrichment calls to OMICS_TPS (below), and reservedConcurrency ×
+      // OMICS_TPS ≈ the account budget. This is the batch-scale safeguard — a
+      // burst of several-thousand-run events queues in EventBridge and is
+      // drained at a safe rate rather than self-inflicting a throttling storm.
+      // (5 instances × 2 TPS = ~10 TPS.)
+      reservedConcurrentExecutions: 5,
       environment: {
         // DynamoDB single table the handler upserts run/task/graph items into.
         TABLE_NAME: props.dataStack.table.tableName,
@@ -122,6 +130,10 @@ export class IngestStack extends Stack {
         // is provided automatically by the Lambda runtime and is read directly
         // by the handler (do not set it here — it is a reserved env var).
         APPSYNC_ENDPOINT: props.apiStack.api.graphqlUrl,
+        // Per-instance HealthOmics read-API pace (transactions/sec). With
+        // reservedConcurrentExecutions above, the fleet stays within the ~10 TPS
+        // account budget.
+        OMICS_TPS: '2',
       },
       bundling: {
         format: OutputFormat.ESM,
