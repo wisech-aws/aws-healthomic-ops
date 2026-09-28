@@ -32,3 +32,7 @@ frontend/public/config.generated.js
 
 # CDK deployment outputs (contains AWS resource identifiers)
 cdk-outputs.json
+
+# Downloaded reference artifacts (not source)
+*.zip
+User Guide*AWS HealthOmics*.html
