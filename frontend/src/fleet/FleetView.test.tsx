@@ -704,3 +704,51 @@ describe('FleetView', () => {
     });
   });
 });
+
+describe('FleetView — hybrid paging (nextToken up to cap)', () => {
+  it('follows nextToken and aggregates all pages into the loaded set', async () => {
+    // Two pages of 100, then a final short page with no token.
+    const pageA = Array.from({ length: 100 }, (_, i) => run({ runId: `a-${i}` }));
+    const pageB = Array.from({ length: 100 }, (_, i) => run({ runId: `b-${i}` }));
+    const pageC = [run({ runId: 'c-0', name: 'last-run' })];
+    const listRuns = vi
+      .fn()
+      .mockResolvedValueOnce({ items: pageA, nextToken: 'tokA' })
+      .mockResolvedValueOnce({ items: pageB, nextToken: 'tokB' })
+      .mockResolvedValueOnce({ items: pageC, nextToken: null });
+
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+
+    // Header counter reflects the full aggregated set (201 runs), not one page.
+    await waitFor(() => {
+      expect(screen.getByText('(201)')).toBeInTheDocument();
+    });
+    // Three fetches: it followed both tokens until nextToken was null.
+    expect(listRuns).toHaveBeenCalledTimes(3);
+    // Each call carried a limit and the prior page's token.
+    expect(listRuns.mock.calls[0][0]).toEqual({ limit: 100, nextToken: undefined });
+    expect(listRuns.mock.calls[1][0]).toEqual({ limit: 100, nextToken: 'tokA' });
+    expect(listRuns.mock.calls[2][0]).toEqual({ limit: 100, nextToken: 'tokB' });
+    // No capped notice when the server ran out of pages.
+    expect(screen.queryByTestId('fleet-capped-notice')).not.toBeInTheDocument();
+  });
+
+  it('stops at the 1000-run cap and shows the capped notice when more remain', async () => {
+    // Every page returns 100 items and always a token => would be unbounded.
+    const listRuns = vi.fn(async ({ nextToken }: { limit?: number; nextToken?: string } = {}) => {
+      const base = nextToken ?? '0';
+      const items = Array.from({ length: 100 }, (_, i) => run({ runId: `${base}-${i}` }));
+      return { items, nextToken: `${Number(base) + 1}` };
+    });
+
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('fleet-capped-notice')).toBeInTheDocument();
+    });
+    // Exactly 10 pages of 100 to reach the 1000 cap — never unbounded.
+    expect(listRuns).toHaveBeenCalledTimes(10);
+    // Loaded set is capped at 1000.
+    expect(screen.getByText('(1000)')).toBeInTheDocument();
+  });
+});

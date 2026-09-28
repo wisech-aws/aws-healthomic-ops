@@ -25,6 +25,7 @@ import { Authenticator } from '@aws-amplify/ui-react';
 import FleetView from './fleet/FleetView';
 import RunDetailView from './rundetail/RunDetailView';
 import ParamsDiffView from './params/ParamsDiffView';
+import ReportsView from './reports/ReportsView';
 import { isLocalMockMode } from './api/config';
 import {
   SplitPanelSlotContext,
@@ -67,6 +68,8 @@ export function Dashboard({
   onSplitPanelToggle,
 }: DashboardProps = {}): React.JSX.Element {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  // Whether the top-level Reports view is active (workflow-performance-reports).
+  const [showReports, setShowReports] = useState(false);
   // Two run ids selected for the parameters diff view (enhancement #6, Req 6.7).
   // Null means no comparison is active; when set, App renders ParamsDiffView.
   const [compareRunIds, setCompareRunIds] = useState<
@@ -114,6 +117,7 @@ export function Dashboard({
   const goToFleet = () => {
     setSelectedRunId(null);
     setCompareRunIds(null);
+    setShowReports(false);
     clearSplitPanelSlot();
   };
 
@@ -155,23 +159,34 @@ export function Dashboard({
             goToFleet();
           },
         }}
-        utilities={
-          onSignOut
+        utilities={[
+          {
+            type: 'button',
+            text: 'Reports',
+            iconName: 'insert-row',
+            onClick: () => {
+              setSelectedRunId(null);
+              setCompareRunIds(null);
+              clearSplitPanelSlot();
+              setShowReports(true);
+            },
+          },
+          ...(onSignOut
             ? [
                 {
-                  type: 'menu-dropdown',
+                  type: 'menu-dropdown' as const,
                   text: username ?? 'Account',
-                  iconName: 'user-profile',
+                  iconName: 'user-profile' as const,
                   items: [{ id: 'signout', text: 'Sign out' }],
-                  onItemClick: ({ detail }) => {
+                  onItemClick: ({ detail }: { detail: { id: string } }) => {
                     if (detail.id === 'signout') {
                       onSignOut();
                     }
                   },
                 },
               ]
-            : []
-        }
+            : []),
+        ]}
       />
       <AppLayout
         navigationHide
@@ -190,7 +205,11 @@ export function Dashboard({
             : undefined
         }
         content={
-          compareRunIds !== null ? (
+          showReports ? (
+            <ContentLayout>
+              <ReportsView onBack={goToFleet} />
+            </ContentLayout>
+          ) : compareRunIds !== null ? (
             // Parameters diff between two runs (enhancement #6, Req 6.7).
             // ParamsDiffView defaults its `getRun` to the real client, so only
             // the two run ids need to be passed.

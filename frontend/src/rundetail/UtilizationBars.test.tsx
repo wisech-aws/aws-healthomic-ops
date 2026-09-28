@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import UtilizationBars from './UtilizationBars';
+import UtilizationBars, { MEASURED_MEMORY_NOTE } from './UtilizationBars';
 import type { MetricSeries } from '../api/types';
 import type { TaskMetrics } from '../metrics/joinMetricsToTasks';
 import { formatMetricValue } from '../metrics/formatMetricValue';
-import { MEMORY_UNITS_UNCONFIRMED_NOTE } from '../metrics/resourceSummary';
 
 // UtilizationBars is purely presentational over an already-joined per-task
 // metric slice; it shapes the slice with the pure `chartSeries` helper and
@@ -115,7 +114,7 @@ describe('UtilizationBars', () => {
     expect(bar).not.toHaveTextContent(/\bof\b/);
   });
 
-  it('surfaces the unconfirmed-units note on a MEMORY bar (Req 8.4)', () => {
+  it('surfaces the measured-memory note on a MEMORY bar (Req 8.4)', () => {
     const taskMetrics: TaskMetrics = {
       taskId: 'task-3',
       series: [memoryUsageSeries('task-3')],
@@ -127,7 +126,7 @@ describe('UtilizationBars', () => {
       'task-metric-bar-task-3-aws.omics.task.memory.usage-units-note',
     );
     expect(note).toBeInTheDocument();
-    expect(note).toHaveTextContent(MEMORY_UNITS_UNCONFIRMED_NOTE);
+    expect(note).toHaveTextContent(MEASURED_MEMORY_NOTE);
 
     // Memory peak/mean are formatted via the shared byte helper (peak 6 GiB, mean 3 GiB).
     const bar = screen.getByTestId('task-metric-bar-task-3-aws.omics.task.memory.usage');

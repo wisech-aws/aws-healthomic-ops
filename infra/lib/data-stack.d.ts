@@ -26,5 +26,9 @@ export declare class DataStack extends Stack {
     readonly gsi1Arn: string;
     /** Name of the recency-ordered global secondary index. */
     readonly gsi1Name: string;
+    /** ARN of the GSI2 Workflow_Group index (table ARN + `/index/GSI2`). */
+    readonly gsi2Arn: string;
+    /** Name of the Workflow_Group index used by aggregate reports. */
+    readonly gsi2Name: string;
     constructor(scope: Construct, id: string, props?: StackProps);
 }

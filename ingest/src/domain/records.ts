@@ -149,3 +149,74 @@ export interface TaskRecord {
    */
   failureReason?: string;
 }
+
+/**
+ * The label used for the version bucket of runs that carry no
+ * `workflowVersionName` (workflow-performance-reports Req 1.2, 4.5). Versionless
+ * runs form their own group under this literal so reports can group and display
+ * them consistently.
+ */
+export const UNVERSIONED_LABEL = '(unversioned)';
+
+/**
+ * A compact, persisted per-run performance rollup (Run_Summary), written once
+ * when a run reaches a terminal state (workflow-performance-reports Req 1.x).
+ *
+ * It holds the run's grouping labels and each Tracked_Metric value paired with
+ * an Availability_Flag. Per the standing no-fabrication rule, a metric whose
+ * inputs were absent is recorded with its flag `false` and its value omitted —
+ * never stored as a fabricated `0` — so aggregate statistics can exclude it
+ * rather than count it as zero.
+ *
+ * Grouping and display use the friendly `(workflowName, workflowVersionName)`
+ * pair; `workflowId` is recorded (but not used as the group label) purely as a
+ * collision guard so the report can detect when one friendly `(name, version)`
+ * maps to more than one workflow id (Req 6.x).
+ *
+ * Memory metrics are in gibibytes (GiB), consistent with the rest of the
+ * dashboard (Req 1.4, 10.4).
+ */
+export interface RunSummaryRecord {
+  runId: string;
+  /** Friendly workflow name (group label component). May be absent. */
+  workflowName?: string;
+  /**
+   * Friendly workflow version name (group label component), NORMALIZED to
+   * {@link UNVERSIONED_LABEL} when the run had no version. Always present on the
+   * record so grouping is consistent.
+   */
+  workflowVersionName: string;
+  /** Hidden collision guard — NOT used as the group label (Req 6.1). */
+  workflowId?: string;
+  /** The run's terminal status (COMPLETED | FAILED | CANCELLED). */
+  status: RunStatus;
+  /** ISO 8601 terminal timestamp (the run's `stoppedAt`); the report time axis. */
+  stoppedAt?: string;
+  /** ISO 8601 UTC timestamp; the monotonic-upsert basis (mirrors run/task items). */
+  updatedAt: string;
+
+  // ── Tracked metrics, each paired with an Availability_Flag ────────────────
+  /** Wall-clock run duration in milliseconds. */
+  durationMs?: number;
+  durationAvailable: boolean;
+  /** Mean measured CPU (vCPU) across the run. */
+  meanCpu?: number;
+  /** Peak measured CPU (vCPU) across the run. */
+  peakCpu?: number;
+  cpuAvailable: boolean;
+  /** Mean measured memory in GiB across the run. */
+  meanMemoryGiB?: number;
+  /** Peak measured memory in GiB across the run. */
+  peakMemoryGiB?: number;
+  memoryAvailable: boolean;
+  /** Total CPU-hours (Σ interval-hours × cpus). */
+  cpuHours?: number;
+  cpuHoursAvailable: boolean;
+  /** Peak count of concurrently-running tasks. */
+  peakConcurrentTasks?: number;
+  concurrencyAvailable: boolean;
+  /** Total task count for the run (always available for a terminal run). */
+  taskCount: number;
+  /** Count of FAILED/CANCELLED tasks in the run. */
+  failedTaskCount: number;
+}

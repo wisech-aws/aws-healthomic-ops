@@ -335,12 +335,33 @@ class InMemoryDocClient {
       | undefined;
 
     const existing = this.store.get(key);
-    // attribute_not_exists(PK) OR :incomingUpdatedAt > #storedUpdatedAt
-    const conditionMet =
-      existing === undefined ||
-      (incoming !== undefined &&
+
+    // Faithfully evaluate the repository's ConditionExpression:
+    //   attribute_not_exists(PK) OR (statusClause)
+    // For status-less items (summaries) statusClause is the plain monotonic
+    // rule; for run/task items it encodes terminal-wins + no-revert.
+    const vals = input.ExpressionAttributeValues ?? {};
+    const TERMINAL = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'DELETED']);
+    let conditionMet: boolean;
+    if (existing === undefined) {
+      conditionMet = true;
+    } else {
+      const monotonic =
+        incoming !== undefined &&
         typeof existing.updatedAt === 'string' &&
-        incoming > existing.updatedAt);
+        incoming > existing.updatedAt;
+      const incomingIsTerminal = vals[':incomingIsTerminal'] as boolean | undefined;
+      if (incomingIsTerminal === undefined) {
+        // status-less item: plain monotonic
+        conditionMet = monotonic;
+      } else {
+        const storedHasStatus = typeof existing.status === 'string';
+        const storedIsTerminal = storedHasStatus && TERMINAL.has(existing.status as string);
+        const terminalWins = incomingIsTerminal && storedHasStatus && !storedIsTerminal;
+        const noRevert = incomingIsTerminal || !storedHasStatus || !storedIsTerminal;
+        conditionMet = terminalWins || (monotonic && noRevert);
+      }
+    }
 
     if (!conditionMet) {
       throw new ConditionalCheckFailedException({
@@ -399,29 +420,113 @@ describe('DynamoRepository.upsertRun / upsertTask - conditional monotonic upsert
 
   it('preserves the stored run when the incoming updatedAt is equal (no-op)', async () => {
     const { repo, db } = makeRepo();
-    await repo.upsertRun({ runId: 'r-1', updatedAt: '2024-01-01T00:00:00.000Z', status: RunStatus.RUNNING });
+    await repo.upsertRun({ runId: 'r-1', updatedAt: '2024-01-01T00:00:00.000Z', status: RunStatus.STARTING });
     const result = await repo.upsertRun({
       runId: 'r-1',
       updatedAt: '2024-01-01T00:00:00.000Z',
-      status: RunStatus.FAILED,
+      status: RunStatus.RUNNING,
     });
 
     expect(result.outcome).toBe('preserved');
-    // Existing attributes untouched (Req 3.8).
-    expect(db.store.get('RUN#r-1|RUN#r-1')?.status).toBe('RUNNING');
+    // Existing attributes untouched (Req 3.8); both non-terminal so the
+    // monotonic updatedAt rule governs and an equal time is a no-op.
+    expect(db.store.get('RUN#r-1|RUN#r-1')?.status).toBe('STARTING');
   });
 
   it('preserves the stored run when the incoming updatedAt is older (no-op)', async () => {
     const { repo, db } = makeRepo();
-    await repo.upsertRun({ runId: 'r-1', updatedAt: '2024-01-01T00:00:05.000Z', status: RunStatus.RUNNING });
+    await repo.upsertRun({ runId: 'r-1', updatedAt: '2024-01-01T00:00:05.000Z', status: RunStatus.STARTING });
     const result = await repo.upsertRun({
       runId: 'r-1',
       updatedAt: '2024-01-01T00:00:00.000Z',
-      status: RunStatus.FAILED,
+      status: RunStatus.RUNNING,
     });
 
     expect(result.outcome).toBe('preserved');
-    expect(db.store.get('RUN#r-1|RUN#r-1')?.status).toBe('RUNNING');
+    expect(db.store.get('RUN#r-1|RUN#r-1')?.status).toBe('STARTING');
+  });
+
+  // --- Status-monotonic guard (bug fix: stuck-RUNNING despite terminal run) ---
+  // HealthOmics event.time has 1-second resolution and EventBridge delivers
+  // at-least-once and out of order, so a redelivered non-terminal event can be
+  // processed AFTER the terminal one. The guard orders by status lifecycle, not
+  // updatedAt: terminal wins over non-terminal, and non-terminal never reverts a
+  // stored terminal — regardless of updatedAt.
+
+  it('lets a terminal task overwrite a stored non-terminal task even when updatedAt is OLDER', async () => {
+    const { repo, db } = makeRepo();
+    // Stored RUNNING with a LATER updatedAt (mimics a redelivered RUNNING that
+    // won the naive monotonic race).
+    await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:22.000Z',
+      status: TaskStatus.RUNNING,
+    });
+    // COMPLETED arrives with an EARLIER (or equal-second) updatedAt.
+    const result = await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:02.000Z',
+      status: TaskStatus.COMPLETED,
+      stoppedAt: '2026-09-28T15:25:22.858Z',
+    });
+
+    expect(result.outcome).toBe('written');
+    expect(db.store.get('RUN#r-1|TASK#t-1')?.status).toBe('COMPLETED');
+  });
+
+  it('never reverts a stored terminal task to non-terminal, even with a NEWER updatedAt', async () => {
+    const { repo, db } = makeRepo();
+    await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:02.000Z',
+      status: TaskStatus.COMPLETED,
+      stoppedAt: '2026-09-28T15:25:22.858Z',
+    });
+    // A late RUNNING with a strictly newer updatedAt must NOT win.
+    const result = await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:59.000Z',
+      status: TaskStatus.RUNNING,
+    });
+
+    expect(result.outcome).toBe('preserved');
+    expect(db.store.get('RUN#r-1|TASK#t-1')?.status).toBe('COMPLETED');
+  });
+
+  it('applies the same terminal guard to runs', async () => {
+    const { repo, db } = makeRepo();
+    await repo.upsertRun({ runId: 'r-9', updatedAt: '2026-09-28T15:42:38.000Z', status: RunStatus.COMPLETED });
+    const revert = await repo.upsertRun({
+      runId: 'r-9',
+      updatedAt: '2026-09-28T15:59:00.000Z',
+      status: RunStatus.RUNNING,
+    });
+    expect(revert.outcome).toBe('preserved');
+    expect(db.store.get('RUN#r-9|RUN#r-9')?.status).toBe('COMPLETED');
+  });
+
+  it('preserves the stored terminal task when a re-emitted terminal has an equal/older updatedAt (idempotent)', async () => {
+    const { repo, db } = makeRepo();
+    await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:22.000Z',
+      status: TaskStatus.COMPLETED,
+    });
+    const dup = await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:22.000Z',
+      status: TaskStatus.COMPLETED,
+    });
+    // terminalWins requires stored NON-terminal; stored is terminal, so this
+    // falls to the monotonic branch, and equal updatedAt is a no-op.
+    expect(dup.outcome).toBe('preserved');
+    expect(db.store.get('RUN#r-1|TASK#t-1')?.status).toBe('COMPLETED');
   });
 
   it('writes and preserves task items with the same monotonic rule', async () => {
@@ -438,7 +543,7 @@ describe('DynamoRepository.upsertRun / upsertTask - conditional monotonic upsert
       runId: 'r-1',
       taskId: 't-1',
       updatedAt: '2023-12-31T00:00:00.000Z',
-      status: TaskStatus.FAILED,
+      status: TaskStatus.STARTING,
     });
     expect(stale.outcome).toBe('preserved');
     expect(db.store.get('RUN#r-1|TASK#t-1')?.status).toBe('RUNNING');
@@ -552,9 +657,18 @@ describe('DynamoRepository - monotonic invariant (property)', () => {
   // updatedAt; any upsert whose updatedAt is <= the stored value leaves every
   // stored attribute unchanged. Re-applying an already-stored upsert is a
   // no-op (idempotent).
+  //
+  // NOTE: this property holds only among NON-TERMINAL statuses. The
+  // status-monotonic guard (terminal wins over non-terminal regardless of
+  // updatedAt; non-terminal never reverts terminal) intentionally breaks the
+  // pure "greatest updatedAt wins" rule for terminal transitions, so terminal
+  // statuses are excluded here and covered by the dedicated example tests
+  // above.
   // Validates: Requirements 3.8
   it('final stored run equals the upsert with the greatest updatedAt, regardless of order', async () => {
     const isoAt = (ms: number): string => new Date(ms).toISOString();
+    // Non-terminal statuses only (terminal ones follow the status-priority rule).
+    const NON_TERMINAL = [RunStatus.PENDING, RunStatus.STARTING, RunStatus.RUNNING, RunStatus.STOPPING];
 
     await fc.assert(
       fc.asyncProperty(
@@ -568,7 +682,7 @@ describe('DynamoRepository - monotonic invariant (property)', () => {
             fc.tuple(
               fc.constant(millis),
               // A distinguishing status per upsert so we can identify the winner.
-              fc.array(fc.constantFrom(...Object.values(RunStatus)), {
+              fc.array(fc.constantFrom(...NON_TERMINAL), {
                 minLength: millis.length,
                 maxLength: millis.length,
               }),
@@ -604,6 +718,59 @@ describe('DynamoRepository - monotonic invariant (property)', () => {
           const again = await repo.upsertRun(winner);
           expect(again.outcome).toBe('preserved');
           expect(db.store.get('RUN#r-fixed|RUN#r-fixed')).toEqual(before);
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
+  // Feature: healthomics-workflow-dashboard, Property 7b: Terminal-status
+  // priority. When any upsert in a sequence carries a terminal status
+  // (COMPLETED/FAILED/CANCELLED/DELETED), the final stored status is terminal
+  // regardless of application order or updatedAt — a non-terminal event
+  // (including a later-processed redelivery) can never revert it. This encodes
+  // the fix for out-of-order/at-least-once delivery of a stale non-terminal
+  // event after the terminal one.
+  // Validates: Requirements 3.8 (status-monotonic guard)
+  it('final stored status is terminal whenever any upsert in the sequence is terminal', async () => {
+    const isoAt = (ms: number): string => new Date(ms).toISOString();
+    const TERMINAL = new Set<string>(['COMPLETED', 'FAILED', 'CANCELLED', 'DELETED']);
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc
+          .uniqueArray(fc.integer({ min: 0, max: 4_000_000_000_000 }), {
+            minLength: 2,
+            maxLength: 12,
+          })
+          .chain((millis) =>
+            fc.tuple(
+              fc.constant(millis),
+              fc.array(fc.constantFrom(...Object.values(RunStatus)), {
+                minLength: millis.length,
+                maxLength: millis.length,
+              }),
+              fc.integer(),
+            ),
+          )
+          // Only sequences that contain at least one terminal status.
+          .filter(([, statuses]) => statuses.some((s) => TERMINAL.has(s))),
+        async ([millis, statuses, seed]) => {
+          const { repo, db } = makeRepo();
+          const records: RunRecord[] = millis.map((ms, i) => ({
+            runId: 'r-fixed',
+            updatedAt: isoAt(ms),
+            status: statuses[i],
+          }));
+          const order = [...records.keys()].sort(
+            (a, b) => Math.sin(seed + a) - Math.sin(seed + b),
+          );
+          for (const idx of order) {
+            await repo.upsertRun(records[idx]);
+          }
+          const stored = db.store.get('RUN#r-fixed|RUN#r-fixed');
+          // Whatever the order, the surviving status must be terminal.
+          expect(TERMINAL.has(stored?.status as string)).toBe(true);
         },
       ),
       { numRuns: 100 },

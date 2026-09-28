@@ -40,6 +40,8 @@ import Alert from '@cloudscape-design/components/alert';
 import Spinner from '@cloudscape-design/components/spinner';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import Table from '@cloudscape-design/components/table';
+import Popover from '@cloudscape-design/components/popover';
+import Icon from '@cloudscape-design/components/icon';
 import type { CostLineItem, RunCostEstimate } from '../api/types';
 import { deriveCostPresentation } from '../cost/costPresentation';
 
@@ -92,6 +94,106 @@ function formatQuantity(value: number | null | undefined, unit: string): string 
     return UNAVAILABLE;
   }
   return `${value} ${unit}`;
+}
+
+/**
+ * The doc-informed explanation for a DYNAMIC run-storage line item that could
+ * not be priced. AWS HealthOmics only publishes the run-level
+ * `aws.omics.run.filesystem.usage` metric (which the dynamic-storage cost
+ * integrates) with a delay of 30+ minutes and not at all for runs shorter than
+ * ~30 minutes, so there is genuinely no measured usage series to price — the
+ * "—" is honest, not a fabricated $0. See
+ * https://docs.aws.amazon.com/omics/latest/dev/monitoring-run-metrics.html
+ */
+const DYNAMIC_STORAGE_UNAVAILABLE_MESSAGE =
+  "AWS HealthOmics doesn't publish run-level dynamic storage usage for short " +
+  'runs (under ~30 minutes) and can delay it by 30+ minutes, so there\u2019s no ' +
+  'measured usage to price for this run. This is not a billing error — it\u2019s a ' +
+  'gap in the source metric, not a $0 cost.';
+
+/** The generic fallback when the backend gives no specific reason. */
+const GENERIC_UNAVAILABLE_MESSAGE =
+  "This line item couldn't be priced, so no estimate is shown (never a " +
+  'fabricated $0).';
+
+/**
+ * True when a line item is the DYNAMIC run-storage case whose "—" the docs
+ * explain (delayed / absent `aws.omics.run.filesystem.usage` series). Detected
+ * structurally (STORAGE + a Dynamic-Run-Storage usage/resource type) or by the
+ * backend's specific "Dynamic run storage usage series unavailable" reason on a
+ * null-quantity storage item, so it enriches that reason rather than guessing.
+ */
+function isDynamicRunStorage(item: CostLineItem): boolean {
+  if (item.category !== 'STORAGE') {
+    return false;
+  }
+  if (
+    item.usageType === 'Dynamic Run Storage' ||
+    item.resourceType === 'Dynamic Run Storage'
+  ) {
+    return true;
+  }
+  return (
+    item.quantity == null &&
+    typeof item.unavailableReason === 'string' &&
+    item.unavailableReason.toLowerCase().includes('dynamic run storage')
+  );
+}
+
+/**
+ * Compute a friendly, user-facing sentence explaining WHY an unavailable line
+ * item shows a "—". Pure and total. Enriches the DYNAMIC run-storage case with
+ * doc-informed context; otherwise surfaces the backend `unavailableReason`, and
+ * falls back to a generic honest message when no reason is provided. Never
+ * fabricates a number or contradicts the backend reason.
+ */
+export function explainUnavailable(item: CostLineItem): string {
+  if (isDynamicRunStorage(item)) {
+    return DYNAMIC_STORAGE_UNAVAILABLE_MESSAGE;
+  }
+  const reason = item.unavailableReason;
+  if (typeof reason === 'string' && reason.trim() !== '') {
+    return reason;
+  }
+  return GENERIC_UNAVAILABLE_MESSAGE;
+}
+
+/**
+ * A numeric cell for an unavailable line item: the honest "—" followed by a
+ * compact, discoverable info affordance that reveals `reason` in a dismissable
+ * Popover. Keeps the cell reading as "—" while giving users a "why".
+ */
+function UnavailableCell({ reason }: { reason: string }): React.JSX.Element {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+      <span>{UNAVAILABLE}</span>
+      <Popover
+        dismissButton
+        header="Why is this unavailable?"
+        triggerType="custom"
+        size="medium"
+        position="top"
+        content={<span data-testid="cost-unavailable-reason">{reason}</span>}
+      >
+        <button
+          type="button"
+          aria-label="Why is this unavailable?"
+          data-testid="cost-unavailable-info"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: 0,
+            border: 'none',
+            background: 'none',
+            cursor: 'pointer',
+            color: 'inherit',
+          }}
+        >
+          <Icon name="status-info" variant="link" />
+        </button>
+      </Popover>
+    </span>
+  );
 }
 
 /** A synthetic table row: either a real line item or the total row. */
@@ -227,34 +329,49 @@ export default function RunCostPanel({
                 {
                   id: 'quantity',
                   header: 'Quantity',
-                  cell: (row) =>
-                    row.kind === 'total'
-                      ? ''
-                      : formatQuantity(row.item.quantity, row.item.unit),
+                  cell: (row) => {
+                    if (row.kind === 'total') {
+                      return '';
+                    }
+                    if (row.item.available === false && row.item.quantity == null) {
+                      return <UnavailableCell reason={explainUnavailable(row.item)} />;
+                    }
+                    return formatQuantity(row.item.quantity, row.item.unit);
+                  },
                 },
                 {
                   id: 'ratePerUnit',
                   header: 'Published rate',
-                  cell: (row) =>
-                    row.kind === 'total'
-                      ? row.currency ?? ''
-                      : formatRate(
-                          row.item.ratePerUnit,
-                          row.item.unit,
-                          presentation.currency,
-                        ),
+                  cell: (row) => {
+                    if (row.kind === 'total') {
+                      return row.currency ?? '';
+                    }
+                    if (row.item.available === false && row.item.ratePerUnit == null) {
+                      return <UnavailableCell reason={explainUnavailable(row.item)} />;
+                    }
+                    return formatRate(
+                      row.item.ratePerUnit,
+                      row.item.unit,
+                      presentation.currency,
+                    );
+                  },
                 },
                 {
                   id: 'estimatedCost',
                   header: 'Estimated cost',
-                  cell: (row) =>
-                    row.kind === 'total' ? (
-                      <Box fontWeight="bold">
-                        {formatCost(row.total, row.currency)}
-                      </Box>
-                    ) : (
-                      formatCost(row.item.estimatedCost, presentation.currency)
-                    ),
+                  cell: (row) => {
+                    if (row.kind === 'total') {
+                      return (
+                        <Box fontWeight="bold">
+                          {formatCost(row.total, row.currency)}
+                        </Box>
+                      );
+                    }
+                    if (row.item.available === false) {
+                      return <UnavailableCell reason={explainUnavailable(row.item)} />;
+                    }
+                    return formatCost(row.item.estimatedCost, presentation.currency);
+                  },
                 },
               ]}
               empty={

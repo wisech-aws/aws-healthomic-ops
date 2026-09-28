@@ -106,6 +106,7 @@ vi.mock('reactflow', () => ({
     <div data-testid="reactflow">{nodes.length} nodes</div>
   ),
   Background: () => null,
+  BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
   Controls: () => null,
   MarkerType: { ArrowClosed: 'arrowclosed' },
   Position: { Top: 'top', Bottom: 'bottom', Left: 'left', Right: 'right' },

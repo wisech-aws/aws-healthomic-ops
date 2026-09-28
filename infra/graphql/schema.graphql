@@ -244,6 +244,102 @@ type RunCostEstimate @aws_cognito_user_pools {
   error: String               # non-null => query failed (Req 5.7)
 }
 
+# ── Aggregate workflow/version performance reports (workflow-performance-reports) ──
+# Read-only, Cognito-authorized. Grouping/display use the friendly
+# (workflowName, versionName) pair; versionless runs use the literal
+# "(unversioned)". Every memory statistic is in GiB. An unavailable metric is
+# reported with null statistics and its "N of M" denominator, never fabricated
+# as 0.
+
+# A distinct workflow+version group present in a time window (for the pickers).
+type WorkflowGroup @aws_cognito_user_pools {
+  workflowName: String!
+  versionName: String!
+  # Distinct workflow ids observed for this friendly group; >1 => Collision_State.
+  workflowIds: [String!]!
+  runCount: Int!
+}
+
+# Aggregated statistics for one tracked metric across a group's runs.
+type AggregateMetric @aws_cognito_user_pools {
+  key: String!          # e.g. "durationMs" | "meanCpu" | "peakMemoryGiB"
+  unit: String          # "GiB" | "vCPU" | "ms" | "CPU-hours" | "tasks"
+  mean: Float           # null => Metric_Unavailable_State
+  median: Float
+  p90: Float
+  availableCount: Int!  # N (runs with this metric available)
+  totalCount: Int!      # M (runs in the group)
+}
+
+# One run's tracked-metric values for trend charts / CSV rows. A metric that was
+# unavailable for the run is null (never 0).
+type RunPoint @aws_cognito_user_pools {
+  runId: ID!
+  stoppedAt: String!
+  status: RunStatus
+  durationMs: Float
+  meanCpu: Float
+  peakCpu: Float
+  meanMemoryGiB: Float
+  peakMemoryGiB: Float
+  cpuHours: Float
+  peakConcurrentTasks: Int
+  taskCount: Int
+  failedTaskCount: Int
+}
+
+# A paginated page of per-run rows for the CSV export path (bounded per call).
+type RunPointConnection @aws_cognito_user_pools {
+  items: [RunPoint!]!
+  nextToken: String
+}
+
+# One bucket of a fixed-size metric distribution (workflow-performance-reports Req 11.2).
+type HistogramBucket @aws_cognito_user_pools {
+  lo: Float!
+  hi: Float!
+  count: Int!
+}
+
+# A server-computed, fixed-size distribution of one metric (bounded bucket count).
+type MetricHistogram @aws_cognito_user_pools {
+  key: String!
+  unit: String
+  buckets: [HistogramBucket!]!
+  availableCount: Int!
+  totalCount: Int!
+}
+
+# A server-computed, fixed-size time bin (bounded bin count).
+type TimeBin @aws_cognito_user_pools {
+  start: String!
+  end: String!
+  runCount: Int!
+  durationMeanMs: Float
+  durationP90Ms: Float
+}
+
+type WorkflowReport @aws_cognito_user_pools {
+  workflowName: String!
+  versionName: String!
+  window: MetricWindow!
+  runCount: Int!
+  succeeded: Int!
+  failed: Int!
+  cancelled: Int!
+  collision: Boolean!
+  metrics: [AggregateMetric!]!
+  # Fixed-size chart series so the payload/render is bounded regardless of run
+  # count (Req 11.1, 11.2). `durationHistogram` is null when no run has a
+  # duration; `timeBins` is empty for a degenerate window.
+  durationHistogram: MetricHistogram
+  timeBins: [TimeBin!]!
+  # A small, bounded recent-run sample for on-screen context only (Req 11.3);
+  # the complete per-run dataset comes from listWorkflowRunPoints.
+  sample: [RunPoint!]!
+  sampleCapped: Boolean!
+}
+
 type Query {
   listRuns(limit: Int, nextToken: String): RunConnection!
     @aws_cognito_user_pools
@@ -255,12 +351,15 @@ type Query {
     @aws_cognito_user_pools
   # Logs for a step: stream=RUN|ENGINE for the run header, stream=TASK+taskId for
   # a selected task node. Backed by a Lambda data source over CloudWatch Logs.
+  # tail: when true, fetch newest lines first (failed-run triage); default
+  # false = oldest-first.
   getRunLogs(
     runId: ID!
     stream: LogStream!
     taskId: ID
     nextToken: String
     limit: Int
+    tail: Boolean
   ): RunLogs @aws_cognito_user_pools
   # Best-effort error-line extraction from a run/task's CloudWatch log stream
   # (Option B: HealthOmics' own statusMessage is often just boilerplate
@@ -283,6 +382,32 @@ type Query {
   # runtime x the published AWS price list; never the actual billed amount).
   # Backed by a Lambda data source; never persisted.
   getRunCostEstimate(runId: ID!): RunCostEstimate @aws_cognito_user_pools
+  # Aggregate workflow/version performance reports
+  # (workflow-performance-reports). Both backed by the Reports Lambda data
+  # source and Cognito-authorized like the other reads.
+  #
+  # Enumerate the distinct workflow+version groups with Run_Summary rows in the
+  # window (for the report pickers); `workflowIds` has >1 entry when a friendly
+  # (name, version) maps to more than one workflow id (Collision_State).
+  listWorkflowGroups(start: String!, end: String!): [WorkflowGroup!]!
+    @aws_cognito_user_pools
+  # Aggregated mean/median/p90 report for one workflow+version over a window.
+  getWorkflowReport(
+    workflowName: String!
+    versionName: String!
+    start: String!
+    end: String!
+  ): WorkflowReport @aws_cognito_user_pools
+  # Paginated per-run rows for the CSV export path (kept out of getWorkflowReport
+  # so the report payload stays size-bounded, workflow-performance-reports Req 7.2, 11.3).
+  listWorkflowRunPoints(
+    workflowName: String!
+    versionName: String!
+    start: String!
+    end: String!
+    limit: Int
+    nextToken: String
+  ): RunPointConnection @aws_cognito_user_pools
 }
 
 type Mutation {

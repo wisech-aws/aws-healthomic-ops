@@ -1,0 +1,36 @@
+/*
+ * Print-to-PDF layout for the Reports view (workflow-performance-reports
+ * Req 8.x). When the user triggers Export PDF (window.print()), only the report
+ * region (#reports-printable) is printed, with the app chrome (top nav,
+ * breadcrumbs, buttons) hidden, so the executive PDF shows just the cards,
+ * table, and chart. The on-screen layout is unchanged; these rules apply only
+ * in the print media query.
+ */
+@media print {
+  /* Hide everything, then reveal only the printable report region. */
+  body * {
+    visibility: hidden;
+  }
+  #reports-printable,
+  #reports-printable * {
+    visibility: visible;
+  }
+  #reports-printable {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    padding: 12px;
+  }
+  /* Don't print interactive controls / export buttons. */
+  #reports-printable [data-testid='reports-date-range'],
+  #reports-printable [data-testid='reports-group-select'] {
+    display: none;
+  }
+  /* Avoid awkward page breaks inside cards/tables/charts. */
+  #reports-printable [data-testid='reports-metrics-table'],
+  #reports-printable [data-testid='reports-duration-chart'] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}

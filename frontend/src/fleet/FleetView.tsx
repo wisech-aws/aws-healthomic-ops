@@ -194,6 +194,20 @@ function StatusCell({
     </SpaceBetween>
   );
 }
+/**
+ * Maximum number of runs the fleet loads into memory (hybrid paging cap). The
+ * list is fetched by following the `nextToken` cursor page-by-page until this
+ * cap is reached, then paged/filtered/sorted/grouped client-side. This bounds
+ * memory and network for a large fleet (e.g. 50k+ runs) while keeping the rich
+ * client-side controls (status/workflow filter, sort, group, search) working
+ * over the loaded set. When the cap is hit, the UI surfaces a "showing first N"
+ * notice so the list is never silently presented as complete.
+ */
+const FLEET_LOAD_CAP = 1000;
+
+/** Per-request page size used while paging the fleet with `nextToken`. */
+const FLEET_FETCH_PAGE_SIZE = 100;
+
 
 export default function FleetView({
   listRuns = defaultListRuns,
@@ -207,6 +221,9 @@ export default function FleetView({
   const [phase, setPhase] = useState<LoadPhase>('loading');
   const [runs, setRuns] = useState<Run[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // True when the load hit the FLEET_LOAD_CAP and more runs exist server-side
+  // than were loaded, so the UI can honestly say the list is capped.
+  const [loadCapped, setLoadCapped] = useState(false);
   // Multi-status filter: an empty set means "all statuses" (Req 5.1).
   const [statusFilter, setStatusFilter] = useState<ReadonlySet<RunStatus>>(
     () => new Set(),
@@ -245,8 +262,28 @@ export default function FleetView({
     setPhase('loading');
     setErrorMessage(null);
     try {
-      const connection = await listRuns();
-      setRuns(connection.items);
+      // Hybrid paging: fetch page-by-page following `nextToken` until the
+      // FLEET_LOAD_CAP is reached (or the server has no more pages), then page
+      // client-side. This never loads an unbounded number of runs while still
+      // giving the client-side filter/sort/group/search the full loaded set.
+      const collected: Run[] = [];
+      let nextToken: string | undefined;
+      let capped = false;
+      do {
+        const remaining = FLEET_LOAD_CAP - collected.length;
+        const limit = Math.min(FLEET_FETCH_PAGE_SIZE, remaining);
+        const connection = await listRuns({ limit, nextToken });
+        collected.push(...connection.items);
+        nextToken = connection.nextToken ?? undefined;
+        if (collected.length >= FLEET_LOAD_CAP) {
+          // Hit the cap: there may be more runs server-side than we loaded.
+          capped = nextToken !== undefined;
+          break;
+        }
+      } while (nextToken !== undefined);
+
+      setRuns(collected);
+      setLoadCapped(capped);
       setPhase('ready');
     } catch (error) {
       // Retain previously loaded content; only swap in the error state (Req 10.2).
@@ -565,6 +602,17 @@ export default function FleetView({
     </SpaceBetween>
   );
 
+  // Honest "showing first N" notice when the load hit the cap (more runs exist
+  // server-side than are loaded). Filters/search/sort/group operate over the
+  // loaded set; narrowing by status/workflow/search helps find capped runs.
+  const cappedNotice = loadCapped ? (
+    <Alert type="info" data-testid="fleet-capped-notice">
+      Showing the most recent {runs.length.toLocaleString()} runs. More runs
+      exist than are loaded here — narrow by status, workflow, or search to find
+      a specific run.
+    </Alert>
+  ) : null;
+
   // Column definitions shared by the flat table and every grouped sub-table.
   const columnDefinitions: TableProps.ColumnDefinition<Run>[] = [
     {
@@ -720,6 +768,7 @@ export default function FleetView({
       <SpaceBetween size="l">
         {header}
         {searchAndFilter}
+        {cappedNotice}
         {groups.length === 0 ? (
           <Table<Run>
             variant="borderless"
@@ -764,7 +813,16 @@ export default function FleetView({
       items={page.items}
       trackBy="runId"
       header={header}
-      filter={searchAndFilter}
+      filter={
+        cappedNotice ? (
+          <SpaceBetween size="xs">
+            {cappedNotice}
+            {searchAndFilter}
+          </SpaceBetween>
+        ) : (
+          searchAndFilter
+        )
+      }
       pagination={
         <Pagination
           currentPageIndex={page.currentPage}

@@ -2,6 +2,32 @@
 
 Operational and local-verification scripts.
 
+## `deploy.sh` — build and deploy in one command
+
+Runs the correct deploy sequence so you never publish a stale or missing
+`frontend/dist`: **build ingest → build the SPA → `cdk deploy`** (CDK resolves
+cross-stack order Data → Api → Ingest, Api → Frontend). Prefer this over calling
+`cdk deploy --all` directly, which does **not** build the SPA.
+
+```bash
+scripts/deploy.sh                          # build ingest + SPA, deploy all stacks
+scripts/deploy.sh --frontend-only          # build SPA, deploy only HealthOmicsFrontend
+scripts/deploy.sh --stack HealthOmicsApi   # build, deploy one named stack
+scripts/deploy.sh --skip-build             # deploy without rebuilding (use with care)
+scripts/deploy.sh --region us-west-2       # override region (default: $AWS_REGION or us-east-1)
+scripts/deploy.sh --help
+```
+
+Requires AWS credentials for the target account and a one-time `cdk bootstrap`
+per account/region. Deploys are billable.
+
+> **Do not** hand-edit the AppSync auth with `aws appsync update-graphql-api`:
+> that call replaces the whole auth config and drops the **IAM** additional-auth
+> provider the ingest Lambda needs to publish (→ HTTP 401 on
+> `publishRunUpdate`/`publishTaskUpdate`). CDK owns the auth config; if the live
+> API drifts, restore it by re-including BOTH the Cognito default AND
+> `--additional-authentication-providers '[{"authenticationType":"AWS_IAM"}]'`.
+
 ## `send-event.mjs` — synthetic-event / direct-invoke (Req 13.4, 13.6)
 
 An executable operator script that, selectable by the operator, EITHER publishes
@@ -153,3 +179,122 @@ node scripts/inject-config.mjs \
 
 The generated `.env.*` files are gitignored. The script fails with a clear
 error if the outputs file, the named stack, or any required output is missing.
+
+---
+
+## `backfill-run-summaries.mjs` — one-time Run_Summary backfill (workflow-performance-reports Req 9)
+
+The **Reports** feature aggregates over per-run performance rollups
+(`Run_Summary` items) that the ingest pipeline writes when a run reaches a
+terminal state. Runs that finished **before** the feature shipped have no
+rollup, so this one-time, **idempotent** script creates them from data already
+stored in the single table:
+
+- **Run-level facts** (duration, status, task shape, workflow name/version/id)
+  come from the stored `RUN` + `TASK` items — always available.
+- **Utilization** (CPU/memory means & peaks) comes from a bounded CloudWatch
+  PromQL sweep, **only** for runs still within the ~15-month retention window;
+  older runs (or any sweep failure) are backfilled with utilization flagged
+  **unavailable** rather than fabricated.
+
+It reuses the ingest package's **compiled** helpers, so build ingest first:
+
+```bash
+cd ingest && npm run build && cd ..
+```
+
+### Usage
+
+```bash
+# See usage without touching AWS or needing credentials:
+scripts/backfill-run-summaries.mjs --help
+
+# Report what WOULD be written, without writing (read-only scans + sweep):
+scripts/backfill-run-summaries.mjs --dry-run --table-name <TableName> --region <region>
+
+# Backfill for real (safe to re-run — idempotent monotonic upsert):
+scripts/backfill-run-summaries.mjs --table-name <TableName> --region <region>
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--table-name <name>` | DynamoDB single table (or `$TABLE_NAME`). Required. |
+| `--region <region>` | AWS region (or `$AWS_REGION`). Required. |
+| `--retention-days <n>` | CloudWatch retention window in days for the utilization sweep (default `450` ≈ 15 months). Runs older than this are backfilled with utilization unavailable. |
+| `--rate-ms <n>` | Minimum delay between CloudWatch sweeps, ms (default `250`), to stay within API limits. |
+| `--skip-metrics` | Skip the CloudWatch sweep entirely; backfill only run-level facts (utilization unavailable for all). |
+| `--limit <n>` | Process at most N runs (for a bounded trial run). |
+| `--dry-run` | Scan/compute and report; never write summaries. |
+| `--help`, `-h` | Print help and exit. Never imports the SDK. |
+
+`--help` never touches AWS. `--dry-run` performs the same read-only scans (and,
+unless `--skip-metrics`, the CloudWatch sweep) but is **guaranteed** to skip the
+summary write. The script requires read access to the table and, for the
+utilization sweep, the same CloudWatch PromQL permissions the metrics reader
+uses (`cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`).
+
+
+## `repair-bare-tasks.mjs` — re-enrich bare terminal tasks
+
+Repairs **bare** terminal task items — tasks persisted with only a `status`
+(no `startedAt`/`stoppedAt`/`name`/`cpus`/`memory`) because their `GetRunTask`
+enrichment was throttled/lost during a large batch. It re-fetches each bare task
+via `GetRunTask` (rate-limited to the ~10 TPS HealthOmics budget, reusing the
+ingest limiter), upserts the repaired record, and rebuilds the affected
+`Run_Summary` rollups. The ingest handler's terminal-task-throw guard prevents
+new bare tasks going forward; this repairs items written before that fix.
+
+### Usage
+
+```bash
+# Build ingest first so the compiled enrichment modules exist:
+(cd ingest && npm run build)
+
+# Dry-run over a batch (reports bare tasks, writes nothing):
+node scripts/repair-bare-tasks.mjs --batch-id <id> --dry-run \
+    --table-name <table> --region us-east-1
+
+# Apply:
+node scripts/repair-bare-tasks.mjs --batch-id <id> \
+    --table-name <table> --region us-east-1
+```
+
+Accepts `--batch-id <id>` or `--run-ids a,b,...`, `--tps <n>` (default 10), and
+`--dry-run`. Resolves the AWS SDK from `ingest/node_modules`.
+
+## `repair-task-status.mjs` — correct stuck task status
+
+Repairs task items whose stored `status` disagrees with the authoritative
+HealthOmics `ListRunTasks` status (e.g. a task stuck `RUNNING` even though the
+run is `COMPLETED`). This happened when an out-of-order / redelivered
+non-terminal task event overwrote a terminal status. The ingest repository now
+carries a **status-monotonic guard** (a terminal status can never be reverted to
+non-terminal, regardless of `updatedAt`) so this can no longer happen going
+forward; this script fixes items written before the guard.
+
+For each run it reads the authoritative task statuses from HealthOmics
+(paginated, rate-limited), compares to the stored items, and for any mismatch
+writes the correct status — plus `stoppedAt` when the authoritative task has a
+stop time — with a freshly-bumped `updatedAt` so the corrected value wins.
+
+### Usage
+
+```bash
+# Build ingest first (for SDK resolution parity with the other scripts):
+(cd ingest && npm run build)
+
+# Dry-run over a batch (reports mismatches, writes nothing):
+node scripts/repair-task-status.mjs --batch-id <id> --dry-run \
+    --table-name <table> --region us-east-1
+
+# Apply:
+node scripts/repair-task-status.mjs --batch-id <id> \
+    --table-name <table> --region us-east-1
+```
+
+Accepts `--batch-id <id>` or `--run-ids a,b,...`, `--tps <n>` (default 10), and
+`--dry-run`. Requires read access to the table + `omics:ListRunTasks` /
+`omics:ListRunsInBatch`, and DynamoDB update access. Resolves the AWS SDK from
+`ingest/node_modules`.
