@@ -19,6 +19,7 @@
     "@aws-sdk/client-dynamodb": "3.1119.0",
     "@aws-sdk/client-omics": "3.1119.0",
     "@aws-sdk/client-pricing": "3.1119.0",
+    "@aws-sdk/client-scheduler": "3.1119.0",
     "@aws-sdk/credential-provider-node": "3.972.81",
     "@aws-sdk/lib-dynamodb": "3.1119.0",
     "@aws-sdk/types": "3.974.5",

@@ -58,6 +58,7 @@ function makeDeps(opts: {
   summarizer?: IngestSummarizer;
   repoOverrides?: Partial<IngestRepository>;
   registryCalls?: Array<{ name: string; version: string; workflowId: string | undefined }>;
+  scheduledRunIds?: string[];
 }) {
   const repo: IngestRepository = {
     upsertRun: async () => ({ outcome: 'written' }),
@@ -93,7 +94,17 @@ function makeDeps(opts: {
     publishRunUpdate: async () => ({ outcome: 'published' }),
     publishTaskUpdate: async () => ({ outcome: 'published' }),
   };
-  return { repository: repo, enricher, publisher, summarizer: opts.summarizer };
+  return {
+    repository: repo,
+    enricher,
+    publisher,
+    summarizer: opts.summarizer,
+    scheduleReconcile: opts.scheduledRunIds
+      ? async (runId: string) => {
+          opts.scheduledRunIds!.push(runId);
+        }
+      : undefined,
+  };
 }
 
 function runEvent(detail: Record<string, unknown>): EventBridgeEvent<string, unknown> {
@@ -238,6 +249,41 @@ describe('completion hook — Run_Summary at terminal state', () => {
         },
       },
     });
+    const handler = createHandler(deps);
+    await expect(handler(runEvent(terminalRunDetail('COMPLETED')))).resolves.toBeUndefined();
+    expect(summaries).toHaveLength(1);
+  });
+
+  it('schedules the deferred re-sweep for a TERMINAL run', async () => {
+    const summaries: RunSummaryRecord[] = [];
+    const scheduledRunIds: string[] = [];
+    const deps = makeDeps({ summaries, scheduledRunIds });
+    const handler = createHandler(deps);
+
+    await handler(runEvent(terminalRunDetail('COMPLETED')));
+
+    expect(summaries).toHaveLength(1);
+    expect(scheduledRunIds).toEqual(['r-1']);
+  });
+
+  it('does NOT schedule a deferred re-sweep for a non-terminal run', async () => {
+    const summaries: RunSummaryRecord[] = [];
+    const scheduledRunIds: string[] = [];
+    const deps = makeDeps({ summaries, scheduledRunIds });
+    const handler = createHandler(deps);
+
+    await handler(runEvent(terminalRunDetail('RUNNING')));
+
+    expect(summaries).toHaveLength(0);
+    expect(scheduledRunIds).toEqual([]);
+  });
+
+  it('isolates a scheduling failure: summary still written, no throw', async () => {
+    const summaries: RunSummaryRecord[] = [];
+    const deps = makeDeps({ summaries });
+    deps.scheduleReconcile = async () => {
+      throw new Error('scheduler down');
+    };
     const handler = createHandler(deps);
     await expect(handler(runEvent(terminalRunDetail('COMPLETED')))).resolves.toBeUndefined();
     expect(summaries).toHaveLength(1);

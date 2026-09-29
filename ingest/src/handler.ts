@@ -28,6 +28,12 @@ import type { EventBridgeEvent } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { OmicsClient } from '@aws-sdk/client-omics';
+import {
+  SchedulerClient,
+  CreateScheduleCommand,
+  ActionAfterCompletion,
+  FlexibleTimeWindowMode,
+} from '@aws-sdk/client-scheduler';
 
 import type { RunRecord, TaskRecord, RunSummaryRecord } from './domain/records.js';
 import { RunStatus, TaskStatus } from './domain/status.js';
@@ -158,6 +164,16 @@ export interface HandlerDependencies {
    * unavailable (workflow-performance-reports Req 1.1).
    */
   summarizer?: IngestSummarizer;
+  /**
+   * Optional deferred re-sweep scheduler. When present, the completion hook
+   * schedules a one-shot reconcile a few minutes after a run reaches terminal
+   * state (deferred re-sweep): by then CloudWatch utilization metrics have
+   * landed and any out-of-order task state has settled, so the Reconciler can
+   * correct stuck tasks and populate utilization the terminal-instant sweep
+   * missed. Best-effort: a scheduling failure never disturbs the persisted
+   * summary. Absent in tests that do not exercise it.
+   */
+  scheduleReconcile?(runId: string): Promise<void>;
 }
 
 /** The Lambda handler signature. */
@@ -444,6 +460,22 @@ async function maybePersistRunSummary(
         );
       }
     }
+
+    // Deferred re-sweep: schedule a one-shot reconcile a few minutes out so the
+    // utilization metrics (which lag the terminal event) and any not-yet-settled
+    // task states are corrected once available. Best-effort and isolated — a
+    // scheduling failure must not undo the summary we just wrote.
+    if (typeof deps.scheduleReconcile === 'function') {
+      try {
+        await deps.scheduleReconcile(run.runId);
+      } catch (err) {
+        console.error(
+          `handler: scheduling deferred re-sweep for run ${run.runId} failed; ` +
+            `summary retained (utilization may remain unavailable until a manual backfill)`,
+          err,
+        );
+      }
+    }
   } catch (err) {
     // Never let a summary failure disturb the already-persisted run/task state
     // or the publish (Req 1.6).
@@ -565,6 +597,31 @@ async function processTaskEvent(
     const enriched = await deps.enricher.enrichTask(mapped.runId, mapped.taskId);
     record = mergeRecords<TaskRecord>(mapped, enriched);
 
+    // Authoritative-terminal override: normally the EVENT's status wins over the
+    // enrichment read (the event is the freshest signal — see mergeRecords).
+    // But EventBridge delivers at-least-once and OUT OF ORDER, so a RUNNING
+    // event can be processed AFTER the task actually finished. In that case
+    // GetRunTask (the enrichment) returns the CURRENT authoritative state —
+    // a terminal status plus `stoppedAt`. Blindly keeping the stale event's
+    // non-terminal status then persists the inconsistent "RUNNING but has
+    // stoppedAt" record (the stuck-task symptom). When enrichment reports a
+    // terminal status but the event carried a non-terminal one, trust the
+    // enrichment: it reflects reality and cannot be "too fresh". This is the
+    // one case where the enriched status legitimately overrides the event.
+    if (
+      !terminal &&
+      isTerminalTaskStatus(enriched.status)
+    ) {
+      record.status = enriched.status;
+      if (enriched.stoppedAt !== undefined) {
+        record.stoppedAt = enriched.stoppedAt;
+      }
+    }
+
+    // Recompute terminality from the (possibly overridden) record status so the
+    // bare-terminal guard below covers an enrichment-promoted terminal task too.
+    const recordTerminal = isTerminalTaskStatus(record.status);
+
     // Do NOT silently persist a BARE terminal task (status only, no timing):
     // that permanently loses the task's timing/name and produces the "weird"
     // empty rows in the task timeline. When a terminal task still has no
@@ -573,7 +630,7 @@ async function processTaskEvent(
     // committing an unenriched record. The global 10 TPS rate limiter means the
     // retry is very likely to succeed once the burst subsides. A non-terminal
     // task (e.g. PENDING) legitimately has no timing yet, so it is unaffected.
-    if (terminal && record.startedAt === undefined) {
+    if (recordTerminal && record.startedAt === undefined) {
       throw new Error(
         `enrichment incomplete for terminal task ${mapped.runId}/${mapped.taskId} ` +
           `(no startedAt after GetRunTask); throwing so the event is retried/DLQ'd ` +
@@ -772,7 +829,47 @@ function buildDefaultHandler(): IngestHandler {
     },
   };
 
-  return createHandler({ repository, enricher, publisher, summarizer });
+  // Deferred re-sweep scheduler (optional): when the reconciler infra is wired
+  // via env, schedule a ONE-SHOT EventBridge Scheduler ~RECONCILE_DELAY_MINUTES
+  // after terminal that invokes the Reconciler Lambda with { runId }. The
+  // schedule auto-deletes after completion (ActionAfterCompletion.DELETE) AND
+  // the reconciler deletes it explicitly, so nothing accumulates at batch scale.
+  // When the env is absent (infra not deployed), scheduleReconcile is left unset
+  // and the completion hook simply skips it — a safe no-op for staged rollout.
+  const reconcilerArn = process.env.RECONCILER_FUNCTION_ARN;
+  const schedulerRoleArn = process.env.RECONCILER_SCHEDULER_ROLE_ARN;
+  const scheduleGroup = process.env.RECONCILER_SCHEDULE_GROUP ?? 'default';
+  const delayMinutes = Number(process.env.RECONCILE_DELAY_MINUTES ?? '5');
+  let scheduleReconcile: ((runId: string) => Promise<void>) | undefined;
+  if (reconcilerArn && schedulerRoleArn) {
+    const scheduler = new SchedulerClient({ region });
+    scheduleReconcile = async (runId: string): Promise<void> => {
+      const fireAt = new Date(Date.now() + delayMinutes * 60_000);
+      // Schedule expression uses a whole-second UTC timestamp, no offset.
+      const at = fireAt.toISOString().replace(/\.\d{3}Z$/, '');
+      // Unique, deterministic-ish schedule name per run+fire so a re-terminal
+      // (rare) does not collide; <=64 chars, [a-zA-Z0-9-_.] only.
+      const scheduleName = `resweep-${runId}-${fireAt.getTime()}`.slice(0, 64);
+      await scheduler.send(
+        new CreateScheduleCommand({
+          Name: scheduleName,
+          GroupName: scheduleGroup,
+          FlexibleTimeWindow: { Mode: FlexibleTimeWindowMode.OFF },
+          ScheduleExpression: `at(${at})`,
+          // Auto-delete the one-shot after it runs (belt-and-suspenders with the
+          // reconciler's own DeleteSchedule) so schedules never accumulate.
+          ActionAfterCompletion: ActionAfterCompletion.DELETE,
+          Target: {
+            Arn: reconcilerArn,
+            RoleArn: schedulerRoleArn,
+            Input: JSON.stringify({ runId, scheduleName, scheduleGroup }),
+          },
+        }),
+      );
+    };
+  }
+
+  return createHandler({ repository, enricher, publisher, summarizer, scheduleReconcile });
 }
 
 /**
