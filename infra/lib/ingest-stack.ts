@@ -4,11 +4,28 @@ import { Rule } from 'aws-cdk-lib/aws-events';
 import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
 import { Runtime } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
-import { Effect, IRole, PolicyStatement } from 'aws-cdk-lib/aws-iam';
+import {
+  Effect,
+  IRole,
+  PolicyStatement,
+  Role,
+  ServicePrincipal,
+} from 'aws-cdk-lib/aws-iam';
 import { Queue } from 'aws-cdk-lib/aws-sqs';
+import { CfnScheduleGroup } from 'aws-cdk-lib/aws-scheduler';
 import { Construct } from 'constructs';
 import { DataStack } from './data-stack';
 import { ApiStack } from './api-stack';
+
+/** Absolute path to the reconciler (deferred re-sweep) Lambda entry. */
+const RECONCILER_ENTRY = path.join(
+  __dirname,
+  '..',
+  '..',
+  'ingest',
+  'src',
+  'reconcilerHandler.ts',
+);
 
 /**
  * Absolute path to the ingest Lambda handler entry point. The handler is an ESM
@@ -155,6 +172,138 @@ export class IngestStack extends Stack {
     // Expose the auto-created execution role so task 10.2 can attach the
     // DynamoDB / AppSync / HealthOmics least-privilege grants.
     this.ingestRole = this.ingestFunction.role!;
+
+    // ── Deferred re-sweep (Reconciler) ──────────────────────────────────────
+    // A run's Run_Summary is computed at the TERMINAL INSTANT, before CloudWatch
+    // utilization metrics land and before any out-of-order task state settles.
+    // On terminal, the ingest completion hook schedules a ONE-SHOT EventBridge
+    // Scheduler ~RECONCILE_DELAY_MINUTES later that invokes this Reconciler
+    // Lambda, which re-reads the authoritative run/task state + re-sweeps
+    // CloudWatch and re-writes the summary (force-winning the monotonic guard),
+    // then deletes its own schedule. Nothing accumulates (one-shot +
+    // ActionAfterCompletion.DELETE + self-delete).
+    const reconcilerFn = new NodejsFunction(this, 'ReconcilerFunction', {
+      runtime: Runtime.NODEJS_20_X,
+      entry: RECONCILER_ENTRY,
+      handler: 'handler',
+      projectRoot: INGEST_PROJECT_ROOT,
+      depsLockFilePath: INGEST_DEPS_LOCK_FILE,
+      timeout: Duration.seconds(120),
+      environment: {
+        RECONCILER_TABLE_NAME: props.dataStack.table.tableName,
+        MONITORING_HOST: `monitoring.${Stack.of(this).region}.amazonaws.com`,
+        SIGNING_SERVICE: 'monitoring',
+      },
+      bundling: {
+        format: OutputFormat.ESM,
+        // Bundle the pinned AWS SDK clients (same rationale as the ingest fn:
+        // newer GetRun fields) + scheduler/signature deps; inject the ESM
+        // createRequire shim so bundled CJS dynamic requires resolve.
+        externalModules: [],
+        banner:
+          "import{createRequire as __createRequire}from'module';const require=__createRequire(import.meta.url);",
+      },
+    });
+
+    // Reconciler IAM (least-privilege, explicit actions + scoped resources):
+    //  - DynamoDB RW on the table + GSI (re-upsert tasks/summary/registry).
+    reconcilerFn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:GetItem',
+          'dynamodb:Query',
+          'dynamodb:ConditionCheckItem',
+        ],
+        resources: [
+          props.dataStack.tableArn,
+          props.dataStack.gsi1Arn,
+          props.dataStack.gsi2Arn,
+        ],
+      }),
+    );
+    //  - HealthOmics read-only (authoritative run/task re-enrichment).
+    reconcilerFn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          'omics:GetRun',
+          'omics:ListRunTasks',
+          'omics:GetRunTask',
+        ],
+        resources: [
+          Stack.of(this).formatArn({ service: 'omics', resource: 'run', resourceName: '*' }),
+        ],
+      }),
+    );
+    //  - CloudWatch PromQL metric read (same documented Resource:* exception as
+    //    the metrics Lambda — GetMetricData/ListMetrics do not support
+    //    resource-level scoping; NOT a wildcard action).
+    reconcilerFn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ['cloudwatch:GetMetricData', 'cloudwatch:ListMetrics'],
+        resources: ['*'],
+      }),
+    );
+
+    // One dedicated scheduler group holds all one-shot re-sweep schedules, so
+    // DeleteSchedule and CreateSchedule can be scoped to this group's ARN only.
+    const scheduleGroup = new CfnScheduleGroup(this, 'ReconcileScheduleGroup', {
+      name: `${this.stackName}-resweep`,
+    });
+    const { region, account } = Stack.of(this);
+    const scheduleArnPattern = `arn:aws:scheduler:${region}:${account}:schedule/${scheduleGroup.name}/*`;
+
+    //  - The reconciler deletes its own one-shot schedule (scoped to the group).
+    reconcilerFn.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ['scheduler:DeleteSchedule'],
+        resources: [scheduleArnPattern],
+      }),
+    );
+
+    // The role EventBridge Scheduler assumes to INVOKE the reconciler. Trust is
+    // scoped to the scheduler service; permission is only lambda:InvokeFunction
+    // on the reconciler function ARN.
+    const schedulerInvokeRole = new Role(this, 'ReconcileSchedulerRole', {
+      assumedBy: new ServicePrincipal('scheduler.amazonaws.com'),
+      description:
+        'Assumed by EventBridge Scheduler to invoke the deferred re-sweep Reconciler Lambda.',
+    });
+    reconcilerFn.grantInvoke(schedulerInvokeRole);
+
+    // Ingest role: create the one-shot schedules (scoped to the group) and pass
+    // the scheduler-invoke role to EventBridge Scheduler. iam:PassRole is scoped
+    // to that single role and conditioned on the scheduler service.
+    this.ingestFunction.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ['scheduler:CreateSchedule'],
+        resources: [scheduleArnPattern],
+      }),
+    );
+    this.ingestFunction.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ['iam:PassRole'],
+        resources: [schedulerInvokeRole.roleArn],
+        conditions: {
+          StringEquals: { 'iam:PassedToService': 'scheduler.amazonaws.com' },
+        },
+      }),
+    );
+
+    // Wire the deferred re-sweep into the ingest function via env (presence of
+    // these two enables scheduleReconcile in the handler — staged rollout).
+    this.ingestFunction.addEnvironment('RECONCILER_FUNCTION_ARN', reconcilerFn.functionArn);
+    this.ingestFunction.addEnvironment('RECONCILER_SCHEDULER_ROLE_ARN', schedulerInvokeRole.roleArn);
+    this.ingestFunction.addEnvironment('RECONCILER_SCHEDULE_GROUP', scheduleGroup.name!);
+    // Also tell the reconciler which group its schedules live in (self-delete).
+    reconcilerFn.addEnvironment('RECONCILER_SCHEDULE_GROUP', scheduleGroup.name!);
 
     // EventBridge rule on the DEFAULT bus matching HealthOmics state-change
     // events (Req 1.1). Omitting `eventBus` targets the account's default bus,

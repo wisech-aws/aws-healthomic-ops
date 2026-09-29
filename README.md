@@ -56,10 +56,73 @@ Infrastructure is one AWS CDK v2 app split into four stacks by lifecycle and bla
 |-------|------------------|
 | `DataStack` | DynamoDB single table (on-demand, point-in-time recovery, `GSI1`). |
 | `ApiStack` | AppSync GraphQL API, schema, JS resolvers, Cognito user pool + app client (strong password policy + enforced threat protection), default Cognito authz plus IAM authz for the ingest publish mutations. |
-| `IngestStack` | Ingest Lambda, EventBridge rule, SQS dead-letter queue, retry policy, least-privilege IAM. The Lambda **bundles** the pinned AWS SDK v3 clients (rather than using the older SDK baked into the Node 20 runtime) so newer `GetRun` response fields — e.g. `networkingMode`, `configuration`, `vpcConfig` — are not silently dropped during deserialization. |
+| `IngestStack` | Ingest Lambda, EventBridge rule, SQS dead-letter queue, retry policy, least-privilege IAM. The Lambda **bundles** the pinned AWS SDK v3 clients (rather than using the older SDK baked into the Node 20 runtime) so newer `GetRun` response fields — e.g. `networkingMode`, `configuration`, `vpcConfig` — are not silently dropped during deserialization. Also owns the **deferred re-sweep**: a Reconciler Lambda plus a one-shot EventBridge Scheduler group (see [Deferred re-sweep](#deferred-re-sweep-late-settling-reconciliation)). |
 | `FrontendStack` | Private S3 bucket, CloudFront distribution with OAC, SPA 403/404 → `index.html` routing, build-config injection. |
 
 Stack ordering ensures the Cognito user pool exists before API authorization is configured, and a failure in any stack fails the whole deployment (CloudFormation rolls back rather than leaving a partially-provisioned stack in service).
+
+### Deferred re-sweep (late-settling reconciliation)
+
+A run's per-run performance rollup (`Run_Summary`) is computed by the ingest
+completion hook **at the instant the run reaches a terminal state**. At that
+moment two things are frequently *not yet settled*:
+
+1. **Task states** — EventBridge delivers run/task events **at-least-once and
+   out of order**, so a `RUNNING` task event can be processed *after* the task
+   actually finished. The ingest handler already defends against this with a
+   status-monotonic upsert guard and an *authoritative-terminal-override* (when
+   it enriches a task via `GetRunTask` and the API reports a terminal status, it
+   trusts that over a stale event status). But a sub-second enrichment-lag tail
+   can still leave a task stored as non-terminal when HealthOmics already has it
+   terminal — and no further event arrives to correct it.
+2. **Utilization metrics** — HealthOmics emits CPU/memory utilization at a ~30s
+   interval and CloudWatch ingestion lags the terminal event by tens of seconds
+   to minutes, so the completion-hook metric sweep often records "utilization
+   unavailable" even though the data lands shortly afterward.
+
+The **deferred re-sweep** closes both gaps. When a run reaches terminal, the
+ingest completion hook schedules a **one-shot [Amazon EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html)**
+(`at(now + RECONCILE_DELAY_MINUTES)`, default **5 minutes**) that invokes a small
+**Reconciler Lambda** with `{ runId }`. By the time it fires, both the task
+states and the metrics have settled, so the Reconciler:
+
+1. re-reads the **authoritative** run + all task state from the HealthOmics read
+   APIs (`GetRun` / `ListRunTasks` / `GetRunTask`) and re-upserts each task,
+   correcting any that drifted (the repository's monotonic + terminal-status
+   guards make a redundant write a harmless no-op);
+2. re-sweeps CloudWatch for the now-available utilization series;
+3. recomputes the `Run_Summary` and re-writes it with a freshly-bumped
+   `updatedAt` so it wins the monotonic guard (populating utilization the
+   terminal-instant sweep missed), and refreshes the `Group_Registry`;
+4. **deletes its own one-shot schedule** so nothing accumulates
+   (belt-and-suspenders with `ActionAfterCompletion: DELETE` on the schedule).
+
+```mermaid
+flowchart LR
+    ING["Ingest Lambda<br/>(terminal run)"] -->|"CreateSchedule at(now+5m)"| SCH["EventBridge Scheduler<br/>one-shot, group: &lt;stack&gt;-resweep"]
+    SCH -->|"~5 min later, invoke {runId}"| REC["Reconciler Lambda"]
+    REC -->|"GetRun / ListRunTasks / GetRunTask"| HO["HealthOmics read APIs"]
+    REC -->|"re-sweep CPU/MEMORY"| CW["CloudWatch (PromQL)"]
+    REC -->|"correct tasks + rewrite Run_Summary (force updatedAt)"| DDB[("DynamoDB")]
+    REC -->|"DeleteSchedule (self-cleanup)"| SCH
+```
+
+The feature is **idempotent and failure-isolated**: if everything already
+settled correctly the reconcile is a harmless no-op, and a scheduling failure in
+the completion hook never disturbs the already-persisted summary. It is also
+**staged-rollout safe** — the ingest handler only schedules a re-sweep when the
+reconciler infrastructure is wired via environment (`RECONCILER_FUNCTION_ARN` +
+`RECONCILER_SCHEDULER_ROLE_ARN`); absent those, it simply skips scheduling. The
+delay is configurable via the `RECONCILE_DELAY_MINUTES` environment variable.
+
+IAM is least-privilege: the ingest role may only `scheduler:CreateSchedule`
+within the dedicated schedule group and `iam:PassRole` the single
+scheduler-invoke role (conditioned on `iam:PassedToService = scheduler.amazonaws.com`);
+the Reconciler role may only read the HealthOmics run APIs, read CloudWatch
+metrics (`GetMetricData`/`ListMetrics` — the same documented `Resource: *`
+exception as the metrics resolver, since these actions do not support
+resource-level scoping), read/write the single DynamoDB table, and
+`scheduler:DeleteSchedule` within its own group.
 
 ---
 
@@ -404,6 +467,8 @@ Each expected cost driver, its billing unit, and the AWS service that meters it:
 | S3 (SPA assets) | Per GB-month storage plus per-request GET/PUT | Amazon S3 | Usage-based; SPA asset storage is a few MB. |
 | SQS dead-letter queue | Per request (per million requests) | Amazon SQS | Scales to zero — billed only when messages are enqueued. |
 | EventBridge (default bus, `aws.omics`) | AWS service events on the default bus are not charged for ingestion | Amazon EventBridge | No charge for AWS-source events on the default bus. |
+| EventBridge Scheduler (deferred re-sweep) | Per scheduled invocation (per million); one-shot schedules auto-delete | Amazon EventBridge Scheduler | Scales to zero — one schedule per terminal run, no standing schedules. |
+| Reconciler Lambda (deferred re-sweep) | Per invocation plus GB-seconds; one invocation per terminal run | AWS Lambda | Scales to zero — billed only per terminal run. |
 
 ### Fixed / recurring charges (idle-cost flags)
 
@@ -454,7 +519,11 @@ capacity applied (except Cognito).
 | Cognito | small number of users, within free tier | ~$0 |
 | EventBridge (`aws.omics`) | AWS-source events on the default bus | $0 (not billed) |
 | SQS dead-letter queue | only on delivery failure | ~$0 |
-| **Total (dashboard only)** | | **≈ $120–150 / month** |
+| Deferred re-sweep — Scheduler | ~100k one-shot schedules (1 per terminal run) @ ~$1/M | ~$0.10 |
+| Deferred re-sweep — Reconciler Lambda | ~100k invocations, ~10 s @ 128 MB (paced task re-enrichment) | ~$2 |
+| Deferred re-sweep — extra DynamoDB writes | ~41 re-writes/run (tasks + summary) ≈ 4.1M write units | ~$5 |
+| Deferred re-sweep — extra CloudWatch GetMetricData | ~200k metric-data requests (2 families/run) | ~$1–3 |
+| **Total (dashboard only)** | | **≈ $130–160 / month** |
 
 **Sensitivities — read before relying on these numbers:**
 
@@ -462,6 +531,7 @@ capacity applied (except Cognito).
 - **AppSync is the largest line item** (~$75–90 combined) because the pipeline publishes an update for every run/task status event and fans it out to subscribers.
 - **`rawGetRun` roughly quadruples the run-item write cost** (a ~3.6 KB item consumes 4 write units vs. 1 for a sub-1 KB item). It is inexpensive in absolute terms here, but trimming or dropping the raw capture would cut run-write cost ~4×.
 - **CloudFront scales with viewers and refreshes, not run count**, and the SPA bundle is large (~3.3 MB); code-splitting would reduce transfer.
+- **The deferred re-sweep adds ~$8–10/month at 100k runs** (mostly the ~41 extra DynamoDB writes per run for the re-enriched tasks + summary; the Scheduler and Reconciler Lambda themselves are pennies-to-a-couple-dollars). It scales linearly with run count and, like the ingest writes, with **tasks per run** — at ~150 tasks/run the re-sweep's DynamoDB re-write cost rises proportionally (~$18–20). It is effectively a **~one re-enrichment pass per run**, so it roughly doubles the *task-write* portion of the per-run cost while eliminating the stuck-task tail and the missing-utilization gap. If cost matters more than a few-minutes-fresher summary, raising `RECONCILE_DELAY_MINUTES` does not change cost, but skipping the re-sweep entirely (unset the reconciler env) removes this line at the price of reintroducing the late-settling gaps.
 - Figures are estimates for planning only; actual bills vary with AWS pricing, region, free-tier eligibility, and real traffic.
 
 ---

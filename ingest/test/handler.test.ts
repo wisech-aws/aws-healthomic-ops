@@ -400,6 +400,64 @@ describe('ingest handler pipeline', () => {
     },
   );
 
+  it('overrides a stale RUNNING event with the enriched TERMINAL status (out-of-order delivery)', async () => {
+    // Reproduces the stuck-task bug: a RUNNING event is processed AFTER the task
+    // actually finished. GetRunTask returns the authoritative COMPLETED + timing.
+    // The handler must persist COMPLETED (not the stale event RUNNING) so the
+    // stored task is not left "RUNNING but has stoppedAt".
+    const { repo, tasks } = makeRepository();
+    const { publisher } = makePublisher();
+    const enricher = makeEnricher({
+      enrichTask: async (runId, taskId) => ({
+        runId,
+        taskId,
+        name: 'align',
+        status: TaskStatus.COMPLETED, // authoritative: task is actually done
+        startedAt: '2024-01-01T00:01:00.000Z',
+        stoppedAt: '2024-01-01T00:09:00.000Z',
+      }),
+    });
+    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+
+    const detail = {
+      runId: 'run-1',
+      status: TaskStatus.RUNNING, // stale event status
+      arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/5252525',
+    };
+    await createHandler(deps)(taskEvent(detail));
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      taskId: '5252525',
+      status: TaskStatus.COMPLETED, // enriched terminal wins over stale RUNNING
+      startedAt: '2024-01-01T00:01:00.000Z',
+      stoppedAt: '2024-01-01T00:09:00.000Z',
+    });
+  });
+
+  it('keeps the event RUNNING status when enrichment also reports RUNNING (no false override)', async () => {
+    const { repo, tasks } = makeRepository();
+    const { publisher } = makePublisher();
+    const enricher = makeEnricher({
+      enrichTask: async (runId, taskId) => ({
+        runId,
+        taskId,
+        name: 'align',
+        status: TaskStatus.RUNNING,
+        startedAt: '2024-01-01T00:01:00.000Z',
+      }),
+    });
+    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+    const detail = {
+      runId: 'run-1',
+      status: TaskStatus.RUNNING,
+      arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/6363636',
+    };
+    await createHandler(deps)(taskEvent(detail));
+    expect(tasks[0]).toMatchObject({ taskId: '6363636', status: TaskStatus.RUNNING });
+    expect(tasks[0].stoppedAt).toBeUndefined();
+  });
+
   it('ignores a malformed (unknown detail-type) event without persisting or publishing', async () => {
     const { repo, runs, tasks } = makeRepository();
     const { publisher, publishedRuns, publishedTasks } = makePublisher();

@@ -177,14 +177,24 @@ describe('CDK app scaffold', () => {
       // No `Action: "*"` in any statement.
       expect(allPolicyActions(template)).not.toContain('*');
 
-      // No inline policy statement uses `Resource: "*"`.
+      // No inline policy statement uses `Resource: "*"` — EXCEPT the documented
+      // CloudWatch metric-read exception (cloudwatch:GetMetricData/ListMetrics do
+      // not support resource-level scoping; this is the Reconciler's re-sweep
+      // grant, mirroring the metrics/cost Lambdas). That exception is still NOT a
+      // wildcard action, which the assertion above already guarantees.
+      const CW_METRIC_READ = new Set(['cloudwatch:GetMetricData', 'cloudwatch:ListMetrics']);
       const policies = template.findResources('AWS::IAM::Policy');
       for (const policy of Object.values(policies)) {
         const statements =
           (policy as { Properties?: { PolicyDocument?: { Statement?: unknown[] } } })
             .Properties?.PolicyDocument?.Statement ?? [];
-        for (const stmt of statements as Array<{ Resource?: unknown }>) {
-          expect(stmt.Resource).not.toBe('*');
+        for (const stmt of statements as Array<{ Resource?: unknown; Action?: unknown }>) {
+          if (stmt.Resource === '*') {
+            // Only the CloudWatch metric-read actions may use Resource: '*'.
+            const actions = Array.isArray(stmt.Action) ? (stmt.Action as string[]) : [stmt.Action as string];
+            const allExempt = actions.every((a) => CW_METRIC_READ.has(a));
+            expect(allExempt).toBe(true);
+          }
         }
       }
     });
@@ -255,5 +265,79 @@ describe('ApiStack Cognito hardening (security: strong passwords + brute-force p
       expect(flows).not.toContain('ALLOW_USER_PASSWORD_AUTH');
       expect(flows).not.toContain('ALLOW_ADMIN_USER_PASSWORD_AUTH');
     }
+  });
+});
+
+
+describe('IngestStack deferred re-sweep (Reconciler + one-shot Scheduler)', () => {
+  function ingestTemplate(): Template {
+    const app = new App();
+    Tags.of(app).add('project', 'healthomics-workflow-dashboard');
+    const dataStack = new DataStack(app, 'HealthOmicsData');
+    const apiStack = new ApiStack(app, 'HealthOmicsApi', { dataStack });
+    apiStack.addStackDependency(dataStack);
+    const ingestStack = new IngestStack(app, 'HealthOmicsIngest', { dataStack, apiStack });
+    ingestStack.addStackDependency(dataStack);
+    ingestStack.addStackDependency(apiStack);
+    return Template.fromStack(ingestStack);
+  }
+
+  it('provisions a dedicated scheduler group and a second (reconciler) Lambda', () => {
+    const t = ingestTemplate();
+    t.resourceCountIs('AWS::Scheduler::ScheduleGroup', 1);
+    // ingest + reconciler.
+    const fns = t.findResources('AWS::Lambda::Function');
+    expect(Object.keys(fns).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('grants the ingest role scheduler:CreateSchedule (scoped, not *) and iam:PassRole conditioned on the scheduler service', () => {
+    const t = ingestTemplate();
+    const policies = t.findResources('AWS::IAM::Policy');
+    const allStatements: Array<{ Action?: unknown; Resource?: unknown; Condition?: unknown }> = [];
+    for (const p of Object.values(policies)) {
+      for (const s of p.Properties?.PolicyDocument?.Statement ?? []) {
+        allStatements.push(s);
+      }
+    }
+    const flat = (a: unknown): string[] => (Array.isArray(a) ? (a as string[]) : [a as string]);
+
+    const createSched = allStatements.find((s) => flat(s.Action).includes('scheduler:CreateSchedule'));
+    expect(createSched).toBeDefined();
+    expect(createSched!.Resource).not.toBe('*');
+
+    const passRole = allStatements.find((s) => flat(s.Action).includes('iam:PassRole'));
+    expect(passRole).toBeDefined();
+    expect(passRole!.Resource).not.toBe('*');
+    expect(JSON.stringify(passRole!.Condition)).toContain('scheduler.amazonaws.com');
+  });
+
+  it('grants the reconciler role scheduler:DeleteSchedule (scoped) + omics read + cloudwatch metrics, no wildcard actions', () => {
+    const t = ingestTemplate();
+    const policies = t.findResources('AWS::IAM::Policy');
+    const actions = new Set<string>();
+    for (const p of Object.values(policies)) {
+      for (const s of p.Properties?.PolicyDocument?.Statement ?? []) {
+        const a = s.Action;
+        (Array.isArray(a) ? a : [a]).forEach((x: string) => actions.add(x));
+      }
+    }
+    expect(actions.has('scheduler:DeleteSchedule')).toBe(true);
+    expect(actions.has('omics:ListRunTasks')).toBe(true);
+    expect(actions.has('cloudwatch:GetMetricData')).toBe(true);
+    // No wildcard ACTION anywhere.
+    expect(actions.has('*')).toBe(false);
+  });
+
+  it('creates a scheduler-invoke role trusted by the scheduler service', () => {
+    const t = ingestTemplate();
+    const roles = t.findResources('AWS::IAM::Role');
+    const trustsScheduler = Object.values(roles).some((r) => {
+      const stmts = r.Properties?.AssumeRolePolicyDocument?.Statement ?? [];
+      return stmts.some(
+        (s: { Principal?: { Service?: unknown } }) =>
+          JSON.stringify(s.Principal?.Service ?? '').includes('scheduler.amazonaws.com'),
+      );
+    });
+    expect(trustsScheduler).toBe(true);
   });
 });

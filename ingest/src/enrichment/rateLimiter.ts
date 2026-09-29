@@ -25,10 +25,15 @@ export type Sleep = (ms: number) => Promise<void>;
 
 const defaultSleep: Sleep = (ms) =>
   new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    if (typeof (t as { unref?: () => void }).unref === 'function') {
-      (t as { unref: () => void }).unref();
-    }
+    // NB: do NOT `unref()` this timer. The limiter's sleep is the ONLY pending
+    // event-loop work between paced acquisitions; unref-ing it lets Node treat
+    // the loop as empty and exit early — in a Lambda that manifests as
+    // "Runtime.NodeJsExit: a Promise that was never settled", killing an
+    // in-flight paced sweep (e.g. the reconciler enriching many tasks). A
+    // normal setTimeout keeps the process alive until the delay resolves, which
+    // is exactly what we want. Tests inject their own sleep, so this never
+    // causes a real timer wait in unit tests.
+    setTimeout(resolve, ms);
   });
 
 /**
