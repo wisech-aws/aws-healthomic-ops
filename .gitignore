@@ -36,3 +36,7 @@ cdk-outputs.json
 # Downloaded reference artifacts (not source)
 *.zip
 User Guide*AWS HealthOmics*.html
+
+# Kiro specs / AI agent prompt docs (not part of the open-source project)
+.kiro/
+*Coding Agent Prompt*.md
