@@ -55,7 +55,7 @@ Infrastructure is one AWS CDK v2 app split into four stacks by lifecycle and bla
 | Stack | Responsibilities |
 |-------|------------------|
 | `DataStack` | DynamoDB single table (on-demand, point-in-time recovery, `GSI1`). |
-| `ApiStack` | AppSync GraphQL API, schema, JS resolvers, Cognito user pool + app client, default Cognito authz plus IAM authz for the ingest publish mutations. |
+| `ApiStack` | AppSync GraphQL API, schema, JS resolvers, Cognito user pool + app client (strong password policy + enforced threat protection), default Cognito authz plus IAM authz for the ingest publish mutations. |
 | `IngestStack` | Ingest Lambda, EventBridge rule, SQS dead-letter queue, retry policy, least-privilege IAM. The Lambda **bundles** the pinned AWS SDK v3 clients (rather than using the older SDK baked into the Node 20 runtime) so newer `GetRun` response fields — e.g. `networkingMode`, `configuration`, `vpcConfig` — are not silently dropped during deserialization. |
 | `FrontendStack` | Private S3 bucket, CloudFront distribution with OAC, SPA 403/404 → `index.html` routing, build-config injection. |
 
@@ -261,6 +261,28 @@ aws cognito-idp admin-set-user-password \
   --user-pool-id <UserPoolId> --username you@example.com \
   --password '<StrongPassw0rd!>' --permanent
 ```
+
+> **Password requirements (enforced by the user pool).** The `ApiStack`
+> configures an explicit strong password policy, so the password you set must
+> satisfy **all** of:
+> - **at least 12 characters**,
+> - **lowercase, uppercase, a digit, and a symbol** (all four required),
+> - **not one of the last 3 passwords** for that user (password history), and
+> - an admin-issued **temporary** password expires in **1 day** (set
+>   `--permanent`, as above, for a non-temporary password).
+>
+> A password that does not meet the policy is rejected by
+> `admin-set-user-password` / sign-up. Pick a password (or generate one) that
+> meets every rule above.
+
+> **Brute-force / credential-stuffing protection (always on).** The user pool
+> runs on the Cognito **PLUS** feature plan with **threat protection enforced**
+> (`StandardThreatProtectionMode.FULL_FUNCTION`): Cognito adaptively blocks
+> sign-ins from risky sources and detects compromised credentials, and the SPA
+> app client sets `preventUserExistenceErrors` so failed sign-ins do not reveal
+> whether an account exists. This is provisioned by CDK — no manual step — but
+> note the PLUS plan bills per monthly active user (small for an admin-only
+> pool). Access/ID tokens are valid for 1 hour and refresh tokens for 30 days.
 
 The dashboard is then reachable at the CloudFront distribution domain emitted by
 the `FrontendStack`; sign in with that user.

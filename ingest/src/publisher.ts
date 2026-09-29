@@ -186,6 +186,25 @@ export class InvalidPublishIdentifierError extends Error {
 }
 
 /**
+ * Error carrying the AppSync HTTP status of a failed publish, so {@link dispatch}
+ * can distinguish a NON-retryable auth failure (401/403 — typically the ingest
+ * IAM auth provider being dropped from the AppSync API, i.e. config drift) from
+ * a transient one (5xx/network) and avoid wasting the retry budget on an error
+ * that will never succeed without an operator fix.
+ */
+export class PublishHttpError extends Error {
+  constructor(public readonly status: number) {
+    super(`AppSync responded with HTTP ${status}`);
+    this.name = 'PublishHttpError';
+  }
+}
+
+/** A publish HTTP status that will never succeed on retry (authn/authz). */
+export function isNonRetryablePublishStatus(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+/**
  * Error describing a publish that failed after {@link MAX_PUBLISH_ATTEMPTS}
  * attempts. The already-persisted run/task data is retained unchanged (Req 4.8);
  * this error exists so the handler can log the publish failure and the affected
@@ -417,6 +436,17 @@ export class AppSyncPublisher {
           `publish: ${mutation}(${identifier}) attempt ${attempt}/${this.maxAttempts} failed`,
           err,
         );
+        // Do not burn the remaining retry budget on a non-retryable auth
+        // failure (401/403). These indicate the ingest IAM auth provider was
+        // dropped from the AppSync API (config drift) and will not recover
+        // without an operator fix — retrying only delays the failed result.
+        if (err instanceof PublishHttpError && isNonRetryablePublishStatus(err.status)) {
+          this.log(
+            `publish: ${mutation}(${identifier}) got non-retryable HTTP ${err.status}; ` +
+              `not retrying (likely AppSync IAM auth drift)`,
+          );
+          break;
+        }
       }
     }
 
@@ -424,6 +454,27 @@ export class AppSyncPublisher {
     // is retained unchanged (Req 4.8). Do NOT throw — return a failed result.
     const error = new PublishFailedError(mutation, identifier, lastError);
     this.log(error.message, lastError);
+    // Emit an alarmable signal so a publish-failure spike (e.g. auth drift)
+    // surfaces as a CloudWatch metric rather than only a log line. EMF: a
+    // structured log line CloudWatch auto-extracts into a metric.
+    const isAuth =
+      lastError instanceof PublishHttpError && isNonRetryablePublishStatus(lastError.status);
+    this.log(
+      JSON.stringify({
+        _aws: {
+          CloudWatchMetrics: [
+            {
+              Namespace: 'HealthOmicsIngest',
+              Dimensions: [['mutation']],
+              Metrics: [{ Name: 'PublishFailed', Unit: 'Count' }],
+            },
+          ],
+        },
+        mutation,
+        PublishFailed: 1,
+        authFailure: isAuth ? 1 : 0,
+      }),
+    );
     return { outcome: 'failed', error };
   }
 
@@ -461,7 +512,7 @@ export class AppSyncPublisher {
     });
 
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`AppSync responded with HTTP ${response.status}`);
+      throw new PublishHttpError(response.status);
     }
 
     // AppSync returns 200 with an `errors` array for GraphQL-level failures;

@@ -234,6 +234,37 @@ describe('AppSyncPublisher.publishRunUpdate', () => {
     expect(calls).toHaveLength(3);
   });
 
+  it.each([401, 403])(
+    'does NOT retry a non-retryable HTTP %d (auth drift) — fails after one attempt',
+    async (status) => {
+      const { transport, calls } = makeTransport({ status });
+      const publisher = makePublisher(transport);
+
+      const result = await publisher.publishRunUpdate(runRecord);
+
+      expect(result.outcome).toBe('failed');
+      // Single attempt: the retry budget is not wasted on an unrecoverable
+      // auth failure.
+      expect(calls).toHaveLength(1);
+    },
+  );
+
+  it('emits an alarmable PublishFailed EMF metric on final failure', async () => {
+    const logs: string[] = [];
+    const { transport } = makeTransport({ status: 401 });
+    const publisher = makePublisher(transport, { logger: (m: string) => logs.push(m) });
+
+    await publisher.publishRunUpdate(runRecord);
+
+    const emf = logs.find((l) => l.includes('"PublishFailed"'));
+    expect(emf).toBeDefined();
+    const parsed = JSON.parse(emf!);
+    expect(parsed.PublishFailed).toBe(1);
+    expect(parsed.authFailure).toBe(1);
+    expect(parsed.mutation).toBe('publishRunUpdate');
+    expect(parsed._aws.CloudWatchMetrics[0].Metrics[0].Name).toBe('PublishFailed');
+  });
+
   it('succeeds on a later attempt after transient failures', async () => {
     let attempt = 0;
     const calls: GraphQLBody[] = [];

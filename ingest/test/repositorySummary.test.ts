@@ -119,12 +119,31 @@ class InMemoryDocClient {
 
   async send(command: { input: Record<string, unknown> }): Promise<unknown> {
     this.sends += 1;
-    const input = command.input;
-    const item = input.Item as Record<string, unknown>;
+    const input = command.input as {
+      Item?: Record<string, unknown>;
+      Key?: Record<string, unknown>;
+      ExpressionAttributeNames?: Record<string, string>;
+      ExpressionAttributeValues?: Record<string, unknown>;
+    };
+    const eaNames = input.ExpressionAttributeNames ?? {};
+    const eaValues = input.ExpressionAttributeValues ?? {};
+    // Reconstruct the incoming item from a Put (Item) or a merge Update
+    // (Key + #setN/:setN pairs).
+    let item: Record<string, unknown>;
+    if (input.Item) {
+      item = input.Item;
+    } else {
+      item = { ...(input.Key ?? {}) };
+      for (const [nameKey, attrName] of Object.entries(eaNames)) {
+        if (!nameKey.startsWith('#set')) continue;
+        const valueKey = nameKey.replace('#set', ':set');
+        if (valueKey in eaValues) {
+          item[attrName] = eaValues[valueKey];
+        }
+      }
+    }
     const key = `${String(item.PK)}|${String(item.SK)}`;
-    const incoming = (input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[
-      ':incomingUpdatedAt'
-    ] as string | undefined;
+    const incoming = eaValues[':incomingUpdatedAt'] as string | undefined;
     const existing = this.store.get(key);
     const conditionMet =
       existing === undefined ||
@@ -137,7 +156,8 @@ class InMemoryDocClient {
         $metadata: {},
       });
     }
-    this.store.set(key, { ...item });
+    // Merge for Update; replace for Put.
+    this.store.set(key, input.Item ? { ...item } : { ...(existing ?? {}), ...item });
     return {};
   }
 
