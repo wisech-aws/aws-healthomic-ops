@@ -7,11 +7,11 @@
  * `info.fieldName` (the same direct-Lambda-resolver `router` pattern as the
  * logs Lambda):
  *   - `listWorkflowGroups(start, end)` — enumerate the distinct
- *     `(workflowName, versionName)` Workflow_Groups whose Run_Summary rows fall
- *     in the window, each with a run count and the set of workflowIds observed
- *     (so the frontend can flag a Collision_State). Backed by a filtered Scan
- *     of the single table (entityType = SUMMARY within the window), grouped
- *     in-memory — acceptable for the picker, which needs all groups at once.
+ *     `(workflowName, versionName)` Workflow_Groups, each with a run count and
+ *     the set of workflowIds observed (so the frontend can flag a
+ *     Collision_State). Backed by a single-partition Query of the Group_Registry
+ *     (`PK = GROUPS`), not a table Scan, so it stays bounded and cheap at
+ *     50k+ runs (the registry is maintained by the completion hook + backfill).
  *   - `getWorkflowReport(workflowName, versionName, start, end)` — read the one
  *     group's Run_Summary rows time-ordered from GSI2 over the window, aggregate
  *     each Tracked_Metric into mean/median/p90 over the runs where it was
@@ -189,6 +189,37 @@ function metricValue(item: SummaryItem, key: keyof SummaryItem): MetricValue {
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
 }
 
+/**
+ * Normalize a caller-supplied time-window bound to the SAME canonical shape as
+ * the stored `GSI2SK` (a full millisecond-precision UTC ISO string, e.g.
+ * `2026-09-28T17:29:09.792Z`) before it is used in the `BETWEEN` key condition.
+ *
+ * DynamoDB compares String sort keys LEXICOGRAPHICALLY, so a bound whose shape
+ * differs from the stored keys silently mis-ranges the query:
+ *   - a date-only end bound (`2026-09-28`) sorts BEFORE any `...T..Z` timestamp
+ *     on that day, dropping the whole final day (the exact bug the frontend
+ *     resolveRange fix addressed — this is the server-side defense-in-depth so
+ *     ANY caller is safe);
+ *   - an offset form (`+00:00`) sorts below digits, shifting the window.
+ *
+ * `isEnd` raises a date-only bound to the very end of that day so the whole end
+ * date is inclusive; a start bound floors to the beginning of its day. A value
+ * that already carries a time-of-day is canonicalized via `Date`. An
+ * unparseable value is returned unchanged (the query then simply matches
+ * nothing rather than throwing).
+ */
+export function normalizeWindowBound(value: string, isEnd: boolean): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return value;
+  }
+  const dateOnly = !value.includes('T');
+  const candidate = dateOnly
+    ? `${value}T${isEnd ? '23:59:59.999' : '00:00:00.000'}Z`
+    : value;
+  const ms = Date.parse(candidate);
+  return Number.isNaN(ms) ? value : new Date(ms).toISOString();
+}
+
 /** Map a SummaryItem to a GraphQL RunPoint (availability-gated values). */
 function toRunPoint(r: SummaryItem): RunPointOut {
   return {
@@ -266,7 +297,7 @@ async function getWorkflowReport(args: GetReportArgs): Promise<WorkflowReportOut
         IndexName: GSI2_INDEX_NAME,
         KeyConditionExpression: '#pk = :pk AND #sk BETWEEN :start AND :end',
         ExpressionAttributeNames: { '#pk': 'GSI2PK', '#sk': 'GSI2SK' },
-        ExpressionAttributeValues: { ':pk': gsi2pk, ':start': args.start, ':end': args.end },
+        ExpressionAttributeValues: { ':pk': gsi2pk, ':start': normalizeWindowBound(args.start, false), ':end': normalizeWindowBound(args.end, true) },
         ExclusiveStartKey: exclusiveStartKey,
       }),
     );
@@ -345,13 +376,18 @@ async function listWorkflowRunPoints(
   const gsi2pk = groupGsi2Pk(args.workflowName, args.versionName);
   const limit =
     typeof args.limit === 'number' && args.limit > 0 ? Math.min(args.limit, 1000) : 500;
-  const exclusiveStartKey =
-    typeof args.nextToken === 'string' && args.nextToken !== ''
-      ? (JSON.parse(Buffer.from(args.nextToken, 'base64').toString('utf8')) as Record<
-          string,
-          unknown
-        >)
-      : undefined;
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  if (typeof args.nextToken === 'string' && args.nextToken !== '') {
+    try {
+      exclusiveStartKey = JSON.parse(
+        Buffer.from(args.nextToken, 'base64').toString('utf8'),
+      ) as Record<string, unknown>;
+    } catch {
+      // A malformed/tampered token must yield a clean client error, not an
+      // unhandled JSON.parse throw surfacing as an opaque GraphQL 500.
+      throw new Error('invalid pagination token');
+    }
+  }
 
   const result = await docClient.send(
     new QueryCommand({
@@ -359,7 +395,7 @@ async function listWorkflowRunPoints(
       IndexName: GSI2_INDEX_NAME,
       KeyConditionExpression: '#pk = :pk AND #sk BETWEEN :start AND :end',
       ExpressionAttributeNames: { '#pk': 'GSI2PK', '#sk': 'GSI2SK' },
-      ExpressionAttributeValues: { ':pk': gsi2pk, ':start': args.start, ':end': args.end },
+      ExpressionAttributeValues: { ':pk': gsi2pk, ':start': normalizeWindowBound(args.start, false), ':end': normalizeWindowBound(args.end, true) },
       Limit: limit,
       ExclusiveStartKey: exclusiveStartKey,
     }),

@@ -190,3 +190,70 @@ describe('CDK app scaffold', () => {
     });
   });
 });
+
+describe('ApiStack Cognito hardening (security: strong passwords + brute-force protection)', () => {
+  function apiTemplate(): Template {
+    const app = new App();
+    Tags.of(app).add('project', 'healthomics-workflow-dashboard');
+    const dataStack = new DataStack(app, 'HealthOmicsData');
+    const apiStack = new ApiStack(app, 'HealthOmicsApi', { dataStack });
+    apiStack.addStackDependency(dataStack);
+    return Template.fromStack(apiStack);
+  }
+
+  it('enforces an explicit strong password policy (min length 12, all char classes, history, temp validity)', () => {
+    const template = apiTemplate();
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      Policies: {
+        PasswordPolicy: {
+          MinimumLength: 12,
+          RequireLowercase: true,
+          RequireUppercase: true,
+          RequireNumbers: true,
+          RequireSymbols: true,
+          PasswordHistorySize: 3,
+          TemporaryPasswordValidityDays: 1,
+        },
+      },
+    });
+  });
+
+  it('enables threat protection (brute-force / credential-stuffing) via the PLUS feature plan, enforced', () => {
+    const template = apiTemplate();
+    // FeaturePlan.PLUS maps to UserPoolTier PLUS; FULL_FUNCTION enforces
+    // adaptive/risk-based threat protection rather than only auditing.
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      UserPoolTier: 'PLUS',
+      UserPoolAddOns: {
+        AdvancedSecurityMode: 'ENFORCED',
+      },
+    });
+  });
+
+  it('keeps self-signup disabled (admin-provisioned users only)', () => {
+    const template = apiTemplate();
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
+    });
+  });
+
+  it('hardens the SPA app client (SRP-only, no user-existence errors, bounded token validity)', () => {
+    const template = apiTemplate();
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      ExplicitAuthFlows: Match.arrayWith(['ALLOW_USER_SRP_AUTH']),
+      PreventUserExistenceErrors: 'ENABLED',
+      AccessTokenValidity: 60,
+      IdTokenValidity: 60,
+    });
+  });
+
+  it('never enables the plaintext USER_PASSWORD auth flow on the SPA client', () => {
+    const template = apiTemplate();
+    const clients = template.findResources('AWS::Cognito::UserPoolClient');
+    for (const client of Object.values(clients)) {
+      const flows: string[] = client.Properties?.ExplicitAuthFlows ?? [];
+      expect(flows).not.toContain('ALLOW_USER_PASSWORD_AUTH');
+      expect(flows).not.toContain('ALLOW_ADMIN_USER_PASSWORD_AUTH');
+    }
+  });
+});

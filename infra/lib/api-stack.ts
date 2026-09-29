@@ -11,6 +11,8 @@ import {
 } from 'aws-cdk-lib/aws-appsync';
 import {
   AccountRecovery,
+  FeaturePlan,
+  StandardThreatProtectionMode,
   UserPool,
   UserPoolClient,
 } from 'aws-cdk-lib/aws-cognito';
@@ -97,6 +99,20 @@ export class ApiStack extends Stack {
     // Provision the Cognito user pool + app client FIRST, before the API's
     // authorization is configured, so the pool always exists before it is
     // referenced (Req 11.10).
+    //
+    // Security hardening (security audit remediation):
+    //   - selfSignUpEnabled:false — no open registration; users are
+    //     admin-provisioned only.
+    //   - passwordPolicy — an EXPLICIT strong policy (not the inherited Cognito
+    //     default): min length 12, all four character classes required, temp
+    //     passwords expire in 1 day, and (PLUS feature) a password history of 3
+    //     so a reset cannot reuse the last 3 passwords.
+    //   - featurePlan:PLUS + standardThreatProtectionMode:FULL_FUNCTION —
+    //     Cognito threat protection (advanced security). This is the
+    //     brute-force / credential-stuffing defense: FULL_FUNCTION ENFORCES
+    //     adaptive/risk-based responses (blocks sign-ins from risky sources,
+    //     detects compromised credentials) rather than only auditing. Carries a
+    //     per-MAU cost, acceptable for the small admin user base.
     this.userPool = new UserPool(this, 'UserPool', {
       selfSignUpEnabled: false,
       signInAliases: { email: true },
@@ -104,10 +120,37 @@ export class ApiStack extends Stack {
         email: { required: true, mutable: true },
       },
       accountRecovery: AccountRecovery.EMAIL_ONLY,
+      // Explicit strong password policy (owned + auditable, not the default).
+      passwordPolicy: {
+        minLength: 12,
+        requireLowercase: true,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+        // Disallow reusing any of the last 3 passwords (requires FeaturePlan.PLUS).
+        passwordHistorySize: 3,
+        // Admin-issued temporary passwords must be changed within 1 day.
+        tempPasswordValidity: Duration.days(1),
+      },
+      // Brute-force / credential-stuffing protection: enable the PLUS feature
+      // plan and ENFORCE threat protection (adaptive auth + compromised-
+      // credential detection), not merely audit it.
+      featurePlan: FeaturePlan.PLUS,
+      standardThreatProtectionMode: StandardThreatProtectionMode.FULL_FUNCTION,
     });
 
     this.userPoolClient = this.userPool.addClient('SpaClient', {
+      // SRP only — never enable USER_PASSWORD_AUTH (plaintext password flow) or
+      // admin auth flows for the public SPA client.
       authFlows: { userSrp: true },
+      // Do not reveal whether a username exists on failed sign-in / forgot-
+      // password (defends account enumeration, complements threat protection).
+      preventUserExistenceErrors: true,
+      // Bound token lifetimes (defense-in-depth: shorter windows for a stolen
+      // access/id token; refresh token capped so a lost device loses access).
+      accessTokenValidity: Duration.hours(1),
+      idTokenValidity: Duration.hours(1),
+      refreshTokenValidity: Duration.days(30),
     });
 
     // AppSync GraphQL API. Default authorization is the Cognito user pool so

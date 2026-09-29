@@ -1111,9 +1111,33 @@ export class DynamoRepository {
       statusClause = ':incomingUpdatedAt > #storedUpdatedAt';
     }
 
-    const command = new PutCommand({
+    // Build a field-MERGE update rather than a full-item replace. A full PUT
+    // would delete any stored attribute the incoming item happens not to carry
+    // — so a non-enriching event (e.g. a STOPPING task event with only status)
+    // would blank the timing/name/cpus/memory captured by an earlier RUNNING
+    // enrichment. Merging SETs only the attributes present on the incoming item
+    // and leaves every other stored attribute untouched. As a bonus this also
+    // means an out-of-order sparse TERMINAL event can never drop the richer
+    // fields of a more-complete stored item (it only fills/overwrites what it
+    // carries). PK/SK are the key and are never in the SET clause.
+    const setParts: string[] = [];
+    let attrIndex = 0;
+    for (const [attrName, attrValue] of Object.entries(item)) {
+      if (attrName === 'PK' || attrName === 'SK' || attrValue === undefined) {
+        continue;
+      }
+      const nameKey = `#set${attrIndex}`;
+      const valueKey = `:set${attrIndex}`;
+      names[nameKey] = attrName;
+      values[valueKey] = attrValue;
+      setParts.push(`${nameKey} = ${valueKey}`);
+      attrIndex += 1;
+    }
+
+    const command = new UpdateCommand({
       TableName: this.tableName,
-      Item: item,
+      Key: { PK: item.PK, SK: item.SK },
+      UpdateExpression: `SET ${setParts.join(', ')}`,
       ConditionExpression: `attribute_not_exists(PK) OR (${statusClause})`,
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,

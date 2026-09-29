@@ -327,12 +327,36 @@ class InMemoryDocClient {
       }
     }
 
-    const input = command.input;
-    const item = input.Item as Record<string, unknown>;
+    const input = command.input as {
+      Item?: Record<string, unknown>;
+      Key?: Record<string, unknown>;
+      UpdateExpression?: string;
+      ExpressionAttributeNames?: Record<string, string>;
+      ExpressionAttributeValues?: Record<string, unknown>;
+    };
+
+    // Reconstruct the incoming item. The repository now issues a merge
+    // UpdateCommand (SET #setN = :setN) keyed by PK/SK; older paths (static
+    // graph) still use PutCommand with a full Item. Support both.
+    const eaNames = input.ExpressionAttributeNames ?? {};
+    const eaValues = input.ExpressionAttributeValues ?? {};
+    let item: Record<string, unknown>;
+    if (input.Item) {
+      item = input.Item;
+    } else {
+      // Rebuild {attr: value} from the SET clause's #setN/:setN pairs plus Key.
+      item = { ...(input.Key ?? {}) };
+      for (const [nameKey, attrName] of Object.entries(eaNames)) {
+        if (!nameKey.startsWith('#set')) continue;
+        const valueKey = nameKey.replace('#set', ':set');
+        if (valueKey in eaValues) {
+          item[attrName] = eaValues[valueKey];
+        }
+      }
+    }
+
     const key = `${String(item.PK)}|${String(item.SK)}`;
-    const incoming = input.ExpressionAttributeValues?.[':incomingUpdatedAt'] as
-      | string
-      | undefined;
+    const incoming = eaValues[':incomingUpdatedAt'] as string | undefined;
 
     const existing = this.store.get(key);
 
@@ -340,7 +364,7 @@ class InMemoryDocClient {
     //   attribute_not_exists(PK) OR (statusClause)
     // For status-less items (summaries) statusClause is the plain monotonic
     // rule; for run/task items it encodes terminal-wins + no-revert.
-    const vals = input.ExpressionAttributeValues ?? {};
+    const vals = eaValues;
     const TERMINAL = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'DELETED']);
     let conditionMet: boolean;
     if (existing === undefined) {
@@ -370,7 +394,13 @@ class InMemoryDocClient {
       });
     }
 
-    this.store.set(key, { ...item });
+    // MERGE semantics for UpdateCommand (preserve stored attributes not present
+    // on the incoming item); full replace for a PutCommand.
+    if (input.Item) {
+      this.store.set(key, { ...item });
+    } else {
+      this.store.set(key, { ...(existing ?? {}), ...item });
+    }
     return {};
   }
 
@@ -527,6 +557,101 @@ describe('DynamoRepository.upsertRun / upsertTask - conditional monotonic upsert
     // falls to the monotonic branch, and equal updatedAt is a no-op.
     expect(dup.outcome).toBe('preserved');
     expect(db.store.get('RUN#r-1|TASK#t-1')?.status).toBe('COMPLETED');
+  });
+
+  // --- Field-merge upsert (fix: non-enriching events must not blank fields) ---
+  // The upsert is a MERGE, not a full replace: a later event carrying only a
+  // status (e.g. a STOPPING task event that skips GetRunTask enrichment) must
+  // update the status WITHOUT deleting the name/startedAt/cpus/memory captured
+  // by the earlier RUNNING enrichment.
+
+  it('preserves enriched task fields when a later bare STOPPING event arrives', async () => {
+    const { repo, db } = makeRepo();
+    // Enriched RUNNING write (has name/timing/cpus/memory).
+    await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:00.000Z',
+      status: TaskStatus.RUNNING,
+      name: 'align',
+      startedAt: '2026-09-28T15:25:00.000Z',
+      cpus: 6,
+      memory: 12,
+    });
+    // Later BARE STOPPING event: only status + identifiers (no enrichment).
+    const res = await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:30.000Z',
+      status: TaskStatus.STOPPING,
+    });
+
+    expect(res.outcome).toBe('written');
+    const stored = db.store.get('RUN#r-1|TASK#t-1');
+    // Status advanced...
+    expect(stored?.status).toBe('STOPPING');
+    // ...but the enriched fields are PRESERVED, not blanked.
+    expect(stored?.name).toBe('align');
+    expect(stored?.startedAt).toBe('2026-09-28T15:25:00.000Z');
+    expect(stored?.cpus).toBe(6);
+    expect(stored?.memory).toBe(12);
+  });
+
+  it('a sparse terminal event fills status/stoppedAt without dropping earlier enriched fields', async () => {
+    const { repo, db } = makeRepo();
+    await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:00.000Z',
+      status: TaskStatus.RUNNING,
+      name: 'align',
+      startedAt: '2026-09-28T15:25:00.000Z',
+      cpus: 6,
+      memory: 12,
+    });
+    // Out-of-order SPARSE terminal (no timing/name) — terminalWins accepts it,
+    // and the merge keeps the richer stored fields (fixes terminalWins
+    // completeness gap).
+    const res = await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-09-28T15:25:20.000Z',
+      status: TaskStatus.COMPLETED,
+      stoppedAt: '2026-09-28T15:25:40.000Z',
+    });
+
+    expect(res.outcome).toBe('written');
+    const stored = db.store.get('RUN#r-1|TASK#t-1');
+    expect(stored?.status).toBe('COMPLETED');
+    expect(stored?.stoppedAt).toBe('2026-09-28T15:25:40.000Z');
+    // Preserved from the RUNNING enrichment:
+    expect(stored?.name).toBe('align');
+    expect(stored?.startedAt).toBe('2026-09-28T15:25:00.000Z');
+    expect(stored?.cpus).toBe(6);
+  });
+
+  it('preserves enriched run fields when a later bare run event arrives', async () => {
+    const { repo, db } = makeRepo();
+    await repo.upsertRun({
+      runId: 'r-1',
+      updatedAt: '2026-09-28T15:00:00.000Z',
+      status: RunStatus.RUNNING,
+      name: 'my-run',
+      workflowId: 'wf-1',
+      parameters: '{"x":1}',
+      roleArn: 'arn:aws:iam::123456789012:role/r',
+    });
+    const res = await repo.upsertRun({
+      runId: 'r-1',
+      updatedAt: '2026-09-28T15:10:00.000Z',
+      status: RunStatus.STOPPING,
+    });
+    expect(res.outcome).toBe('written');
+    const stored = db.store.get('RUN#r-1|RUN#r-1');
+    expect(stored?.status).toBe('STOPPING');
+    expect(stored?.parameters).toBe('{"x":1}');
+    expect(stored?.roleArn).toBe('arn:aws:iam::123456789012:role/r');
+    expect(stored?.workflowId).toBe('wf-1');
   });
 
   it('writes and preserves task items with the same monotonic rule', async () => {

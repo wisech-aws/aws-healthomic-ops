@@ -201,6 +201,18 @@ describe('buildHistogram — Property 12: completeness + bounded buckets', () =>
     expect(buildHistogram([], 10, 0).buckets).toEqual([]);
     expect(buildHistogram([null, null], 10, 2).buckets).toEqual([]);
   });
+
+  it('does not throw and collapses to one bucket on a subnormal/underflowing spread', () => {
+    // Regression: [0, 5e-324] made width = 5e-324/40 underflow to 0, then
+    // (v-min)/width = 0/0 = NaN indexed buckets[NaN] and threw. Must be a
+    // single bucket holding both finite values, counts summing correctly.
+    const h = buildHistogram([0, 5e-324], 40, 2);
+    expect(h.buckets).toHaveLength(1);
+    expect(h.buckets[0].count).toBe(2);
+    expect(h.availableCount).toBe(2);
+    // Sum of bucket counts equals available count (the Property 12 invariant).
+    expect(h.buckets.reduce((s, b) => s + b.count, 0)).toBe(2);
+  });
 });
 
 // Property 13: aggregate exactness at scale — mean and counts are exact for a

@@ -156,8 +156,16 @@ export function buildHistogram(
   }
 
   const cap = Math.max(1, Math.floor(maxBuckets));
-  // Degenerate spread (all values equal): a single bucket holding everything.
-  if (max === min) {
+
+  const bucketCount = cap;
+  const width = (max - min) / bucketCount;
+  // Degenerate spread: all values equal (max === min), OR the spread is so tiny
+  // relative to bucketCount that `width` underflows to 0 (or is otherwise
+  // non-finite). Example: values [0, 5e-324] give width = 5e-324/40 -> 0, and
+  // then `(v - min)/width` is 0/0 = NaN, which passes both range clamps and
+  // indexes `buckets[NaN]` -> crash. Collapse to a single bucket holding
+  // everything so the function stays pure and total (never throws).
+  if (max === min || !Number.isFinite(width) || width <= 0) {
     return {
       buckets: [{ lo: min, hi: max, count: availableCount }],
       availableCount,
@@ -165,18 +173,21 @@ export function buildHistogram(
     };
   }
 
-  const bucketCount = cap;
-  const width = (max - min) / bucketCount;
   const buckets: HistogramBucket[] = [];
   for (let i = 0; i < bucketCount; i += 1) {
     buckets.push({ lo: min + i * width, hi: min + (i + 1) * width, count: 0 });
   }
   for (const v of finite) {
     // index by position; clamp so the maximum lands in the last bucket
-    // (last bucket is treated as closed on the right).
+    // (last bucket is treated as closed on the right). NaN-safe: a non-finite
+    // index (should not occur now that width>0 is guaranteed, but defensive)
+    // lands in the last bucket rather than indexing undefined.
     let idx = Math.floor((v - min) / width);
-    if (idx >= bucketCount) idx = bucketCount - 1;
-    if (idx < 0) idx = 0;
+    if (!Number.isFinite(idx) || idx >= bucketCount) {
+      idx = bucketCount - 1;
+    } else if (idx < 0) {
+      idx = 0;
+    }
     buckets[idx].count += 1;
   }
   return { buckets, availableCount, totalCount };

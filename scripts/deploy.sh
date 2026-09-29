@@ -23,6 +23,18 @@
 # Cognito default AND `--additional-authentication-providers
 # '[{"authenticationType":"AWS_IAM"}]'` (or redeploy from a clean CFN state).
 #
+# SECURITY — Cognito hardening is defined in CDK (infra/lib/api-stack.ts) and
+# applied by this deploy; do NOT weaken it out-of-band:
+#   * Strong password policy: min 12 chars, upper+lower+digit+symbol, last-3
+#     password history, 1-day temporary-password validity. A password set via
+#     `admin-set-user-password` MUST satisfy all of these or Cognito rejects it.
+#   * Brute-force / credential-stuffing protection: Cognito PLUS feature plan
+#     with threat protection ENFORCED (StandardThreatProtectionMode.FULL_FUNCTION)
+#     + app-client preventUserExistenceErrors. (PLUS bills per monthly active
+#     user.) Access/ID tokens 1h, refresh 30d.
+# Editing these live via the console/CLI causes CFN drift; change them in CDK
+# and redeploy instead.
+#
 # Usage:
 #   scripts/deploy.sh                        # build ingest + SPA, deploy all stacks
 #   scripts/deploy.sh --frontend-only        # build SPA, deploy only HealthOmicsFrontend
