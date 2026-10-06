@@ -137,6 +137,52 @@ describe('RunDetailView', () => {
     expect(listTasksForRun).toHaveBeenCalledTimes(1);
   });
 
+  it('renders the run timeline as relative strings with absolute-on-hover (#5)', async () => {
+    const getRun = vi.fn().mockResolvedValue(
+      makeRun({
+        createdAt: '2024-01-01T00:00:00.000Z',
+        startedAt: '2024-01-01T00:05:00.000Z',
+        stoppedAt: null,
+        updatedAt: '2024-01-01T00:30:00.000Z',
+      }),
+    );
+    const listTasksForRun = vi.fn().mockResolvedValue([]);
+    // Fixed `now` so the relative strings are deterministic.
+    const now = Date.parse('2024-01-01T01:00:00.000Z');
+
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={getRun}
+        listTasksForRun={listTasksForRun}
+        onTaskUpdated={noopSubscribe()}
+        now={now}
+      />,
+    );
+
+    const timeline = await screen.findByTestId('run-timeline');
+
+    // Created 1h ago, started 55m ago, updated 30m ago; stopped is absent.
+    const created = within(timeline).getByTestId('timeline-created');
+    expect(created).toHaveTextContent('1h ago');
+    expect(created).toHaveAttribute(
+      'title',
+      new Date(Date.parse('2024-01-01T00:00:00.000Z')).toLocaleString(),
+    );
+
+    expect(within(timeline).getByTestId('timeline-started')).toHaveTextContent(
+      '55m ago',
+    );
+    expect(within(timeline).getByTestId('timeline-updated')).toHaveTextContent(
+      '30m ago',
+    );
+
+    // Absent stoppedAt renders the dash sentinel with no hover title.
+    const stopped = within(timeline).getByTestId('timeline-stopped');
+    expect(stopped).toHaveTextContent('—');
+    expect(stopped).not.toHaveAttribute('title');
+  });
+
   it('shows an error with retry, then recovers (Req 9.2, 10.2)', async () => {
     const getRun = vi
       .fn()
@@ -332,6 +378,42 @@ describe('RunDetailView', () => {
     // Run ID and Workflow ID are shown on the run detail view.
     expect(screen.getByTestId('run-id')).toHaveTextContent('run-1');
     expect(screen.getByTestId('workflow-id')).toHaveTextContent('wf-777');
+    // A copy affordance (QoL #2) sits beside each present identifier.
+    expect(
+      within(screen.getByTestId('run-id')).getByRole('button', {
+        name: /copy run id/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId('workflow-id')).getByRole('button', {
+        name: /copy workflow id/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the run ID copy affordance but '—' with no copy for an absent workflow ID (QoL #2)", async () => {
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={vi.fn().mockResolvedValue(makeRun({ workflowId: null }))}
+        listTasksForRun={vi
+          .fn()
+          .mockResolvedValue([makeTask({ status: 'COMPLETED' })])}
+        onTaskUpdated={noopSubscribe()}
+      />,
+    );
+
+    await screen.findByLabelText('progress');
+    // Run id is always present -> keeps its copy affordance.
+    expect(
+      within(screen.getByTestId('run-id')).getByRole('button', {
+        name: /copy run id/i,
+      }),
+    ).toBeInTheDocument();
+    // Absent workflow id -> dash sentinel and NO copy button (no fabrication).
+    const workflowId = screen.getByTestId('workflow-id');
+    expect(workflowId).toHaveTextContent('—');
+    expect(within(workflowId).queryByRole('button')).toBeNull();
   });
 
   it('updates the affected node color/status live on onTaskUpdated without reload (Req 9.7, 9.8)', async () => {
@@ -1036,6 +1118,12 @@ describe('RunDetailView', () => {
     // The displayed link text keeps the original URI (no trailing slash added).
     expect(outputLink).toHaveTextContent('s3://demo-bucket/run-outputs/run-1');
 
+    // A copy affordance (QoL #2) sits beside each S3 URI (output + input),
+    // copying the raw s3:// URI rather than the console URL.
+    expect(
+      screen.getAllByRole('button', { name: /copy s3 uri/i }).length,
+    ).toBeGreaterThanOrEqual(2);
+
     // Parameters rendered (an S3 input becomes a link, a flag becomes text).
     const params = screen.getByTestId('run-parameters');
     expect(params).toHaveTextContent('input');
@@ -1083,7 +1171,8 @@ describe('RunDetailView', () => {
 
     const cfg = await screen.findByTestId('run-configuration');
     // The IAM run-role ARN is intentionally NOT exposed in the dashboard
-    // (sensitive identifier); it must never be rendered.
+    // (sensitive identifier); it must never be rendered — and with no IAM-role
+    // row there is no copy affordance for it either.
     expect(cfg).not.toHaveTextContent('IAM role');
     // Storage capacity is appended for STATIC storage.
     expect(cfg).toHaveTextContent('STATIC (1200 GiB)');
@@ -1626,5 +1715,60 @@ describe('RunDetailView', () => {
     fireEvent.click(screen.getByTestId('run-failure-view-logs'));
     await waitFor(() => expect(get().open).toBe(true));
     expect(get().node).not.toBeNull();
+  });
+
+  // QoL #3 (deep links): initialTaskId restores a task's logs on open when it
+  // matches a loaded task, and is ignored (no selection, no crash) otherwise.
+  it('opens the deep-linked task logs when initialTaskId matches a task (#3)', async () => {
+    render(
+      <RunDetailView
+        runId="run-1"
+        initialTaskId="task-live"
+        getRun={vi.fn().mockResolvedValue(makeRun())}
+        listTasksForRun={vi
+          .fn()
+          .mockResolvedValue([
+            makeTask({ taskId: 'task-live', name: 'align', status: 'RUNNING' }),
+          ])}
+        onTaskUpdated={noopSubscribe()}
+      />,
+    );
+
+    // The fly-out opens on that task's logs without any click (restored from
+    // the URL on load).
+    const detailPanel = await screen.findByTestId('detail-panel');
+    expect(
+      await within(detailPanel).findByText(/logs — task align/i),
+    ).toBeInTheDocument();
+    // The restored node carries the selection ring.
+    expect(screen.getByTestId('node-task-live')).toHaveAttribute(
+      'data-selected',
+      'true',
+    );
+  });
+
+  it('ignores initialTaskId that matches no task — no selection, no crash (#3)', async () => {
+    const onTaskSelectionChange = vi.fn();
+    render(
+      <RunDetailView
+        runId="run-1"
+        initialTaskId="does-not-exist"
+        onTaskSelectionChange={onTaskSelectionChange}
+        getRun={vi.fn().mockResolvedValue(makeRun())}
+        listTasksForRun={vi
+          .fn()
+          .mockResolvedValue([
+            makeTask({ taskId: 'task-live', name: 'align', status: 'RUNNING' }),
+          ])}
+        onTaskUpdated={noopSubscribe()}
+      />,
+    );
+
+    // The run loads normally; no task fly-out opens for the unknown id.
+    await screen.findByLabelText('progress');
+    await screen.findByTestId('node-task-live');
+    expect(screen.queryByText(/logs — task/i)).not.toBeInTheDocument();
+    // No fabricated task selection was ever reported to the shell.
+    expect(onTaskSelectionChange).not.toHaveBeenCalledWith('does-not-exist');
   });
 });

@@ -71,7 +71,9 @@ import type {
 } from './runFilters';
 import { evaluateStaleness } from './staleness';
 import { statusIndicatorType } from './statusIndicator';
-import { formatStartTime, runDuration } from './duration';
+import { runDuration } from './duration';
+import RelativeTime from '../components/RelativeTime';
+import CopyId from '../components/CopyId';
 
 /** Loading/error/ready phases of the initial `listRuns` query (Req 10.1–10.3). */
 type LoadPhase = 'loading' | 'error' | 'ready';
@@ -678,12 +680,19 @@ export default function FleetView({
     {
       id: 'runId',
       header: 'Run ID',
-      cell: (run) => run.runId,
+      cell: (run) => (
+        <CopyId value={run.runId} label={`Copy run ID ${run.runId}`} />
+      ),
     },
     {
       id: 'workflowId',
       header: 'Workflow ID',
-      cell: (run) => run.workflowId ?? '—',
+      cell: (run) =>
+        run.workflowId != null ? (
+          <CopyId value={run.workflowId} label="Copy workflow ID" />
+        ) : (
+          '—'
+        ),
     },
     {
       id: 'engineVersion',
@@ -700,7 +709,7 @@ export default function FleetView({
     {
       id: 'startTime',
       header: 'Start time',
-      cell: (run) => formatStartTime(run.startedAt),
+      cell: (run) => <RelativeTime value={run.startedAt ?? null} now={now} />,
     },
     {
       id: 'duration',
