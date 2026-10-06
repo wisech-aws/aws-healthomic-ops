@@ -110,7 +110,6 @@ export interface RunInput {
   /** JSON-stringified run parameters (AWSJSON accepts a JSON string). */
   parameters?: string;
   engineVersion?: string;
-  roleArn?: string;
   storageType?: string;
   storageCapacity?: number;
   cacheId?: string;
@@ -260,7 +259,7 @@ export interface AppSyncPublisherOptions {
 /** The GraphQL mutation documents. Return the input payload for subscription fan-out. */
 const RUN_MUTATION = `mutation PublishRunUpdate($input: RunInput!) {
   publishRunUpdate(input: $input) {
-    runId status name createdAt startedAt stoppedAt updatedAt workflowId workflowName workflowVersionName outputUri parameters engineVersion roleArn storageType storageCapacity cacheId cacheBehavior networkingMode configurationName logLevel batchId tags statusMessage failureReason
+    runId status name createdAt startedAt stoppedAt updatedAt workflowId workflowName workflowVersionName outputUri parameters engineVersion storageType storageCapacity cacheId cacheBehavior networkingMode configurationName logLevel batchId tags statusMessage failureReason
   }
 }`;
 
@@ -298,7 +297,6 @@ export function toRunInput(run: RunRecord): RunInput {
   setIfDefined(input, 'outputUri', run.outputUri);
   setIfDefined(input, 'parameters', run.parameters);
   setIfDefined(input, 'engineVersion', run.engineVersion);
-  setIfDefined(input, 'roleArn', run.roleArn);
   setIfDefined(input, 'storageType', run.storageType);
   setIfDefined(input, 'storageCapacity', run.storageCapacity);
   setIfDefined(input, 'cacheId', run.cacheId);

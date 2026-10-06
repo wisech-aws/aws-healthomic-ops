@@ -1,9 +1,11 @@
 import * as path from 'path';
 import { CfnOutput, Duration, Stack, StackProps } from 'aws-cdk-lib';
 import { Rule } from 'aws-cdk-lib/aws-events';
-import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
-import { Runtime } from 'aws-cdk-lib/aws-lambda';
+import { LambdaFunction, KinesisStream as KinesisStreamTarget } from 'aws-cdk-lib/aws-events-targets';
+import { Runtime, StartingPosition } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction, OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
+import { KinesisEventSource, SqsDlq } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { Stream, StreamMode } from 'aws-cdk-lib/aws-kinesis';
 import {
   Effect,
   IRole,
@@ -16,6 +18,38 @@ import { CfnScheduleGroup } from 'aws-cdk-lib/aws-scheduler';
 import { Construct } from 'constructs';
 import { DataStack } from './data-stack';
 import { ApiStack } from './api-stack';
+
+/** Absolute path to the Kinesis batch-consumer Lambda entry. */
+const KINESIS_CONSUMER_ENTRY = path.join(
+  __dirname,
+  '..',
+  '..',
+  'ingest',
+  'src',
+  'kinesisHandler.ts',
+);
+
+/**
+ * Toggle for the alternative Kinesis Data Streams ingest path
+ * (docs/design-sqs-fifo-batch-ingest.md). Set via CDK context
+ * `-c kinesisIngestMode=<mode>`:
+ *   - 'off'     (default): only the direct EventBridge -> Lambda path exists.
+ *   - 'present': ALSO provision the Kinesis stream + batch-consumer + event-
+ *                source mapping, but EventBridge still targets the ingest Lambda
+ *                directly (the Kinesis path sits idle — deploy/validate the
+ *                resources without changing live ingestion).
+ *   - 'active' : EventBridge targets the Kinesis stream (PartitionKey = runId)
+ *                instead of the Lambda (the batch-consumer becomes the live
+ *                ingest path). Roll back to 'present'/'off' with a single
+ *                re-deploy — neither path is deleted on the toggle.
+ *
+ * Kinesis was chosen over SQS FIFO because EventBridge -> Kinesis supports a
+ * NATIVE dynamic PartitionKey (`$.detail.runId`), giving per-run ordering with
+ * NO enqueue Lambda (no extra concurrency surface) and NO bridging queue. The
+ * tradeoff is Kinesis does not scale to zero (~$30/mo idle for an on-demand
+ * stream), accepted for the large-batch throughput and clean topology.
+ */
+type KinesisIngestMode = 'off' | 'present' | 'active';
 
 /** Absolute path to the reconciler (deferred re-sweep) Lambda entry. */
 const RECONCILER_ENTRY = path.join(
@@ -132,14 +166,25 @@ export class IngestStack extends Stack {
       projectRoot: INGEST_PROJECT_ROOT,
       depsLockFilePath: INGEST_DEPS_LOCK_FILE,
       timeout: Duration.seconds(60),
-      // Cap concurrency so the FLEET of ingest instances cannot collectively
-      // exceed the HealthOmics ~10 TPS read budget: each instance paces its own
-      // enrichment calls to OMICS_TPS (below), and reservedConcurrency ×
-      // OMICS_TPS ≈ the account budget. This is the batch-scale safeguard — a
-      // burst of several-thousand-run events queues in EventBridge and is
-      // drained at a safe rate rather than self-inflicting a throttling storm.
-      // (5 instances × 2 TPS = ~10 TPS.)
-      reservedConcurrentExecutions: 5,
+      // CONCURRENCY / ENRICHMENT-TPS SPLIT (only enrichment-required events are
+      // rate-limited). Non-enriching task events (PENDING/STARTING/STOPPING) and
+      // non-enriching run events do NOT call any HealthOmics read API — they are
+      // a cheap DynamoDB write + AppSync publish — so they must NOT be starved by
+      // the enrichment rate limit. Only RUNNING + terminal task events (and run
+      // events needing GetRun) invoke the per-instance `omicsRateLimiter`.
+      //
+      // The enrichment budget is enforced as reservedConcurrency × OMICS_TPS ≈
+      // the HealthOmics ~10 TPS run-read bucket (400 × 0.025 = 10), while the
+      // HIGH reserved concurrency (400) lets the cheap, non-enriching majority
+      // (PENDING/STARTING — DynamoDB write + publish, NO API call) drain fast.
+      // KEY PROPERTY: because ONLY RUNNING + terminal events call the rate
+      // limiter, raising concurrency to relieve the invocation-throughput
+      // backlog does NOT increase HealthOmics API pressure — the TPS stays
+      // bounded by the product, which we hold at 10 by lowering OMICS_TPS as we
+      // raise concurrency. 400 clears the ~4-min backlog seen when all 100 runs
+      // of a batch are simultaneously active; well under AppSync's 10,000/sec
+      // token ceiling and leaves ~598 of 1000 account concurrency unreserved.
+      reservedConcurrentExecutions: 400,
       environment: {
         // DynamoDB single table the handler upserts run/task/graph items into.
         TABLE_NAME: props.dataStack.table.tableName,
@@ -147,10 +192,12 @@ export class IngestStack extends Stack {
         // is provided automatically by the Lambda runtime and is read directly
         // by the handler (do not set it here — it is a reserved env var).
         APPSYNC_ENDPOINT: props.apiStack.api.graphqlUrl,
-        // Per-instance HealthOmics read-API pace (transactions/sec). With
-        // reservedConcurrentExecutions above, the fleet stays within the ~10 TPS
-        // account budget.
-        OMICS_TPS: '2',
+        // Per-instance HealthOmics read pace. Only enriching events consume it;
+        // reservedConcurrency × OMICS_TPS ≈ the ~10 TPS run-read budget (400 ×
+        // 0.025). Lowered in lock-step with the concurrency raise so API TPS is
+        // unchanged. (Raise to 0.05 if/when the run-read quota is increased to
+        // 20 TPS.)
+        OMICS_TPS: '0.025',
       },
       bundling: {
         format: OutputFormat.ESM,
@@ -188,11 +235,26 @@ export class IngestStack extends Stack {
       handler: 'handler',
       projectRoot: INGEST_PROJECT_ROOT,
       depsLockFilePath: INGEST_DEPS_LOCK_FILE,
-      timeout: Duration.seconds(120),
+      timeout: Duration.seconds(300),
+      // Cap the reconcile FAN-OUT so a wave of terminal-run re-sweeps stays
+      // within the HealthOmics ~10 TPS read budget (the per-instance limiter
+      // paces one instance, not the fleet). The split must ALSO let a single
+      // reconcile of a large run (~200+ tasks, one GetRunTask each) finish
+      // inside the Lambda timeout: at N tasks and T TPS a sweep takes ~N/T s.
+      // With reservedConcurrency 2 × OMICS_TPS 5 = ~10 TPS fleet budget, and a
+      // single instance at 5 TPS drains ~200 tasks in ~40s (well under the 300s
+      // timeout). Do NOT lower OMICS_TPS to 2 with a 120s timeout — a 207-task
+      // run then needs ~103s of pure pacing and times out before finishing
+      // (observed: reconciles hit Status:timeout and never reconciled the run).
+      reservedConcurrentExecutions: 2,
       environment: {
         RECONCILER_TABLE_NAME: props.dataStack.table.tableName,
         MONITORING_HOST: `monitoring.${Stack.of(this).region}.amazonaws.com`,
         SIGNING_SERVICE: 'monitoring',
+        // Per-instance HealthOmics read pace; reservedConcurrency × OMICS_TPS ≈
+        // the ~10 TPS account budget, while 5 TPS keeps a large-run sweep within
+        // the timeout.
+        OMICS_TPS: '5',
       },
       bundling: {
         format: OutputFormat.ESM,
@@ -310,20 +372,39 @@ export class IngestStack extends Stack {
     // which is where HealthOmics publishes.
     const rule = new Rule(this, 'OmicsEventRule', {
       description:
-        'Routes AWS HealthOmics state-change events (source = aws.omics) to the ingest Lambda.',
+        'Routes AWS HealthOmics state-change events (source = aws.omics) to the ingest path.',
       eventPattern: {
         source: ['aws.omics'],
       },
     });
 
-    // Target the ingest Lambda with a retry policy of at most 3 attempts
-    // (Req 11.3); deliveries that still fail are routed to the DLQ (Req 1.7).
-    rule.addTarget(
-      new LambdaFunction(this.ingestFunction, {
-        retryAttempts: MAX_EVENT_RETRY_ATTEMPTS,
-        deadLetterQueue: this.deadLetterQueue,
-      }),
-    );
+    // --- Alternative Kinesis Data Streams ingest path (toggle-able, additive) -
+    // Read the mode from CDK context; default 'off'. When 'present'/'active' we
+    // provision the Kinesis stream + batch-consumer Lambda + event-source
+    // mapping ALONGSIDE the direct path. The EventBridge target is the Lambda
+    // UNLESS mode is 'active', in which case it is the Kinesis stream (with a
+    // native dynamic PartitionKey = $.detail.runId). Deploy idle ('present'),
+    // cut over ('active'), and roll back — a single context change + redeploy,
+    // deleting neither path.
+    const kinesisMode =
+      (this.node.tryGetContext('kinesisIngestMode') as KinesisIngestMode) ?? 'off';
+    if (kinesisMode !== 'off') {
+      this.buildKinesisIngestPath(props, rule, kinesisMode);
+    }
+
+    // The direct EventBridge -> Lambda target is used unless the Kinesis path is
+    // the ACTIVE one (in which case buildKinesisIngestPath wired the stream as
+    // the target).
+    if (kinesisMode !== 'active') {
+      // Target the ingest Lambda with a retry policy of at most 3 attempts
+      // (Req 11.3); deliveries that still fail are routed to the DLQ (Req 1.7).
+      rule.addTarget(
+        new LambdaFunction(this.ingestFunction, {
+          retryAttempts: MAX_EVENT_RETRY_ATTEMPTS,
+          deadLetterQueue: this.deadLetterQueue,
+        }),
+      );
+    }
 
     // --- Least-privilege IAM for the ingest role (Req 2.3, 4.4, 11.2) ---
     // Every statement below is scoped to explicit action lists and explicit
@@ -405,6 +486,150 @@ export class IngestStack extends Stack {
       value: this.deadLetterQueue.queueUrl,
       description: 'URL of the ingest dead-letter queue.',
       exportName: `${this.stackName}-DeadLetterQueueUrl`,
+    });
+  }
+
+  /**
+   * Provision the alternative Kinesis Data Streams ingest path (additive,
+   * toggle-able).
+   *
+   * Creates: an on-demand Kinesis stream, a batch-consumer Lambda reusing the
+   * ingest handler pipeline (via kinesisHandler.ts → getDefaultHandler), and the
+   * Kinesis event-source mapping with ReportBatchItemFailures + bisect-on-error
+   * + a bounded retry/age and an on-failure DLQ. When `mode === 'active'`, the
+   * passed EventBridge rule targets the stream with a NATIVE dynamic
+   * PartitionKey (`$.detail.runId`) so all of a run's events land on one shard
+   * (in-order per run, parallel across runs). When merely 'present', the stream
+   * is idle and the caller keeps the direct Lambda target.
+   *
+   * Consumer scaling: Kinesis consumer concurrency = shards × parallelization
+   * factor. Ordering correctness remains at the DynamoDB monotonic + status
+   * guards (per-shard order reduces reordering but is not relied upon). The
+   * terminal-only enrichment governor (per-instance limiter) keeps GetRunTask
+   * within the ~10 TPS HealthOmics bucket regardless of shard fan-out.
+   */
+  private buildKinesisIngestPath(
+    props: IngestStackProps,
+    rule: Rule,
+    mode: KinesisIngestMode,
+  ): void {
+    // On-demand Kinesis stream: auto-scales shards with throughput (no capacity
+    // planning), bills per-hour + per-payload (does NOT scale to zero — the
+    // accepted tradeoff). Retain events for the default 24h so a consumer issue
+    // can be replayed.
+    const stream = new Stream(this, 'IngestKinesisStream', {
+      streamMode: StreamMode.ON_DEMAND,
+      retentionPeriod: Duration.hours(24),
+    });
+
+    // On-failure DLQ for records that exhaust retries (poison records), so a bad
+    // record does not block its shard indefinitely.
+    const kinesisDlq = new Queue(this, 'IngestKinesisDlq', {
+      retentionPeriod: Duration.days(14),
+    });
+
+    // Batch-consumer Lambda — reuses the exact ingest pipeline (kinesisHandler.ts
+    // → getDefaultHandler). Same env as the direct ingest function so both paths
+    // behave identically downstream.
+    const consumer = new NodejsFunction(this, 'KinesisIngestConsumer', {
+      runtime: Runtime.NODEJS_20_X,
+      entry: KINESIS_CONSUMER_ENTRY,
+      handler: 'handler',
+      projectRoot: INGEST_PROJECT_ROOT,
+      depsLockFilePath: INGEST_DEPS_LOCK_FILE,
+      timeout: Duration.seconds(60),
+      environment: {
+        TABLE_NAME: props.dataStack.table.tableName,
+        APPSYNC_ENDPOINT: props.apiStack.api.graphqlUrl,
+        // Per-instance HealthOmics read pace governor (enrichment TPS); keeps
+        // terminal GetRunTask within the ~10 TPS bucket regardless of shards.
+        OMICS_TPS: '2',
+      },
+      bundling: {
+        format: OutputFormat.ESM,
+        externalModules: [],
+        banner:
+          "import{createRequire as __createRequire}from'module';const require=__createRequire(import.meta.url);",
+      },
+    });
+
+    // Consumer least-privilege: same downstream grants as the direct ingest
+    // role (DynamoDB RW on table+GSI1, AppSync publish, HealthOmics read).
+    consumer.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: [
+          'dynamodb:PutItem',
+          'dynamodb:UpdateItem',
+          'dynamodb:GetItem',
+          'dynamodb:Query',
+          'dynamodb:ConditionCheckItem',
+        ],
+        resources: [props.dataStack.tableArn, props.dataStack.gsi1Arn],
+      }),
+    );
+    const publishFieldArns = ['publishRunUpdate', 'publishTaskUpdate'].map(
+      (field) => `${props.apiStack.api.arn}/types/Mutation/fields/${field}`,
+    );
+    consumer.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ['appsync:GraphQL'],
+        resources: publishFieldArns,
+      }),
+    );
+    consumer.addToRolePolicy(
+      new PolicyStatement({
+        effect: Effect.ALLOW,
+        actions: ['omics:GetRun', 'omics:ListRunTasks', 'omics:GetRunTask', 'omics:GetWorkflow'],
+        resources: [
+          Stack.of(this).formatArn({ service: 'omics', resource: 'run', resourceName: '*' }),
+          Stack.of(this).formatArn({ service: 'omics', resource: 'workflow', resourceName: '*' }),
+        ],
+      }),
+    );
+
+    // Event-source mapping: batch per-shard into the consumer, report partial
+    // failures (retry from the earliest failed sequence), bisect on error to
+    // isolate a poison record, bound retries/age, and route exhausted records
+    // to the DLQ. `KinesisEventSource` grants the consumer kinesis read on the
+    // stream automatically.
+    consumer.addEventSource(
+      new KinesisEventSource(stream, {
+        startingPosition: StartingPosition.LATEST,
+        batchSize: 100,
+        // Consumer concurrency for a Kinesis source = shards × parallelization.
+        // On-demand streams start at a few shards and auto-scale LAZILY (minutes),
+        // so at a sudden large-batch burst the consumer is throttled to the
+        // current shard count. Raising the parallelization factor to 10 gives up
+        // to shards×10 concurrent consumers per shard so the batch drains without
+        // waiting for shard auto-scaling. (Ordering per partition key is still
+        // preserved — parallelization keeps per-partition-key order within a
+        // shard.)
+        parallelizationFactor: 10,
+        reportBatchItemFailures: true,
+        bisectBatchOnError: true,
+        retryAttempts: 5,
+        maxRecordAge: Duration.hours(1),
+        onFailure: new SqsDlq(kinesisDlq),
+      }),
+    );
+
+    // When ACTIVE, EventBridge delivers to the Kinesis stream with a dynamic
+    // PartitionKey = runId (native path-based key). When merely PRESENT, the
+    // stream is idle and the caller keeps the direct Lambda target.
+    if (mode === 'active') {
+      rule.addTarget(
+        new KinesisStreamTarget(stream, {
+          partitionKeyPath: '$.detail.runId',
+        }),
+      );
+    }
+
+    new CfnOutput(this, 'IngestKinesisStreamName', {
+      value: stream.streamName,
+      description: 'Name of the Kinesis ingest stream (alternative path).',
+      exportName: `${this.stackName}-IngestKinesisStreamName`,
     });
   }
 }

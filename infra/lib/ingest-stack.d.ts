@@ -45,4 +45,24 @@ export declare class IngestStack extends Stack {
     /** The SQS dead-letter queue capturing deliveries that fail after retries (Req 1.7). */
     readonly deadLetterQueue: Queue;
     constructor(scope: Construct, id: string, props: IngestStackProps);
+    /**
+     * Provision the alternative Kinesis Data Streams ingest path (additive,
+     * toggle-able).
+     *
+     * Creates: an on-demand Kinesis stream, a batch-consumer Lambda reusing the
+     * ingest handler pipeline (via kinesisHandler.ts → getDefaultHandler), and the
+     * Kinesis event-source mapping with ReportBatchItemFailures + bisect-on-error
+     * + a bounded retry/age and an on-failure DLQ. When `mode === 'active'`, the
+     * passed EventBridge rule targets the stream with a NATIVE dynamic
+     * PartitionKey (`$.detail.runId`) so all of a run's events land on one shard
+     * (in-order per run, parallel across runs). When merely 'present', the stream
+     * is idle and the caller keeps the direct Lambda target.
+     *
+     * Consumer scaling: Kinesis consumer concurrency = shards × parallelization
+     * factor. Ordering correctness remains at the DynamoDB monotonic + status
+     * guards (per-shard order reduces reordering but is not relied upon). The
+     * terminal-only enrichment governor (per-instance limiter) keeps GetRunTask
+     * within the ~10 TPS HealthOmics bucket regardless of shard fan-out.
+     */
+    private buildKinesisIngestPath;
 }
