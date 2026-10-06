@@ -154,7 +154,6 @@ const LIST_RUNS = /* GraphQL */ `
         outputUri
         parameters
         engineVersion
-        roleArn
         storageType
         storageCapacity
         cacheId
@@ -188,7 +187,6 @@ const GET_RUN = /* GraphQL */ `
       outputUri
       parameters
       engineVersion
-      roleArn
       storageType
       storageCapacity
       cacheId
@@ -240,7 +238,6 @@ const ON_RUN_UPDATED = /* GraphQL */ `
       outputUri
       parameters
       engineVersion
-      roleArn
       storageType
       storageCapacity
       cacheId

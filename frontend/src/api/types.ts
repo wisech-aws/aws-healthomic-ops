@@ -44,8 +44,6 @@ export interface Run {
   readonly parameters?: string | null;
   /** Engine version that ran the workflow. */
   readonly engineVersion?: string | null;
-  /** IAM role ARN the run assumed. */
-  readonly roleArn?: string | null;
   /** Storage type: "STATIC" or "DYNAMIC". */
   readonly storageType?: string | null;
   /** Static storage capacity in GiB (when applicable). */

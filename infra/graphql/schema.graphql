@@ -84,9 +84,10 @@ type Run @aws_cognito_user_pools @aws_iam {
   parameters: AWSJSON
   # The engine version that executed the workflow (e.g. Nextflow "25.10.0").
   engineVersion: String
-  # Run configuration used to launch the run (reproducibility): IAM role,
+  # Run configuration used to launch the run (reproducibility):
   # storage, run cache, networking/VPC config, and engine log level.
-  roleArn: String
+  # (The IAM run-role ARN is intentionally NOT exposed via the API — it is a
+  # sensitive identifier; it remains captured in the non-exposed rawGetRun.)
   storageType: String
   storageCapacity: Int
   cacheId: String
@@ -440,7 +441,6 @@ input RunInput {
   outputUri: String
   parameters: AWSJSON
   engineVersion: String
-  roleArn: String
   storageType: String
   storageCapacity: Int
   cacheId: String
