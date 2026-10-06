@@ -22,6 +22,7 @@ import type { SelectProps } from '@cloudscape-design/components/select';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import { getRunLogs as defaultGetRunLogs } from '../api/client';
 import type { LogEvent, LogStream, RunLogs } from '../api/types';
+import { formatTs, logContent, logFilename } from './logsExport';
 
 type Phase = 'loading' | 'error' | 'ready';
 
@@ -67,11 +68,6 @@ export interface LogsPanelProps {
   }) => Promise<RunLogs>;
 }
 
-function formatTs(ms: number): string {
-  if (!ms) return '';
-  return new Date(ms).toISOString().replace('T', ' ').replace('Z', '');
-}
-
 export default function LogsPanel({
   runId,
   stream,
@@ -110,6 +106,10 @@ export default function LogsPanel({
   }, [load]);
 
   // Apply severity + text filters over the fetched events (client-side).
+  // DELIBERATE UX: search is filter-only (it narrows which lines render), with
+  // NO per-line highlight spans, because the panel renders the matching lines
+  // as a single <pre>. Highlighting would require per-line markup that the
+  // single-<pre> render cannot carry; filtering keeps the existing LogsPanel UX.
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return events.filter(
@@ -129,6 +129,23 @@ export default function LogsPanel({
   const selectedSeverity =
     SEVERITY_OPTIONS.find((o) => o.value === severity) ?? SEVERITY_OPTIONS[0];
 
+  const handleDownload = useCallback(() => {
+    // Export EXACTLY the loaded events — the FULL fetched set, NOT the
+    // severity/text-filtered subset — so the download is a faithful copy of
+    // what was loaded. No refetch and no fabrication: logContent emits one line
+    // per loaded event. Mirrors the Blob/URL/anchor pattern in ReportsView.tsx.
+    const text = logContent(events);
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = logFilename({ runId, taskId, stream });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, [events, runId, taskId, stream]);
+
   return (
     <SpaceBetween size="s">
       <SpaceBetween direction="horizontal" size="xs">
@@ -139,6 +156,14 @@ export default function LogsPanel({
           onClick={() => void load()}
         >
           Refresh logs
+        </Button>
+        <Button
+          iconName="download"
+          ariaLabel="Download logs"
+          disabled={events.length === 0}
+          onClick={handleDownload}
+        >
+          Download logs
         </Button>
         <div style={{ minWidth: 220 }}>
           <Input
@@ -223,6 +248,8 @@ export default function LogsPanel({
                 wordBreak: 'break-word',
               }}
             >
+              {/* Render via the shared formatter so the on-screen text cannot
+                  drift from the downloaded file (one source of truth). */}
               {filtered
                 .map((e) => `${formatTs(e.timestamp)}  ${e.message}`)
                 .join('\n')}
