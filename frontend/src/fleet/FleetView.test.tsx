@@ -217,6 +217,43 @@ describe('FleetView', () => {
     expect(screen.getByTestId('run-name')).toHaveTextContent('—');
   });
 
+  it('offers a copy affordance for the run ID and workflow ID (QoL #2)', async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({ runId: 'r1', workflowId: 'wf-999', updatedAt: '2024-01-01T00:00:00.000Z' }),
+      ]),
+    );
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+    const table = await screen.findByRole('table');
+    // A copy button sits beside the run ID (inline variant keeps the value).
+    expect(
+      within(table).getByRole('button', { name: 'Copy run ID r1' }),
+    ).toBeInTheDocument();
+    expect(within(table).getByText('r1')).toBeInTheDocument();
+    // And beside the present workflow ID.
+    expect(
+      within(table).getByRole('button', { name: 'Copy workflow ID' }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders '—' with no copy affordance when the workflow ID is absent", async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({ runId: 'r1', updatedAt: '2024-01-01T00:00:00.000Z' }),
+      ]),
+    );
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+    const table = await screen.findByRole('table');
+    // No workflow id => the dash sentinel and no copy button for it.
+    expect(
+      within(table).queryByRole('button', { name: 'Copy workflow ID' }),
+    ).toBeNull();
+    // The run ID copy affordance is still present (run id is always present).
+    expect(
+      within(table).getByRole('button', { name: 'Copy run ID r1' }),
+    ).toBeInTheDocument();
+  });
+
   it('re-queries listRuns when the refresh button is clicked', async () => {
     const listRuns = vi.fn().mockResolvedValue(
       connection([run({ runId: 'r1', workflowName: 'wf-a' })]),

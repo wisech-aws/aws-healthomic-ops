@@ -119,6 +119,7 @@ import TaskNode from './TaskNode';
 import { matchNodeIds } from './nodeSearch';
 import { formatDuration, taskDuration } from '../fleet/duration';
 import RelativeTime from '../components/RelativeTime';
+import CopyId from '../components/CopyId';
 import { summarizeResources } from '../metrics/resourceSummary';
 import type { ResourceSummary } from '../metrics/resourceSummary';
 import { joinMetricsToTasks } from '../metrics/joinMetricsToTasks';
@@ -353,11 +354,38 @@ function RunOrientationStrip({
           <ColumnLayout columns={4} variant="text-grid">
             <div>
               <Box variant="awsui-key-label">Run ID</Box>
-              <span data-testid="run-id">{run?.runId ?? runId}</span>
+              <span data-testid="run-id">
+                {(() => {
+                  const value = run?.runId ?? runId;
+                  return (
+                    <SpaceBetween direction="horizontal" size="xxs">
+                      <span>{value}</span>
+                      <CopyId
+                        variant="icon"
+                        value={value}
+                        label={`Copy run ID ${value}`}
+                      />
+                    </SpaceBetween>
+                  );
+                })()}
+              </span>
             </div>
             <div>
               <Box variant="awsui-key-label">Workflow ID</Box>
-              <span data-testid="workflow-id">{run?.workflowId ?? '—'}</span>
+              <span data-testid="workflow-id">
+                {run?.workflowId != null ? (
+                  <SpaceBetween direction="horizontal" size="xxs">
+                    <span>{run.workflowId}</span>
+                    <CopyId
+                      variant="icon"
+                      value={run.workflowId}
+                      label="Copy workflow ID"
+                    />
+                  </SpaceBetween>
+                ) : (
+                  '—'
+                )}
+              </span>
             </div>
             <div>
               <Box variant="awsui-key-label">Tasks completed</Box>
@@ -1713,7 +1741,20 @@ function RunInputsOutputs({
                 {
                   id: 'value',
                   header: 'Value',
-                  cell: (item) => <Box variant="samp">{item.value}</Box>,
+                  cell: (item) =>
+                    item.value.startsWith('arn:') ||
+                    item.value.startsWith('s3://') ? (
+                      <SpaceBetween direction="horizontal" size="xxs">
+                        <Box variant="samp">{item.value}</Box>
+                        <CopyId
+                          variant="icon"
+                          value={item.value}
+                          label={`Copy ${item.label}`}
+                        />
+                      </SpaceBetween>
+                    ) : (
+                      <Box variant="samp">{item.value}</Box>
+                    ),
                 },
               ]}
               empty={
@@ -1815,9 +1856,13 @@ function S3Value({
     prefix,
   )}`;
   return (
-    <Link href={consoleUrl} external>
-      {uri}
-    </Link>
+    <SpaceBetween direction="horizontal" size="xxs">
+      <Link href={consoleUrl} external>
+        {uri}
+      </Link>
+      {/* Copy the raw s3:// URI (NOT the console URL) beside the console link. */}
+      <CopyId variant="icon" value={uri} label="Copy S3 URI" />
+    </SpaceBetween>
   );
 }
 

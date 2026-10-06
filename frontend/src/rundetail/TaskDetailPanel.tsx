@@ -40,6 +40,7 @@ import { formatStartTime, isRunning, taskDuration } from '../fleet/duration';
 import type { ErrorExcerpt, Task } from '../api/types';
 import type { TaskMetrics } from '../metrics/joinMetricsToTasks';
 import ErrorBoundary from '../components/ErrorBoundary';
+import CopyId from '../components/CopyId';
 import LogsPanel from './LogsPanel';
 import UtilizationBars from './UtilizationBars';
 
@@ -221,6 +222,19 @@ function TaskResourceDetail({
   return (
     <div data-testid="task-resource-detail">
       <ColumnLayout columns={3} variant="text-grid">
+        <div>
+          <Box variant="awsui-key-label">Task ID</Box>
+          <span data-testid="task-detail-task-id">
+            <SpaceBetween direction="horizontal" size="xxs">
+              <span>{task.taskId}</span>
+              <CopyId
+                variant="icon"
+                value={task.taskId}
+                label="Copy task ID"
+              />
+            </SpaceBetween>
+          </span>
+        </div>
         <div>
           <Box variant="awsui-key-label">vCPUs</Box>
           <span data-testid="task-resource-cpus">{task.cpus ?? '—'}</span>

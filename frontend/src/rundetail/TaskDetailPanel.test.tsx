@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import TaskDetailPanel from './TaskDetailPanel';
 import type { DetailSelection } from './TaskDetailPanel';
 import type { ErrorExcerpt, MetricSeries, Task } from '../api/types';
@@ -79,6 +79,12 @@ describe('TaskDetailPanel', () => {
     // Resource detail strip surfaces cpus/memory/instance type.
     const detail = screen.getByTestId('task-resource-detail');
     expect(detail).toBeInTheDocument();
+    // The task ID is shown with an unobtrusive copy affordance (QoL #2).
+    const taskId = screen.getByTestId('task-detail-task-id');
+    expect(taskId).toHaveTextContent('task-live');
+    expect(
+      within(taskId).getByRole('button', { name: /copy task id/i }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('task-resource-cpus')).toHaveTextContent('4');
     expect(screen.getByTestId('task-resource-memory')).toHaveTextContent('8');
     expect(screen.getByTestId('task-resource-instance-type')).toHaveTextContent(
