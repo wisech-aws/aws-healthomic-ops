@@ -203,7 +203,10 @@ describe('FleetView', () => {
         }),
       ]),
     );
-    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+    // Fixed `now` one hour after the run started so the Start time column
+    // renders a deterministic relative string ("1h ago").
+    const now = Date.parse('2024-01-01T01:00:00.000Z');
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={now} />);
 
     const table = await screen.findByRole('table');
     // The workflow name appears in the clickable "Workflow" column.
@@ -218,6 +221,17 @@ describe('FleetView', () => {
     // Run ID and Workflow ID columns (Req: show run/workflow identifiers).
     expect(within(table).getByText('r1')).toBeInTheDocument();
     expect(within(table).getByText('wf-777')).toBeInTheDocument();
+    // Start time column (#5): renders a RELATIVE string (not the raw locale
+    // string) with the EXACT absolute timestamp exposed on hover via a native
+    // title attribute.
+    const relativeStart = within(table).getByText('1h ago');
+    expect(relativeStart).toBeInTheDocument();
+    const absoluteStart = new Date(
+      Date.parse('2024-01-01T00:00:00.000Z'),
+    ).toLocaleString();
+    expect(
+      relativeStart.closest('[title]')?.getAttribute('title'),
+    ).toBe(absoluteStart);
   });
 
   it('shows a dash in the Run name column when the run has no name', async () => {
@@ -229,6 +243,43 @@ describe('FleetView', () => {
     render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
     await screen.findByRole('table');
     expect(screen.getByTestId('run-name')).toHaveTextContent('—');
+  });
+
+  it('offers a copy affordance for the run ID and workflow ID (QoL #2)', async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({ runId: 'r1', workflowId: 'wf-999', updatedAt: '2024-01-01T00:00:00.000Z' }),
+      ]),
+    );
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+    const table = await screen.findByRole('table');
+    // A copy button sits beside the run ID (inline variant keeps the value).
+    expect(
+      within(table).getByRole('button', { name: 'Copy run ID r1' }),
+    ).toBeInTheDocument();
+    expect(within(table).getByText('r1')).toBeInTheDocument();
+    // And beside the present workflow ID.
+    expect(
+      within(table).getByRole('button', { name: 'Copy workflow ID' }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders '—' with no copy affordance when the workflow ID is absent", async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({ runId: 'r1', updatedAt: '2024-01-01T00:00:00.000Z' }),
+      ]),
+    );
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+    const table = await screen.findByRole('table');
+    // No workflow id => the dash sentinel and no copy button for it.
+    expect(
+      within(table).queryByRole('button', { name: 'Copy workflow ID' }),
+    ).toBeNull();
+    // The run ID copy affordance is still present (run id is always present).
+    expect(
+      within(table).getByRole('button', { name: 'Copy run ID r1' }),
+    ).toBeInTheDocument();
   });
 
   it('re-queries listRuns when the refresh button is clicked', async () => {

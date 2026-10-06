@@ -15,7 +15,7 @@
  * local-state navigation between the fleet view (list of runs) and the run
  * detail view (task dependency diagram).
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import AppLayout from '@cloudscape-design/components/app-layout';
 import ContentLayout from '@cloudscape-design/components/content-layout';
 import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group';
@@ -31,6 +31,7 @@ import {
   SplitPanelSlotContext,
   type SplitPanelSlot,
 } from './splitPanelSlot';
+import { useDeepLink } from './navigation/useDeepLink';
 
 /**
  * Props for the dashboard shell.
@@ -67,7 +68,22 @@ export function Dashboard({
   splitPanelOpen,
   onSplitPanelToggle,
 }: DashboardProps = {}): React.JSX.Element {
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  // QoL #3 — deep-linkable run/task URLs via the native History API (no router).
+  // `state` is the view parsed from the location hash; `navigate` updates the
+  // hash (push/replace) without reloading. View state below stays plain React
+  // state — the hook only keeps it in sync with the URL.
+  const { state: deepLinkState, navigate } = useDeepLink();
+
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(
+    deepLinkState.kind === 'run' ? deepLinkState.runId : null,
+  );
+  // A task id restored from the URL on load, handed to RunDetailView so it can
+  // open that task's logs once (if the task exists). Not part of ongoing state:
+  // RunDetailView drives subsequent task selection and reports it back via
+  // onTaskSelectionChange so the hash follows the live selection.
+  const [pendingTaskId, setPendingTaskId] = useState<string | undefined>(
+    deepLinkState.kind === 'run' ? deepLinkState.taskId : undefined,
+  );
   // Whether the top-level Reports view is active (workflow-performance-reports).
   const [showReports, setShowReports] = useState(false);
   // Two run ids selected for the parameters diff view (enhancement #6, Req 6.7).
@@ -86,6 +102,30 @@ export function Dashboard({
   const [slotOnToggle, setSlotOnToggle] = useState<
     ((open: boolean) => void) | undefined
   >(undefined);
+
+  // Tracks the last deep-link state we reconciled into local view state, so the
+  // reconcile effect (below, after the slot/handler helpers are defined) only
+  // reacts to genuine hash changes, not re-renders.
+  const lastAppliedHashRef = useRef<string | null>(null);
+
+  // Stable key for a deep-link state, used both to dedupe the reconcile effect
+  // and to mark our OWN outbound navigations as already-applied (so they don't
+  // re-trigger the inbound reconcile and tear down freshly-registered view
+  // state like the logs fly-out slot).
+  const hashKey = (s: typeof deepLinkState): string =>
+    s.kind === 'fleet' ? 'fleet' : `run:${s.runId}:${s.taskId ?? ''}`;
+
+  // Our outbound navigation: push/replace the hash AND record it as applied so
+  // the reconcile effect treats it as our own change and does nothing. Inbound
+  // changes (initial load, browser back/forward) do NOT go through here, so
+  // their key differs from `lastAppliedHashRef` and the effect reconciles them.
+  const navigateHash = (
+    next: typeof deepLinkState,
+    opts?: { replace?: boolean },
+  ) => {
+    lastAppliedHashRef.current = hashKey(next);
+    navigate(next, opts);
+  };
 
   const splitPanelSlot = useMemo<SplitPanelSlot>(
     () => ({
@@ -113,13 +153,53 @@ export function Dashboard({
     setSlotOnToggle(undefined);
   };
 
-  // Return to the fleet list from any secondary view.
+  // Return to the fleet list from any secondary view. Pushes the fleet hash so
+  // the URL follows (and back/forward works); the reconcile effect then clears
+  // the local view state from the moved deep-link state.
   const goToFleet = () => {
     setSelectedRunId(null);
+    setPendingTaskId(undefined);
     setCompareRunIds(null);
     setShowReports(false);
     clearSplitPanelSlot();
+    navigateHash({ kind: 'fleet' });
   };
+
+  // Open a run from the fleet list. Pushes '#/run/<id>' so the URL is
+  // deep-linkable and back returns to the fleet.
+  const openRun = (runId: string) => {
+    setPendingTaskId(undefined);
+    setSelectedRunId(runId);
+    navigateHash({ kind: 'run', runId });
+  };
+
+  // Reconcile inbound deep-link state (initial load + browser back/forward)
+  // into the local view WITHOUT calling `navigate`, so popstate restores the
+  // view and our own `navigate` calls stay idempotent. The hash scheme covers
+  // fleet/run/task only, so any inbound navigation also clears the
+  // reports/compare overlays (not deep-linkable) exactly as the fleet/run
+  // handlers do.
+  useEffect(() => {
+    const key = hashKey(deepLinkState);
+    if (lastAppliedHashRef.current === key) {
+      return;
+    }
+    lastAppliedHashRef.current = key;
+
+    if (deepLinkState.kind === 'run') {
+      setSelectedRunId(deepLinkState.runId);
+      setPendingTaskId(deepLinkState.taskId);
+    } else {
+      setSelectedRunId(null);
+      setPendingTaskId(undefined);
+    }
+    setShowReports(false);
+    setCompareRunIds(null);
+    clearSplitPanelSlot();
+    // `clearSplitPanelSlot` is a stable in-render helper; depending only on the
+    // inbound state keeps this a pure URL->view reconcile.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkState]);
 
   const breadcrumbItems =
     compareRunIds !== null
@@ -166,8 +246,12 @@ export function Dashboard({
             iconName: 'insert-row',
             onClick: () => {
               setSelectedRunId(null);
+              setPendingTaskId(undefined);
               setCompareRunIds(null);
               clearSplitPanelSlot();
+              // Reports is not deep-linkable; drop any run/task hash so the URL
+              // isn't left pointing at a run that is no longer shown.
+              navigateHash({ kind: 'fleet' });
               setShowReports(true);
             },
           },
@@ -229,7 +313,7 @@ export function Dashboard({
               }
             >
               <FleetView
-                onSelectRun={setSelectedRunId}
+                onSelectRun={openRun}
                 onCompareRuns={(left, right) => setCompareRunIds([left, right])}
               />
             </ContentLayout>
@@ -241,10 +325,31 @@ export function Dashboard({
             <SplitPanelSlotContext.Provider value={splitPanelSlot}>
               <ContentLayout>
                 <RunDetailView
+                  // Key by run id so navigating between runs (fleet click or
+                  // browser back/forward) remounts with fresh queries and a
+                  // fresh one-time deep-link task restore.
+                  key={selectedRunId}
                   runId={selectedRunId}
+                  // Deep link (#3): restore a task from the URL on open; the
+                  // view opens it once if it exists (never fabricates).
+                  initialTaskId={pendingTaskId}
+                  // Keep the hash in sync with the live task selection:
+                  // '#/run/<id>/task/<taskId>' when a task is selected,
+                  // '#/run/<id>' when cleared. `replace` so task
+                  // selection/clear doesn't flood the back stack.
+                  onTaskSelectionChange={(taskId) => {
+                    navigateHash(
+                      taskId != null
+                        ? { kind: 'run', runId: selectedRunId, taskId }
+                        : { kind: 'run', runId: selectedRunId },
+                      { replace: true },
+                    );
+                  }}
                   onBack={() => {
                     setSelectedRunId(null);
+                    setPendingTaskId(undefined);
                     clearSplitPanelSlot();
+                    navigateHash({ kind: 'fleet' });
                   }}
                 />
               </ContentLayout>

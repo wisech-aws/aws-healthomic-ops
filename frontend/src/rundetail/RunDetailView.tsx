@@ -118,6 +118,8 @@ import type { TaskNodeData } from './graphLayout';
 import TaskNode from './TaskNode';
 import { matchNodeIds } from './nodeSearch';
 import { formatDuration, taskDuration } from '../fleet/duration';
+import RelativeTime from '../components/RelativeTime';
+import CopyId from '../components/CopyId';
 import { summarizeResources } from '../metrics/resourceSummary';
 import type { ResourceSummary } from '../metrics/resourceSummary';
 import { joinMetricsToTasks } from '../metrics/joinMetricsToTasks';
@@ -173,6 +175,19 @@ export interface RunDetailViewProps {
   readonly staticGraph?: StaticGraph | null;
   /** Invoked when the operator chooses to return to the fleet list. */
   readonly onBack?: () => void;
+  /**
+   * QoL #3 (deep links): a task id to restore from the URL on open. After the
+   * tasks load (`phase === 'ready'`), if this matches a task in `tasks` its
+   * logs are opened ONCE; a non-matching/absent id leaves no selection (never
+   * crash, never fabricate). Live task updates afterwards do NOT re-trigger it.
+   */
+  readonly initialTaskId?: string;
+  /**
+   * QoL #3 (deep links): notified whenever the task selection changes — with
+   * the selected task id, or `null` when it clears — so the shell can keep the
+   * URL hash in sync ('#/run/<id>/task/<taskId>' or '#/run/<id>').
+   */
+  readonly onTaskSelectionChange?: (taskId: string | null) => void;
   readonly getRun?: (runId: string) => Promise<Run | null>;
   readonly listTasksForRun?: (runId: string) => Promise<Task[]>;
   /**
@@ -352,11 +367,38 @@ function RunOrientationStrip({
           <ColumnLayout columns={4} variant="text-grid">
             <div>
               <Box variant="awsui-key-label">Run ID</Box>
-              <span data-testid="run-id">{run?.runId ?? runId}</span>
+              <span data-testid="run-id">
+                {(() => {
+                  const value = run?.runId ?? runId;
+                  return (
+                    <SpaceBetween direction="horizontal" size="xxs">
+                      <span>{value}</span>
+                      <CopyId
+                        variant="icon"
+                        value={value}
+                        label={`Copy run ID ${value}`}
+                      />
+                    </SpaceBetween>
+                  );
+                })()}
+              </span>
             </div>
             <div>
               <Box variant="awsui-key-label">Workflow ID</Box>
-              <span data-testid="workflow-id">{run?.workflowId ?? '—'}</span>
+              <span data-testid="workflow-id">
+                {run?.workflowId != null ? (
+                  <SpaceBetween direction="horizontal" size="xxs">
+                    <span>{run.workflowId}</span>
+                    <CopyId
+                      variant="icon"
+                      value={run.workflowId}
+                      label="Copy workflow ID"
+                    />
+                  </SpaceBetween>
+                ) : (
+                  '—'
+                )}
+              </span>
             </div>
             <div>
               <Box variant="awsui-key-label">Tasks completed</Box>
@@ -392,6 +434,8 @@ export default function RunDetailView({
   runId,
   staticGraph: staticGraphProp = null,
   onBack,
+  initialTaskId,
+  onTaskSelectionChange,
   getRun = defaultGetRun,
   listTasksForRun = defaultListTasksForRun,
   getStaticGraph = defaultGetStaticGraph,
@@ -474,6 +518,12 @@ export default function RunDetailView({
   // Guards the "query exactly once per mount" contract (Req 10.4) against React
   // StrictMode double-invocation of effects in development.
   const hasQueried = useRef(false);
+
+  // QoL #3 (deep links): guards the one-time `initialTaskId` restore so a live
+  // task-list update (subscription) can't re-open the deep-linked task after
+  // the operator has navigated away. Flipped true the first time the restore
+  // runs (or is deemed inapplicable), so it fires at most once per mount.
+  const restoredInitialTask = useRef(false);
 
   // Fetches measured utilization for the run (Req 5.1, 5.2, 7.4). Decoupled
   // from `phase`: it never blocks or fails the run/tasks/static-graph ready
@@ -796,6 +846,35 @@ export default function RunDetailView({
       ? logsSelection.taskId
       : null;
 
+  // QoL #3 (deep links): notify the shell whenever the TASK selection changes
+  // so it can sync the URL hash. A TASK selection reports its taskId; a
+  // RUN_ENGINE selection or no selection reports null (the hash drops the task
+  // segment but keeps the run). Driven off the derived `selectedTaskId` so it
+  // covers every set/clear path (node click, deep-link action, close, toggle,
+  // stale-selection reset) uniformly. A ref holds the last-reported value so we
+  // only fire on an actual change, never on unrelated re-renders.
+  const lastReportedTaskId = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (onTaskSelectionChange == null) {
+      return;
+    }
+    // Hold off until the one-time deep-link restore has had its chance (it runs
+    // once `phase === 'ready'`). Reporting before then would push a premature
+    // `null` to the shell and clobber the task segment of the URL that the
+    // restore is about to consume. We seed `lastReportedTaskId` with the
+    // current selection so the restore's own selection (if any) is reported as
+    // the FIRST genuine change rather than suppressed.
+    if (!restoredInitialTask.current) {
+      lastReportedTaskId.current = selectedTaskId;
+      return;
+    }
+    if (lastReportedTaskId.current === selectedTaskId) {
+      return;
+    }
+    lastReportedTaskId.current = selectedTaskId;
+    onTaskSelectionChange(selectedTaskId);
+  }, [selectedTaskId, onTaskSelectionChange]);
+
   // The task a TASK selection resolves to, or null. A RUN_ENGINE selection (or
   // no selection) resolves to null by design.
   const selectedTask = useMemo(
@@ -857,6 +936,30 @@ export default function RunDetailView({
       setLogsSelection(null);
     }
   }, [logsSelection, selectedTask]);
+
+  // QoL #3 (deep links): restore a task selection from the URL exactly ONCE,
+  // after the tasks load. If `initialTaskId` matches a task in `tasks`, open
+  // its logs; if it does not match (or is absent), leave no selection — never
+  // crash, never fabricate a task. Guarded by `restoredInitialTask` so later
+  // live task updates don't re-trigger this (the operator may have navigated
+  // on). Only runs in the ready phase, when the task list is actually known.
+  useEffect(() => {
+    if (restoredInitialTask.current || phase !== 'ready') {
+      return;
+    }
+    restoredInitialTask.current = true;
+    if (initialTaskId == null || initialTaskId.length === 0) {
+      return;
+    }
+    const match = tasks.find((t) => t.taskId === initialTaskId);
+    if (match) {
+      setLogsSelection({
+        kind: 'TASK',
+        taskId: match.taskId,
+        label: match.name ?? match.taskId,
+      });
+    }
+  }, [phase, initialTaskId, tasks]);
 
   // ── Detail fly-out (Cloudscape SplitPanel) ──────────────────────────────
   // The selected task's (or the run/engine logs') detail is presented in the
@@ -1184,6 +1287,51 @@ export default function RunDetailView({
             </span>
           }
         />
+
+        {/* Timeline (QoL #5): the run's created/started/stopped/updated
+            instants as relative strings, each exposing the exact absolute
+            timestamp on hover (native title + Cloudscape Popover) via
+            {@link RelativeTime}. Rendered just below the orientation strip so
+            an operator can orient in time without the timestamps scrolling
+            away. Absent instants render the dash sentinel '—' (no fabricated
+            value). `nowMs` is the view's single resolved instant so the
+            relative strings are deterministic. */}
+        <div aria-label="timeline" data-testid="run-timeline">
+          <ColumnLayout columns={4} variant="text-grid">
+            <div>
+              <Box variant="awsui-key-label">Created</Box>
+              <RelativeTime
+                value={run?.createdAt ?? null}
+                now={nowMs}
+                data-testid="timeline-created"
+              />
+            </div>
+            <div>
+              <Box variant="awsui-key-label">Started</Box>
+              <RelativeTime
+                value={run?.startedAt ?? null}
+                now={nowMs}
+                data-testid="timeline-started"
+              />
+            </div>
+            <div>
+              <Box variant="awsui-key-label">Stopped</Box>
+              <RelativeTime
+                value={run?.stoppedAt ?? null}
+                now={nowMs}
+                data-testid="timeline-stopped"
+              />
+            </div>
+            <div>
+              <Box variant="awsui-key-label">Updated</Box>
+              <RelativeTime
+                value={run?.updatedAt ?? null}
+                now={nowMs}
+                data-testid="timeline-updated"
+              />
+            </div>
+          </ColumnLayout>
+        </div>
 
         {/* Run-level failure banner (zone 1, Req 2.1–2.4): surfaces
             HealthOmics' own `statusMessage` (and `failureReason` when present)
@@ -1666,7 +1814,20 @@ function RunInputsOutputs({
                 {
                   id: 'value',
                   header: 'Value',
-                  cell: (item) => <Box variant="samp">{item.value}</Box>,
+                  cell: (item) =>
+                    item.value.startsWith('arn:') ||
+                    item.value.startsWith('s3://') ? (
+                      <SpaceBetween direction="horizontal" size="xxs">
+                        <Box variant="samp">{item.value}</Box>
+                        <CopyId
+                          variant="icon"
+                          value={item.value}
+                          label={`Copy ${item.label}`}
+                        />
+                      </SpaceBetween>
+                    ) : (
+                      <Box variant="samp">{item.value}</Box>
+                    ),
                 },
               ]}
               empty={
@@ -1768,9 +1929,13 @@ function S3Value({
     prefix,
   )}`;
   return (
-    <Link href={consoleUrl} external>
-      {uri}
-    </Link>
+    <SpaceBetween direction="horizontal" size="xxs">
+      <Link href={consoleUrl} external>
+        {uri}
+      </Link>
+      {/* Copy the raw s3:// URI (NOT the console URL) beside the console link. */}
+      <CopyId variant="icon" value={uri} label="Copy S3 URI" />
+    </SpaceBetween>
   );
 }
 

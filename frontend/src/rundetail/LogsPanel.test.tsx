@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import LogsPanel from './LogsPanel';
+import { logContent } from './logsExport';
 import type { RunLogs } from '../api/types';
 
 function logs(events: Array<{ timestamp: number; message: string }>): RunLogs {
@@ -117,5 +118,88 @@ describe('LogsPanel', () => {
     });
     expect(getRunLogs.mock.calls[0][0]).not.toHaveProperty('tail');
     expect(screen.queryByTestId('logs-tail-hint')).not.toBeInTheDocument();
+  });
+
+  // Download (#4): exports EXACTLY the loaded events as a .log file via the
+  // Blob/URL/anchor pattern, with no refetch and no fabrication.
+  describe('download', () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+
+    afterEach(() => {
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+      vi.restoreAllMocks();
+    });
+
+    it('exports exactly the loaded events with the task filename and triggers a click', async () => {
+      const events = [
+        { timestamp: 1704067200000, message: 'staging genome.fasta' },
+        { timestamp: 1704067201000, message: '[ERROR] alignment failed' },
+      ];
+      const getRunLogs = vi.fn().mockResolvedValue(logs(events));
+
+      let captured: Blob | null = null;
+      URL.createObjectURL = vi.fn((blob: Blob) => {
+        captured = blob;
+        return 'blob:mock-url';
+      }) as unknown as typeof URL.createObjectURL;
+      const revokeSpy = vi.fn();
+      URL.revokeObjectURL = revokeSpy as unknown as typeof URL.revokeObjectURL;
+
+      let downloadAttr: string | null = null;
+      const clickSpy = vi
+        .spyOn(HTMLAnchorElement.prototype, 'click')
+        .mockImplementation(function (this: HTMLAnchorElement) {
+          downloadAttr = this.download;
+        });
+
+      render(
+        <LogsPanel runId="r1" stream="TASK" taskId="t1" getRunLogs={getRunLogs} />,
+      );
+      await screen.findByTestId('logs-output');
+
+      const downloadBtn = screen.getByRole('button', { name: /download logs/i });
+      expect(downloadBtn).not.toBeDisabled();
+      fireEvent.click(downloadBtn);
+
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      expect(downloadAttr).toBe('r1-t1.log');
+      expect(revokeSpy).toHaveBeenCalledWith('blob:mock-url');
+      // No refetch happened on download.
+      expect(getRunLogs).toHaveBeenCalledTimes(1);
+
+      // The exported text equals logContent over the FULL loaded events.
+      expect(captured).not.toBeNull();
+      const text = await (captured as unknown as Blob).text();
+      expect(text).toBe(logContent(events));
+    });
+
+    it('uses the stream name in the filename when there is no taskId', async () => {
+      const getRunLogs = vi
+        .fn()
+        .mockResolvedValue(logs([{ timestamp: 1, message: 'x' }]));
+      URL.createObjectURL = vi.fn(() => 'blob:mock-url') as unknown as typeof URL.createObjectURL;
+      URL.revokeObjectURL = vi.fn() as unknown as typeof URL.revokeObjectURL;
+      let downloadAttr: string | null = null;
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
+        function (this: HTMLAnchorElement) {
+          downloadAttr = this.download;
+        },
+      );
+
+      render(<LogsPanel runId="r1" stream="ENGINE" getRunLogs={getRunLogs} />);
+      await screen.findByTestId('logs-output');
+      fireEvent.click(screen.getByRole('button', { name: /download logs/i }));
+      expect(downloadAttr).toBe('r1-ENGINE.log');
+    });
+
+    it('disables the Download button when there are no events', async () => {
+      const getRunLogs = vi.fn().mockResolvedValue(logs([]));
+      render(<LogsPanel runId="r1" stream="TASK" taskId="t1" getRunLogs={getRunLogs} />);
+      await screen.findByText(/no log events yet/i);
+      expect(screen.getByRole('button', { name: /download logs/i })).toBeDisabled();
+    });
   });
 });
