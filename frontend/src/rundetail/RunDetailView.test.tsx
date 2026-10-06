@@ -137,6 +137,52 @@ describe('RunDetailView', () => {
     expect(listTasksForRun).toHaveBeenCalledTimes(1);
   });
 
+  it('renders the run timeline as relative strings with absolute-on-hover (#5)', async () => {
+    const getRun = vi.fn().mockResolvedValue(
+      makeRun({
+        createdAt: '2024-01-01T00:00:00.000Z',
+        startedAt: '2024-01-01T00:05:00.000Z',
+        stoppedAt: null,
+        updatedAt: '2024-01-01T00:30:00.000Z',
+      }),
+    );
+    const listTasksForRun = vi.fn().mockResolvedValue([]);
+    // Fixed `now` so the relative strings are deterministic.
+    const now = Date.parse('2024-01-01T01:00:00.000Z');
+
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={getRun}
+        listTasksForRun={listTasksForRun}
+        onTaskUpdated={noopSubscribe()}
+        now={now}
+      />,
+    );
+
+    const timeline = await screen.findByTestId('run-timeline');
+
+    // Created 1h ago, started 55m ago, updated 30m ago; stopped is absent.
+    const created = within(timeline).getByTestId('timeline-created');
+    expect(created).toHaveTextContent('1h ago');
+    expect(created).toHaveAttribute(
+      'title',
+      new Date(Date.parse('2024-01-01T00:00:00.000Z')).toLocaleString(),
+    );
+
+    expect(within(timeline).getByTestId('timeline-started')).toHaveTextContent(
+      '55m ago',
+    );
+    expect(within(timeline).getByTestId('timeline-updated')).toHaveTextContent(
+      '30m ago',
+    );
+
+    // Absent stoppedAt renders the dash sentinel with no hover title.
+    const stopped = within(timeline).getByTestId('timeline-stopped');
+    expect(stopped).toHaveTextContent('—');
+    expect(stopped).not.toHaveAttribute('title');
+  });
+
   it('shows an error with retry, then recovers (Req 9.2, 10.2)', async () => {
     const getRun = vi
       .fn()
