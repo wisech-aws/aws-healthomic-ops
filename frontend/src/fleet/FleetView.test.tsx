@@ -175,7 +175,10 @@ describe('FleetView', () => {
         }),
       ]),
     );
-    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+    // Fixed `now` one hour after the run started so the Start time column
+    // renders a deterministic relative string ("1h ago").
+    const now = Date.parse('2024-01-01T01:00:00.000Z');
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={now} />);
 
     const table = await screen.findByRole('table');
     // The workflow name appears in the clickable "Workflow" column.
@@ -190,6 +193,17 @@ describe('FleetView', () => {
     // Run ID and Workflow ID columns (Req: show run/workflow identifiers).
     expect(within(table).getByText('r1')).toBeInTheDocument();
     expect(within(table).getByText('wf-777')).toBeInTheDocument();
+    // Start time column (#5): renders a RELATIVE string (not the raw locale
+    // string) with the EXACT absolute timestamp exposed on hover via a native
+    // title attribute.
+    const relativeStart = within(table).getByText('1h ago');
+    expect(relativeStart).toBeInTheDocument();
+    const absoluteStart = new Date(
+      Date.parse('2024-01-01T00:00:00.000Z'),
+    ).toLocaleString();
+    expect(
+      relativeStart.closest('[title]')?.getAttribute('title'),
+    ).toBe(absoluteStart);
   });
 
   it('shows a dash in the Run name column when the run has no name', async () => {
