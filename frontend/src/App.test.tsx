@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { Node } from 'reactflow';
 import App, { Dashboard } from './App';
@@ -112,6 +112,27 @@ vi.mock('reactflow', () => ({
   Position: { Top: 'top', Bottom: 'bottom', Left: 'left', Right: 'right' },
 }));
 vi.mock('reactflow/dist/style.css', () => ({}));
+
+// Cloudscape's SplitPanel throws ("can only be used inside app layout") when
+// rendered outside a real AppLayout — which our pass-through AppLayout mock is
+// not. RunDetailView wraps its logs fly-out in a SplitPanel and hands it to the
+// shell slot, so stub SplitPanel to a context-free pass-through that still
+// renders its header + children, letting the fly-out content be asserted.
+vi.mock('@cloudscape-design/components/split-panel', () => ({
+  __esModule: true,
+  default: ({
+    header,
+    children,
+  }: {
+    header?: React.ReactNode;
+    children?: React.ReactNode;
+  }) => (
+    <div data-testid="split-panel">
+      <div data-testid="split-panel-header">{header}</div>
+      <div data-testid="split-panel-body">{children}</div>
+    </div>
+  ),
+}));
 
 // Keep Amplify out of the component tests: mock the config so mock-mode is off
 // (we exercise the Dashboard directly) and configureAmplify is a no-op.
@@ -290,5 +311,121 @@ describe('Dashboard split-panel slot', () => {
     // The shell unwraps `event.detail.open` before calling the caller's toggle.
     handler({ detail: { open: false } });
     expect(onToggle).toHaveBeenCalledWith(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QoL #3 — deep-linkable run/task URLs (History API, no router).
+// ---------------------------------------------------------------------------
+describe('Dashboard deep links (#3)', () => {
+  const originalHash = window.location.hash;
+  const historySpies: Array<{ mockRestore: () => void }> = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    appLayoutProps.length = 0;
+    window.location.hash = '';
+  });
+
+  afterEach(() => {
+    window.location.hash = originalHash;
+    // Restore ONLY spies created within these tests (e.g. history.pushState).
+    // Avoid `vi.restoreAllMocks()`, which would also reset the module-level
+    // `vi.mock('./api/client')` fns to return `undefined` and crash a later
+    // test when a prior test's unmounted RunDetailView resolves a dangling
+    // query.
+    historySpies.forEach((spy) => spy.mockRestore());
+    historySpies.length = 0;
+  });
+
+  it('opens the run from an initial #/run/<id> hash on load', async () => {
+    window.location.hash = '#/run/run-1';
+    render(<Dashboard />);
+
+    // The run detail view (task graph) opens for run-1 without any click.
+    await screen.findByTestId('layer-indicator');
+    await waitFor(() =>
+      expect(screen.getByTestId('reactflow')).toBeInTheDocument(),
+    );
+  });
+
+  it('opens the deep-linked task logs from #/run/<id>/task/<taskId> when the task exists', async () => {
+    window.location.hash = '#/run/run-1/task/t1';
+    render(<Dashboard />);
+
+    // Task t1 (name "align") exists in the client mock, so the deep link
+    // restores its selection on load: the run opens AND the shell's split-panel
+    // slot is populated and open (the task logs fly-out). The fly-out body is a
+    // Cloudscape SplitPanel hosted by AppLayout; under the pass-through
+    // AppLayout mock we assert the integration contract — AppLayout receives an
+    // open split-panel node — rather than SplitPanel's internally-rendered
+    // chrome.
+    await screen.findByTestId('layer-indicator');
+    expect(
+      (await screen.findAllByText(/logs — task align/i)).length,
+    ).toBeGreaterThanOrEqual(1);
+    await waitFor(() => {
+      expect(lastAppLayoutProps().splitPanelOpen).toBe(true);
+    });
+    // The hash reflects the deep-linked task (kept in sync, not fabricated).
+    expect(window.location.hash).toBe('#/run/run-1/task/t1');
+  });
+
+  it('shows the fleet for an unknown/invalid hash (no crash, no fabrication)', async () => {
+    window.location.hash = '#/garbage';
+    render(<Dashboard />);
+
+    // Falls back to the fleet list; no run detail opens.
+    expect(
+      (await screen.findAllByText('my-workflow')).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByTestId('layer-indicator')).not.toBeInTheDocument();
+  });
+
+  it('ignores a task id that does not exist — run opens with no task selected', async () => {
+    window.location.hash = '#/run/run-1/task/does-not-exist';
+    render(<Dashboard />);
+
+    // The run opens, but no task logs fly-out appears (never fabricated).
+    await screen.findByTestId('layer-indicator');
+    expect(screen.queryByText(/logs — task/i)).not.toBeInTheDocument();
+  });
+
+  it('pushes the run hash on selection and resets it on back-to-fleet', async () => {
+    const pushSpy = vi
+      .spyOn(window.history, 'pushState')
+      .mockImplementation(() => {});
+    historySpies.push(pushSpy);
+    window.location.hash = '#/';
+    render(<Dashboard />);
+
+    const link = await screen.findByRole('link', { name: /view run my-run/i });
+    fireEvent.click(link);
+
+    await screen.findByTestId('layer-indicator');
+    // Selecting a run pushed the deep-link hash without a reload.
+    expect(pushSpy).toHaveBeenCalledWith(null, '', '#/run/run-1');
+
+    // Back to fleet pushes the fleet hash.
+    fireEvent.click(screen.getByRole('button', { name: /back to fleet/i }));
+    expect(
+      (await screen.findAllByText('my-workflow')).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(pushSpy).toHaveBeenCalledWith(null, '', '#/');
+  });
+
+  it('restores the view on browser back/forward (popstate)', async () => {
+    window.location.hash = '#/run/run-1';
+    render(<Dashboard />);
+    await screen.findByTestId('layer-indicator');
+
+    // Simulate a browser back to the fleet: change the hash and fire popstate.
+    window.location.hash = '#/';
+    fireEvent(window, new PopStateEvent('popstate'));
+
+    expect(
+      (await screen.findAllByText('my-workflow')).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByTestId('layer-indicator')).not.toBeInTheDocument();
   });
 });

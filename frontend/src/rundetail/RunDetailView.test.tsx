@@ -1722,4 +1722,59 @@ describe('RunDetailView', () => {
     await waitFor(() => expect(get().open).toBe(true));
     expect(get().node).not.toBeNull();
   });
+
+  // QoL #3 (deep links): initialTaskId restores a task's logs on open when it
+  // matches a loaded task, and is ignored (no selection, no crash) otherwise.
+  it('opens the deep-linked task logs when initialTaskId matches a task (#3)', async () => {
+    render(
+      <RunDetailView
+        runId="run-1"
+        initialTaskId="task-live"
+        getRun={vi.fn().mockResolvedValue(makeRun())}
+        listTasksForRun={vi
+          .fn()
+          .mockResolvedValue([
+            makeTask({ taskId: 'task-live', name: 'align', status: 'RUNNING' }),
+          ])}
+        onTaskUpdated={noopSubscribe()}
+      />,
+    );
+
+    // The fly-out opens on that task's logs without any click (restored from
+    // the URL on load).
+    const detailPanel = await screen.findByTestId('detail-panel');
+    expect(
+      await within(detailPanel).findByText(/logs — task align/i),
+    ).toBeInTheDocument();
+    // The restored node carries the selection ring.
+    expect(screen.getByTestId('node-task-live')).toHaveAttribute(
+      'data-selected',
+      'true',
+    );
+  });
+
+  it('ignores initialTaskId that matches no task — no selection, no crash (#3)', async () => {
+    const onTaskSelectionChange = vi.fn();
+    render(
+      <RunDetailView
+        runId="run-1"
+        initialTaskId="does-not-exist"
+        onTaskSelectionChange={onTaskSelectionChange}
+        getRun={vi.fn().mockResolvedValue(makeRun())}
+        listTasksForRun={vi
+          .fn()
+          .mockResolvedValue([
+            makeTask({ taskId: 'task-live', name: 'align', status: 'RUNNING' }),
+          ])}
+        onTaskUpdated={noopSubscribe()}
+      />,
+    );
+
+    // The run loads normally; no task fly-out opens for the unknown id.
+    await screen.findByLabelText('progress');
+    await screen.findByTestId('node-task-live');
+    expect(screen.queryByText(/logs — task/i)).not.toBeInTheDocument();
+    // No fabricated task selection was ever reported to the shell.
+    expect(onTaskSelectionChange).not.toHaveBeenCalledWith('does-not-exist');
+  });
 });

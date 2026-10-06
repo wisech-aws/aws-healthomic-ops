@@ -175,6 +175,19 @@ export interface RunDetailViewProps {
   readonly staticGraph?: StaticGraph | null;
   /** Invoked when the operator chooses to return to the fleet list. */
   readonly onBack?: () => void;
+  /**
+   * QoL #3 (deep links): a task id to restore from the URL on open. After the
+   * tasks load (`phase === 'ready'`), if this matches a task in `tasks` its
+   * logs are opened ONCE; a non-matching/absent id leaves no selection (never
+   * crash, never fabricate). Live task updates afterwards do NOT re-trigger it.
+   */
+  readonly initialTaskId?: string;
+  /**
+   * QoL #3 (deep links): notified whenever the task selection changes — with
+   * the selected task id, or `null` when it clears — so the shell can keep the
+   * URL hash in sync ('#/run/<id>/task/<taskId>' or '#/run/<id>').
+   */
+  readonly onTaskSelectionChange?: (taskId: string | null) => void;
   readonly getRun?: (runId: string) => Promise<Run | null>;
   readonly listTasksForRun?: (runId: string) => Promise<Task[]>;
   /**
@@ -421,6 +434,8 @@ export default function RunDetailView({
   runId,
   staticGraph: staticGraphProp = null,
   onBack,
+  initialTaskId,
+  onTaskSelectionChange,
   getRun = defaultGetRun,
   listTasksForRun = defaultListTasksForRun,
   getStaticGraph = defaultGetStaticGraph,
@@ -503,6 +518,12 @@ export default function RunDetailView({
   // Guards the "query exactly once per mount" contract (Req 10.4) against React
   // StrictMode double-invocation of effects in development.
   const hasQueried = useRef(false);
+
+  // QoL #3 (deep links): guards the one-time `initialTaskId` restore so a live
+  // task-list update (subscription) can't re-open the deep-linked task after
+  // the operator has navigated away. Flipped true the first time the restore
+  // runs (or is deemed inapplicable), so it fires at most once per mount.
+  const restoredInitialTask = useRef(false);
 
   // Fetches measured utilization for the run (Req 5.1, 5.2, 7.4). Decoupled
   // from `phase`: it never blocks or fails the run/tasks/static-graph ready
@@ -825,6 +846,35 @@ export default function RunDetailView({
       ? logsSelection.taskId
       : null;
 
+  // QoL #3 (deep links): notify the shell whenever the TASK selection changes
+  // so it can sync the URL hash. A TASK selection reports its taskId; a
+  // RUN_ENGINE selection or no selection reports null (the hash drops the task
+  // segment but keeps the run). Driven off the derived `selectedTaskId` so it
+  // covers every set/clear path (node click, deep-link action, close, toggle,
+  // stale-selection reset) uniformly. A ref holds the last-reported value so we
+  // only fire on an actual change, never on unrelated re-renders.
+  const lastReportedTaskId = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (onTaskSelectionChange == null) {
+      return;
+    }
+    // Hold off until the one-time deep-link restore has had its chance (it runs
+    // once `phase === 'ready'`). Reporting before then would push a premature
+    // `null` to the shell and clobber the task segment of the URL that the
+    // restore is about to consume. We seed `lastReportedTaskId` with the
+    // current selection so the restore's own selection (if any) is reported as
+    // the FIRST genuine change rather than suppressed.
+    if (!restoredInitialTask.current) {
+      lastReportedTaskId.current = selectedTaskId;
+      return;
+    }
+    if (lastReportedTaskId.current === selectedTaskId) {
+      return;
+    }
+    lastReportedTaskId.current = selectedTaskId;
+    onTaskSelectionChange(selectedTaskId);
+  }, [selectedTaskId, onTaskSelectionChange]);
+
   // The task a TASK selection resolves to, or null. A RUN_ENGINE selection (or
   // no selection) resolves to null by design.
   const selectedTask = useMemo(
@@ -886,6 +936,30 @@ export default function RunDetailView({
       setLogsSelection(null);
     }
   }, [logsSelection, selectedTask]);
+
+  // QoL #3 (deep links): restore a task selection from the URL exactly ONCE,
+  // after the tasks load. If `initialTaskId` matches a task in `tasks`, open
+  // its logs; if it does not match (or is absent), leave no selection — never
+  // crash, never fabricate a task. Guarded by `restoredInitialTask` so later
+  // live task updates don't re-trigger this (the operator may have navigated
+  // on). Only runs in the ready phase, when the task list is actually known.
+  useEffect(() => {
+    if (restoredInitialTask.current || phase !== 'ready') {
+      return;
+    }
+    restoredInitialTask.current = true;
+    if (initialTaskId == null || initialTaskId.length === 0) {
+      return;
+    }
+    const match = tasks.find((t) => t.taskId === initialTaskId);
+    if (match) {
+      setLogsSelection({
+        kind: 'TASK',
+        taskId: match.taskId,
+        label: match.name ?? match.taskId,
+      });
+    }
+  }, [phase, initialTaskId, tasks]);
 
   // ── Detail fly-out (Cloudscape SplitPanel) ──────────────────────────────
   // The selected task's (or the run/engine logs') detail is presented in the
