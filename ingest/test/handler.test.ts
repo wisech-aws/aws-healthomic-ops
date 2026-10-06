@@ -180,18 +180,15 @@ describe('ingest handler pipeline', () => {
     expect(publishedRuns[0].runId).toBe('run-1');
   });
 
-  it('persists then publishes a valid task event', async () => {
+  it('persists then publishes a RUNNING task event WITHOUT enriching (status + approx startedAt)', async () => {
     const { repo, tasks } = makeRepository();
     const { publisher, publishedTasks } = makePublisher();
+    let enrichCalls = 0;
     const enricher = makeEnricher({
-      enrichTask: async (runId, taskId) => ({
-        runId,
-        taskId,
-        createdAt: '2024-01-01T00:00:00.000Z',
-        startedAt: '2024-01-01T00:01:00.000Z',
-        cpus: 4,
-        memory: 8,
-      }),
+      enrichTask: async (runId, taskId) => {
+        enrichCalls += 1;
+        return { runId, taskId, cpus: 4, memory: 8 };
+      },
     });
     const deps: HandlerDependencies = { repository: repo, enricher, publisher };
 
@@ -203,16 +200,21 @@ describe('ingest handler pipeline', () => {
     };
     await createHandler(deps)(taskEvent(detail));
 
+    // Terminal-only enrichment: a RUNNING event does NOT call GetRunTask.
+    expect(enrichCalls).toBe(0);
     expect(tasks).toHaveLength(1);
     expect(tasks[0]).toMatchObject({
       runId: 'run-1',
       taskId: '8888888',
       status: TaskStatus.RUNNING,
       name: 'align',
-      cpus: 4,
-      memory: 8,
       updatedAt: '2024-01-02T03:04:05.678Z',
+      // Approximate startedAt derived from the event time (not from an API call).
+      startedAt: '2024-01-02T03:04:05.678Z',
     });
+    // No enrichment => no cpus/memory yet (they arrive at terminal).
+    expect(tasks[0].cpus).toBeUndefined();
+    expect(tasks[0].memory).toBeUndefined();
     expect(publishedTasks).toHaveLength(1);
     expect(publishedTasks[0].taskId).toBe('8888888');
   });
@@ -336,21 +338,14 @@ describe('ingest handler pipeline', () => {
     },
   );
 
-  it('DOES call GetRunTask exactly once for a RUNNING task event (captures name/timing)', async () => {
+  it('does NOT call GetRunTask for a RUNNING task event (terminal-only enrichment) and sets an approximate startedAt', async () => {
     const { repo, tasks } = makeRepository();
     const { publisher } = makePublisher();
     let enrichCalls = 0;
     const enricher = makeEnricher({
       enrichTask: async (runId, taskId) => {
         enrichCalls += 1;
-        return {
-          runId,
-          taskId,
-          name: 'align',
-          startedAt: '2024-01-01T00:01:00.000Z',
-          cpus: 4,
-          memory: 8,
-        };
+        return { runId, taskId, name: 'align', cpus: 4, memory: 8 };
       },
     });
     const deps: HandlerDependencies = { repository: repo, enricher, publisher };
@@ -358,18 +353,22 @@ describe('ingest handler pipeline', () => {
     const detail = {
       runId: 'run-1',
       status: TaskStatus.RUNNING,
+      name: 'align',
       arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/6666666',
     };
     await createHandler(deps)(taskEvent(detail));
 
-    expect(enrichCalls).toBe(1);
+    // Terminal-only policy: RUNNING is a cheap status-only write, no API call.
+    expect(enrichCalls).toBe(0);
     expect(tasks[0]).toMatchObject({
       taskId: '6666666',
       status: TaskStatus.RUNNING,
       name: 'align',
-      startedAt: '2024-01-01T00:01:00.000Z',
-      cpus: 4,
+      // approximate startedAt from the event time (event.time -> updatedAt)
+      startedAt: '2024-01-02T03:04:05.678Z',
     });
+    // cpus/memory not available until the terminal enrichment.
+    expect(tasks[0].cpus).toBeUndefined();
   });
 
   it.each([TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED])(
@@ -400,62 +399,54 @@ describe('ingest handler pipeline', () => {
     },
   );
 
-  it('overrides a stale RUNNING event with the enriched TERMINAL status (out-of-order delivery)', async () => {
-    // Reproduces the stuck-task bug: a RUNNING event is processed AFTER the task
-    // actually finished. GetRunTask returns the authoritative COMPLETED + timing.
-    // The handler must persist COMPLETED (not the stale event RUNNING) so the
-    // stored task is not left "RUNNING but has stoppedAt".
+  it('RUNNING writes an approximate startedAt (no enrich); the terminal write carries the authoritative startTime', async () => {
+    // RUNNING sets an approximate startedAt from event time (no enrich); the
+    // later terminal event enriches and writes the authoritative timing. The
+    // repository's field-merge (covered in repository.test.ts) then lets the
+    // terminal value win; here we assert each WRITE carries the right values.
     const { repo, tasks } = makeRepository();
     const { publisher } = makePublisher();
+    let enrichCalls = 0;
     const enricher = makeEnricher({
-      enrichTask: async (runId, taskId) => ({
-        runId,
-        taskId,
-        name: 'align',
-        status: TaskStatus.COMPLETED, // authoritative: task is actually done
-        startedAt: '2024-01-01T00:01:00.000Z',
-        stoppedAt: '2024-01-01T00:09:00.000Z',
-      }),
+      enrichTask: async (runId, taskId) => {
+        enrichCalls += 1;
+        return {
+          runId,
+          taskId,
+          name: 'align',
+          startedAt: '2024-01-01T00:01:00.000Z', // authoritative
+          stoppedAt: '2024-01-01T00:09:00.000Z',
+          cpus: 4,
+          memory: 8,
+        };
+      },
     });
     const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+    const arn = 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/5252525';
 
-    const detail = {
-      runId: 'run-1',
-      status: TaskStatus.RUNNING, // stale event status
-      arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/5252525',
-    };
-    await createHandler(deps)(taskEvent(detail));
+    // 1) RUNNING (no enrich) — approximate startedAt from event time.
+    await createHandler(deps)(
+      taskEvent({ runId: 'run-1', status: TaskStatus.RUNNING, name: 'align', arn }, '2024-01-01T00:01:30.000Z'),
+    );
+    // 2) COMPLETED (enriches) — authoritative timing.
+    await createHandler(deps)(
+      taskEvent({ runId: 'run-1', status: TaskStatus.COMPLETED, name: 'align', arn }, '2024-01-01T00:09:05.000Z'),
+    );
 
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({
-      taskId: '5252525',
-      status: TaskStatus.COMPLETED, // enriched terminal wins over stale RUNNING
-      startedAt: '2024-01-01T00:01:00.000Z',
-      stoppedAt: '2024-01-01T00:09:00.000Z',
-    });
-  });
-
-  it('keeps the event RUNNING status when enrichment also reports RUNNING (no false override)', async () => {
-    const { repo, tasks } = makeRepository();
-    const { publisher } = makePublisher();
-    const enricher = makeEnricher({
-      enrichTask: async (runId, taskId) => ({
-        runId,
-        taskId,
-        name: 'align',
-        status: TaskStatus.RUNNING,
-        startedAt: '2024-01-01T00:01:00.000Z',
-      }),
-    });
-    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
-    const detail = {
-      runId: 'run-1',
+    expect(enrichCalls).toBe(1); // only the terminal event enriched
+    const runningWrite = tasks[0];
+    const terminalWrite = tasks[1];
+    expect(runningWrite).toMatchObject({
       status: TaskStatus.RUNNING,
-      arn: 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/6363636',
-    };
-    await createHandler(deps)(taskEvent(detail));
-    expect(tasks[0]).toMatchObject({ taskId: '6363636', status: TaskStatus.RUNNING });
-    expect(tasks[0].stoppedAt).toBeUndefined();
+      startedAt: '2024-01-01T00:01:30.000Z', // approximate (event time)
+    });
+    expect(runningWrite.cpus).toBeUndefined();
+    expect(terminalWrite).toMatchObject({
+      status: TaskStatus.COMPLETED,
+      startedAt: '2024-01-01T00:01:00.000Z', // authoritative overwrites approx
+      stoppedAt: '2024-01-01T00:09:00.000Z',
+      cpus: 4,
+    });
   });
 
   it('ignores a malformed (unknown detail-type) event without persisting or publishing', async () => {

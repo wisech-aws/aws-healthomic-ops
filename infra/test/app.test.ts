@@ -290,6 +290,22 @@ describe('IngestStack deferred re-sweep (Reconciler + one-shot Scheduler)', () =
     expect(Object.keys(fns).length).toBeGreaterThanOrEqual(2);
   });
 
+  it('caps the reconciler fan-out with reserved concurrency + OMICS_TPS (fleet-wide HealthOmics budget)', () => {
+    const t = ingestTemplate();
+    const fns = t.findResources('AWS::Lambda::Function');
+    // The reconciler is identified by its RECONCILER_TABLE_NAME env var.
+    const reconciler = Object.values(fns).find((f) =>
+      Boolean(f.Properties?.Environment?.Variables?.RECONCILER_TABLE_NAME),
+    );
+    expect(reconciler).toBeDefined();
+    // Bounded fan-out so a wave of terminal-run re-sweeps cannot exceed the
+    // HealthOmics ~10 TPS budget (reservedConcurrency × OMICS_TPS ≈ 10), while
+    // OMICS_TPS is high enough that a single large-run sweep finishes in the
+    // timeout.
+    expect(reconciler!.Properties?.ReservedConcurrentExecutions).toBe(2);
+    expect(reconciler!.Properties?.Environment?.Variables?.OMICS_TPS).toBe('5');
+  });
+
   it('grants the ingest role scheduler:CreateSchedule (scoped, not *) and iam:PassRole conditioned on the scheduler service', () => {
     const t = ingestTemplate();
     const policies = t.findResources('AWS::IAM::Policy');
@@ -339,5 +355,71 @@ describe('IngestStack deferred re-sweep (Reconciler + one-shot Scheduler)', () =
       );
     });
     expect(trustsScheduler).toBe(true);
+  });
+});
+
+
+describe('IngestStack Kinesis ingest path (toggle-able: off/present/active)', () => {
+  function ingestTemplateWithMode(mode?: 'off' | 'present' | 'active'): Template {
+    const app = new App({ context: mode ? { kinesisIngestMode: mode } : {} });
+    Tags.of(app).add('project', 'healthomics-workflow-dashboard');
+    const dataStack = new DataStack(app, 'HealthOmicsData');
+    const apiStack = new ApiStack(app, 'HealthOmicsApi', { dataStack });
+    apiStack.addStackDependency(dataStack);
+    const ingestStack = new IngestStack(app, 'HealthOmicsIngest', { dataStack, apiStack });
+    ingestStack.addStackDependency(dataStack);
+    ingestStack.addStackDependency(apiStack);
+    return Template.fromStack(ingestStack);
+  }
+
+  it('OFF (default): no Kinesis stream or event-source mapping — direct path only', () => {
+    const t = ingestTemplateWithMode('off');
+    t.resourceCountIs('AWS::Kinesis::Stream', 0);
+    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 0);
+  });
+
+  it('PRESENT: provisions the stream + consumer + ESM but EventBridge still targets the Lambda (idle)', () => {
+    const t = ingestTemplateWithMode('present');
+    t.resourceCountIs('AWS::Kinesis::Stream', 1);
+    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
+    // The EventBridge rule target must NOT carry KinesisParameters when idle.
+    const rules = t.findResources('AWS::Events::Rule');
+    const omicsRule = Object.values(rules).find(
+      (r) => JSON.stringify(r.Properties?.EventPattern?.source) === JSON.stringify(['aws.omics']),
+    );
+    const targets = omicsRule?.Properties?.Targets ?? [];
+    expect(targets.some((tg: { KinesisParameters?: unknown }) => tg.KinesisParameters)).toBe(false);
+  });
+
+  it('ACTIVE: EventBridge targets the Kinesis stream with a dynamic PartitionKey = $.detail.runId', () => {
+    const t = ingestTemplateWithMode('active');
+    t.resourceCountIs('AWS::Kinesis::Stream', 1);
+    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
+    const rules = t.findResources('AWS::Events::Rule');
+    const omicsRule = Object.values(rules).find(
+      (r) => JSON.stringify(r.Properties?.EventPattern?.source) === JSON.stringify(['aws.omics']),
+    );
+    const targets: Array<{ KinesisParameters?: { PartitionKeyPath?: string } }> =
+      omicsRule?.Properties?.Targets ?? [];
+    const kinesisTarget = targets.find((tg) => tg.KinesisParameters);
+    expect(kinesisTarget).toBeDefined();
+    expect(kinesisTarget!.KinesisParameters!.PartitionKeyPath).toBe('$.detail.runId');
+  });
+
+  it('the Kinesis consumer has least-privilege grants (DDB RW, appsync scoped, omics read) and no wildcard action', () => {
+    const t = ingestTemplateWithMode('present');
+    const policies = t.findResources('AWS::IAM::Policy');
+    const actions = new Set<string>();
+    for (const p of Object.values(policies)) {
+      for (const s of p.Properties?.PolicyDocument?.Statement ?? []) {
+        (Array.isArray(s.Action) ? s.Action : [s.Action]).forEach((a: string) => actions.add(a));
+      }
+    }
+    expect(actions.has('dynamodb:UpdateItem')).toBe(true);
+    expect(actions.has('appsync:GraphQL')).toBe(true);
+    expect(actions.has('omics:GetRunTask')).toBe(true);
+    // ESM auto-grants kinesis read (GetRecords/GetShardIterator/etc.).
+    expect([...actions].some((a) => a.startsWith('kinesis:'))).toBe(true);
+    expect(actions.has('*')).toBe(false);
   });
 });

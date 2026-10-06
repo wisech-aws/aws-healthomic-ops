@@ -639,6 +639,19 @@ async function processTaskEvent(
     }
   }
 
+  // Non-enriching RUNNING event: set an APPROXIMATE startedAt from the event
+  // time so the live DAG shows a start time immediately (the task node renders
+  // as "running since ~now" without paying a GetRunTask). This is deliberately
+  // approximate — `updatedAt` is when the RUNNING state-change event was emitted
+  // (1-second resolution), not the task's authoritative container start time.
+  // The terminal enrichment later OVERWRITES it with the true `startTime` from
+  // GetRunTask, so completed-task durations and reports remain authoritative.
+  // Only set it when enrichment did NOT run and no startedAt is present, so we
+  // never clobber an authoritative value.
+  if (mapped.status === TaskStatus.RUNNING && record.startedAt === undefined) {
+    record.startedAt = updatedAt;
+  }
+
   // Assemble the full record: identifiers (validated above) + updatedAt.
   const task: TaskRecord = {
     ...record,
@@ -678,18 +691,26 @@ function isTerminalTaskStatus(status: TaskRecord['status'] | undefined): boolean
  *
  * Enrichment is the sole source of `name`, `cpus`, `memory`, `instanceType`,
  * `createdAt`, `startedAt`, `stoppedAt`, and `failureReason` (the event itself
- * carries only `status` + identifiers). Those fields only *become available* at
- * two points in a task's lifecycle, so we enrich ONLY at those transitions:
+ * carries only `status` + identifiers — verified against the real event
+ * payloads). To minimize load on the shared ~10 TPS HealthOmics run-read quota
+ * (the ingest throughput ceiling at scale), we enrich at ONLY ONE point in a
+ * task's lifecycle:
  *
- *   - RUNNING  — the task has been scheduled and started, so name/cpus/memory/
- *                instanceType/createdAt/startedAt first exist.
- *   - terminal (COMPLETED/FAILED/CANCELLED) — stoppedAt + failureReason exist,
- *                and this also backstops a task that never emitted a standalone
- *                RUNNING event (e.g. a very fast task).
+ *   - terminal (COMPLETED/FAILED/CANCELLED) — the single authoritative read.
+ *     GetRunTask returns the final name, cpus, memory, instanceType, createdAt,
+ *     startTime AND stopTime + failureReason, so one call captures everything.
  *
- * PENDING, STARTING and STOPPING add no new metadata over their `status`, so
- * they are persisted as a cheap status-only update with NO API call — the
- * change that removes the enrichment amplification.
+ * PENDING / STARTING / RUNNING are persisted as cheap status-only updates with
+ * NO API call. RUNNING additionally sets an APPROXIMATE `startedAt` from the
+ * event time (see processTaskEvent) so the live DAG shows a start time; the
+ * terminal enrichment later overwrites it with the authoritative `startTime`.
+ * This halves per-task enrichment vs. enriching on both RUNNING and terminal.
+ *
+ * Live-view tradeoff (accepted): a RUNNING task shows correct status/DAG color
+ * and an approximate start time, but its name and resource sizes appear only
+ * once it reaches terminal (when the one enrichment runs). A task that finishes
+ * without ever emitting a standalone RUNNING event is fully captured by the
+ * terminal enrichment regardless.
  *
  * As a safety net, an event that somehow lacks a recognized status is enriched
  * too, so a status-less task is never persisted bare.
@@ -700,7 +721,7 @@ function taskEventNeedsEnrichment(task: Partial<TaskRecord>): boolean {
     // Unrecognized/absent status: enrich defensively rather than persist bare.
     return true;
   }
-  return status === TaskStatus.RUNNING || isTerminalTaskStatus(status);
+  return isTerminalTaskStatus(status);
 }
 
 /**
@@ -873,14 +894,24 @@ function buildDefaultHandler(): IngestHandler {
 }
 
 /**
+ * Lazily build (once) and return the environment-configured production handler.
+ * Shared by BOTH Lambda entry points — the EventBridge `handler` and the SQS
+ * batch-consumer (`sqsHandler.ts`) — so the two ingest paths run the identical
+ * map/enrich/persist/publish pipeline and can never drift. Exposed for reuse.
+ */
+export function getDefaultHandler(): IngestHandler {
+  if (cachedHandler === undefined) {
+    cachedHandler = buildDefaultHandler();
+  }
+  return cachedHandler;
+}
+
+/**
  * The Lambda entry point. Lazily builds the environment-configured handler on
  * first invocation, then delegates to it.
  */
 export async function handler(
   event: EventBridgeEvent<string, unknown>,
 ): Promise<void> {
-  if (cachedHandler === undefined) {
-    cachedHandler = buildDefaultHandler();
-  }
-  return cachedHandler(event);
+  return getDefaultHandler()(event);
 }
