@@ -298,3 +298,103 @@ Accepts `--batch-id <id>` or `--run-ids a,b,...`, `--tps <n>` (default 10), and
 `--dry-run`. Requires read access to the table + `omics:ListRunTasks` /
 `omics:ListRunsInBatch`, and DynamoDB update access. Resolves the AWS SDK from
 `ingest/node_modules`.
+
+## `estimate-run-cost.mjs` — standalone per-run workflow cost estimator (APIs only)
+
+A UI-free, DynamoDB-free command-line estimator for the **per-run HealthOmics
+workflow cost**. Given one or more run IDs it reproduces the dashboard's cost
+flow using **only AWS APIs** — it never reads the dashboard's DynamoDB table and
+never uses the GraphQL/UI path. Every figure is a **list-price ESTIMATE**
+(measured runtime × the published AWS Price List) and the readout carries a
+prominent disclaimer that estimates do **not** reflect discounts, credits,
+Savings Plans, Reserved pricing, taxes, or free-tier allowances.
+
+APIs used (per run, AWS only):
+
+1. `omics:GetRun` — `startTime`, `stopTime`, `storageType`, `storageCapacity`.
+2. `omics:ListRunTasks` (paginated) — per task `instanceType`, `startTime`, `stopTime`.
+3. `pricing:GetProducts` — published On-Demand rate map (`AmazonOmics`, `workflowType=Private`); fetched **once** and reused across all runs.
+4. CloudWatch PromQL `POST /api/v1/query_range` (SigV4, service `monitoring`) — **DYNAMIC storage only** — run-level filesystem-usage series integrated into GB-hours.
+
+Honesty about availability: any input that cannot be measured or priced is shown
+as an explicit `UNAVAILABLE` line item with a reason (never zero-filled); a
+`total` that omits unpriced items is marked **PARTIAL**.
+
+### Usage
+
+The estimator is a Node ESM script. You can run the `.mjs` directly if Node 20+
+is already installed, or use a **launcher wrapper** that first verifies the
+environment (Node present, Node ≥ 20, and the ingest dependencies installed) and
+prints actionable install guidance if anything is missing — including the case
+where **Node itself is not installed** (which the `.mjs` cannot detect, since it
+runs inside Node). Pick the launcher for your OS:
+
+- **macOS / Linux:** `scripts/estimate-run-cost.sh`
+- **Windows (cmd.exe / PowerShell):** `scripts\estimate-run-cost.cmd`
+- **Direct (any OS, Node already present):** `node scripts/estimate-run-cost.mjs`
+
+```bash
+# macOS/Linux launcher (checks Node + deps, then runs):
+scripts/estimate-run-cost.sh --run 1234567 --region us-east-1
+
+# ...and auto-install the ingest deps if they're missing:
+scripts/estimate-run-cost.sh --install --run 1234567 --region us-east-1
+```
+
+```bat
+REM Windows launcher (cmd.exe or PowerShell):
+scripts\estimate-run-cost.cmd --run 1234567 --region us-east-1
+scripts\estimate-run-cost.cmd --install --run 1234567 --region us-east-1
+```
+
+```bash
+# Direct invocation (requires Node 20+ already on PATH):
+node scripts/estimate-run-cost.mjs --help
+node scripts/estimate-run-cost.mjs --run 1234567 --region us-east-1
+node scripts/estimate-run-cost.mjs 1234567 7654321 --region us-east-1 --json
+```
+
+Both launchers accept the wrapper-only `--install` flag (auto-runs
+`npm install` in `ingest/` if deps are missing) and forward **all other
+arguments unchanged** to the `.mjs`. If Node is not installed they print how to
+install it (`.sh`: Homebrew / nvm / nodejs.org; `.cmd`: winget / Chocolatey /
+nodejs.org) and exit `127`.
+
+### Options
+
+- `--run <id>` — a run ID to estimate; repeatable. Bare positional run IDs are also accepted.
+- `--batch-id <id>` — estimate every run in a HealthOmics batch (resolved via `omics:ListRunsInBatch`); repeatable and combinable with `--run`.
+- `--region <r>` — AWS region (or `$AWS_REGION` / `$COST_REGION`). Required.
+- `--json` — emit machine-readable JSON (the disclaimer is still included as a field) instead of the text readout.
+- `--step-seconds <n>` — DYNAMIC-storage usage query resolution, clamped to ≥ 30 (default 30).
+- `--help`, `-h` — print usage and exit; never imports the SDK.
+
+### Aggregate profile (groups of runs)
+
+When more than one run is estimated (via multiple `--run`, a `--batch-id`, or
+both), the readout also prints a **cost profile** across the group: for the
+whole-run total and for each cost component (every instance type and the storage
+family), it reports **sum, mean, median, p90, min, and max**. Following the
+Reports view's availability-honesty rule, each statistic is computed **only over
+the runs where that value was available** and is labeled with an explicit
+"N of M runs" denominator — an unavailable component is never counted as zero.
+Runs whose whole estimate failed are excluded from the stats and listed
+separately. The same `profile` object is included in `--json` output.
+
+Requires `omics:GetRun`, `omics:ListRunTasks`, `pricing:GetProducts`, (for
+`--batch-id`) `omics:ListRunsInBatch`, and (for DYNAMIC-storage runs) CloudWatch
+`monitoring` query access. Resolves the AWS SDK from `ingest/node_modules`, so
+install the ingest package first (`cd ingest && npm install`); the script runs
+from any working directory.
+
+### Dependency preflight
+
+Before doing any AWS work the script runs a **defensive preflight**: it checks
+that the runtime is Node 20+ (and has a global `fetch`) and that every required
+module (`@aws-sdk/client-omics`, `@aws-sdk/client-pricing`, `@smithy/signature-v4`,
+`@aws-crypto/sha256-js`, `@aws-sdk/credential-provider-node`) resolves from
+`ingest/node_modules`. If anything is missing it prints **all** problems at once
+with the exact remediation (`cd ingest && npm install`) and exits **3** without
+making any API call. Exit codes: `0` success, `2` usage/argument error, `3`
+dependency/environment problem, `1` an unexpected runtime failure. `--help` never
+imports the SDK and never triggers the preflight.
