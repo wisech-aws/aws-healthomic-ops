@@ -1056,10 +1056,9 @@ describe('RunDetailView', () => {
     );
   });
 
-  it('renders the run configuration (role, storage, cache, networking, log level) when present (#reproducibility)', async () => {
+  it('renders the run configuration (storage, cache, networking, log level) when present (#reproducibility)', async () => {
     const run = makeRun({
       status: 'COMPLETED',
-      roleArn: 'arn:aws:iam::123456789012:role/service-role/OmicsWorkflow-x',
       storageType: 'STATIC',
       storageCapacity: 1200,
       cacheId: 'cache-123',
@@ -1083,10 +1082,9 @@ describe('RunDetailView', () => {
     fireEvent.click(screen.getByRole('button', { name: /inputs & outputs/i }));
 
     const cfg = await screen.findByTestId('run-configuration');
-    expect(cfg).toHaveTextContent('IAM role');
-    expect(cfg).toHaveTextContent(
-      'arn:aws:iam::123456789012:role/service-role/OmicsWorkflow-x',
-    );
+    // The IAM run-role ARN is intentionally NOT exposed in the dashboard
+    // (sensitive identifier); it must never be rendered.
+    expect(cfg).not.toHaveTextContent('IAM role');
     // Storage capacity is appended for STATIC storage.
     expect(cfg).toHaveTextContent('STATIC (1200 GiB)');
     // Cache id with its behavior.
@@ -1097,10 +1095,9 @@ describe('RunDetailView', () => {
   });
 
   it('omits run-configuration rows that are absent (never fabricated)', async () => {
-    // Only a role and log level present; storage/cache/networking absent.
+    // Only a log level present; storage/cache/networking absent.
     const run = makeRun({
       status: 'COMPLETED',
-      roleArn: 'arn:aws:iam::123456789012:role/r',
       logLevel: 'OFF',
     });
     render(
@@ -1118,7 +1115,7 @@ describe('RunDetailView', () => {
     fireEvent.click(screen.getByRole('button', { name: /inputs & outputs/i }));
 
     const cfg = await screen.findByTestId('run-configuration');
-    expect(cfg).toHaveTextContent('IAM role');
+    expect(cfg).not.toHaveTextContent('IAM role');
     expect(cfg).toHaveTextContent('Log level');
     // Absent settings are not shown at all.
     expect(cfg).not.toHaveTextContent('Storage');

@@ -1575,7 +1575,6 @@ function RunInputsOutputs({
       : run?.configurationName ?? null;
   const runConfigEntries: Array<{ key: string; label: string; value: string }> =
     [
-      { key: 'role', label: 'IAM role', value: run?.roleArn ?? '' },
       { key: 'storage', label: 'Storage', value: storageValue ?? '' },
       { key: 'cache', label: 'Run cache', value: cacheValue ?? '' },
       { key: 'networking', label: 'Networking', value: networkingValue ?? '' },

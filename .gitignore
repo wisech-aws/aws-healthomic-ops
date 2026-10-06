@@ -10,6 +10,9 @@ build/
 infra/cdk.out/
 cdk.out/
 
+# Git worktrees (local scratch checkouts, not source)
+.worktrees/
+
 # Test / coverage
 coverage/
 
