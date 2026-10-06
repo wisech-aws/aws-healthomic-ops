@@ -152,6 +152,34 @@ describe('FleetView', () => {
     expect(listRuns).toHaveBeenCalledTimes(1);
   });
 
+  it('refetches the run list when the subscription drops and reconnects (fixes stale-until-refresh)', async () => {
+    // A subscribe stub that lets the test simulate a dropped connection by
+    // invoking the manager's error handler, which triggers reconnect+onReconnect.
+    let handlers: SubscriptionHandlers<Run> | undefined;
+    const subscribe: SubscribeRuns = (h) => {
+      handlers = h;
+      return { unsubscribe: () => {} };
+    };
+    const listRuns = vi.fn().mockResolvedValue(connection([]));
+
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} />);
+    await waitFor(() =>
+      expect(screen.getByText(/no runs are available/i)).toBeInTheDocument(),
+    );
+    // Initial mount load (the first connect's onReconnect is intentionally
+    // skipped, so exactly one fetch so far).
+    expect(listRuns).toHaveBeenCalledTimes(1);
+
+    // Simulate a subscription drop: the manager schedules a reconnect after the
+    // backoff delay (~1s), then connect() fires onReconnect -> load() -> a
+    // second listRuns. Allow real time for the backoff timer.
+    act(() => {
+      handlers?.error?.(new Error('socket dropped'));
+    });
+
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2), { timeout: 4000 });
+  });
+
   it('shows an empty state when no runs are returned (Req 8.3, 10.3)', async () => {
     const listRuns = vi.fn().mockResolvedValue(connection([]));
     render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);

@@ -16,21 +16,21 @@ function run(partial: Partial<Run> & { runId: string }): Run {
 }
 
 describe('orderRuns', () => {
-  it('orders by descending updatedAt', () => {
+  it('orders by descending startedAt (Start time = recency)', () => {
     const runs = [
-      run({ runId: 'a', updatedAt: '2024-01-01T00:00:00.000Z' }),
-      run({ runId: 'b', updatedAt: '2024-01-03T00:00:00.000Z' }),
-      run({ runId: 'c', updatedAt: '2024-01-02T00:00:00.000Z' }),
+      run({ runId: 'a', startedAt: '2024-01-01T00:00:00.000Z' }),
+      run({ runId: 'b', startedAt: '2024-01-03T00:00:00.000Z' }),
+      run({ runId: 'c', startedAt: '2024-01-02T00:00:00.000Z' }),
     ];
     expect(orderRuns(runs).map((r) => r.runId)).toEqual(['b', 'c', 'a']);
   });
 
-  it('breaks ties on equal updatedAt by descending start time', () => {
-    const updatedAt = '2024-01-01T00:00:00.000Z';
+  it('breaks ties on equal startedAt by descending updatedAt (last activity)', () => {
+    const startedAt = '2024-01-01T00:00:00.000Z';
     const runs = [
-      run({ runId: 'early', updatedAt, startedAt: '2024-01-01T01:00:00.000Z' }),
-      run({ runId: 'late', updatedAt, startedAt: '2024-01-01T05:00:00.000Z' }),
-      run({ runId: 'mid', updatedAt, startedAt: '2024-01-01T03:00:00.000Z' }),
+      run({ runId: 'early', startedAt, updatedAt: '2024-01-01T01:00:00.000Z' }),
+      run({ runId: 'late', startedAt, updatedAt: '2024-01-01T05:00:00.000Z' }),
+      run({ runId: 'mid', startedAt, updatedAt: '2024-01-01T03:00:00.000Z' }),
     ];
     expect(orderRuns(runs).map((r) => r.runId)).toEqual([
       'late',
@@ -41,26 +41,74 @@ describe('orderRuns', () => {
 
   it('does not mutate the input array', () => {
     const runs = [
-      run({ runId: 'a', updatedAt: '2024-01-01T00:00:00.000Z' }),
-      run({ runId: 'b', updatedAt: '2024-01-02T00:00:00.000Z' }),
+      run({ runId: 'a', startedAt: '2024-01-01T00:00:00.000Z' }),
+      run({ runId: 'b', startedAt: '2024-01-02T00:00:00.000Z' }),
     ];
     const snapshot = runs.map((r) => r.runId);
     orderRuns(runs);
     expect(runs.map((r) => r.runId)).toEqual(snapshot);
   });
 
-  it('ranks runs with a start time ahead of ties lacking one', () => {
-    const updatedAt = '2024-01-01T00:00:00.000Z';
+  it('ranks not-yet-started runs (no start time) at the FRONT, ordered by updatedAt desc', () => {
     const runs = [
-      run({ runId: 'none', updatedAt }),
-      run({ runId: 'has', updatedAt, startedAt: '2024-01-01T02:00:00.000Z' }),
+      run({ runId: 'has', startedAt: '2024-01-01T02:00:00.000Z', updatedAt: '2024-01-01T02:00:00.000Z' }),
+      // 'none' has no startedAt (PENDING/STARTING) — a freshly-launched run must
+      // appear on the first page, so it sorts AHEAD of any started run.
+      run({ runId: 'none', updatedAt: '2024-01-01T09:00:00.000Z' }),
     ];
-    expect(orderRuns(runs).map((r) => r.runId)).toEqual(['has', 'none']);
+    expect(orderRuns(runs).map((r) => r.runId)).toEqual(['none', 'has']);
   });
 
-  // Property test — fleet ordering with tie-break (design Property 20).
-  // **Validates: Requirements 8.4**
-  it('is sorted by descending updatedAt with descending startedAt tie-break', () => {
+  it('orders multiple not-yet-started runs among themselves by updatedAt desc, all ahead of started runs', () => {
+    const runs = [
+      run({ runId: 'started-new', startedAt: '2024-01-05T00:00:00.000Z', updatedAt: '2024-01-05T00:00:00.000Z' }),
+      run({ runId: 'pending-old', updatedAt: '2024-01-01T00:00:00.000Z' }),
+      run({ runId: 'started-old', startedAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' }),
+      run({ runId: 'pending-new', updatedAt: '2024-01-03T00:00:00.000Z' }),
+    ];
+    // Both pending runs first (newest updatedAt first), then started runs by startedAt desc.
+    expect(orderRuns(runs).map((r) => r.runId)).toEqual([
+      'pending-new',
+      'pending-old',
+      'started-new',
+      'started-old',
+    ]);
+  });
+
+  // Property test — not-yet-started runs precede started runs; within each tier ordering holds.
+  it('places every not-yet-started run ahead of every started run', () => {
+    const isoArb = fc
+      .integer({ min: 0, max: 10 })
+      .map((day) => `2024-01-${String(day + 1).padStart(2, '0')}T00:00:00.000Z`);
+    const runArb: fc.Arbitrary<Run> = fc.record({
+      runId: fc.uuid(),
+      updatedAt: isoArb,
+      startedAt: fc.option(isoArb, { nil: undefined }),
+    });
+
+    fc.assert(
+      fc.property(fc.array(runArb), (runs) => {
+        const ordered = orderRuns(runs);
+        const started = (r: Run) => {
+          const t = r.startedAt ? Date.parse(r.startedAt) : NaN;
+          return !Number.isNaN(t);
+        };
+        // Once we see the first started run, no not-yet-started run may follow.
+        let seenStarted = false;
+        for (const r of ordered) {
+          if (started(r)) {
+            seenStarted = true;
+          } else {
+            expect(seenStarted).toBe(false);
+          }
+        }
+        expect(ordered.length).toBe(runs.length);
+      }),
+    );
+  });
+
+  // Property test — fleet ordering by startedAt with updatedAt tie-break.
+  it('is sorted by descending startedAt with descending updatedAt tie-break', () => {
     const isoArb = fc
       .integer({ min: 0, max: 10 })
       .map((day) => `2024-01-${String(day + 1).padStart(2, '0')}T00:00:00.000Z`);

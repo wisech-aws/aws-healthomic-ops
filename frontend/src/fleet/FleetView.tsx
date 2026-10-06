@@ -341,13 +341,35 @@ export default function FleetView({
 
   // Open the live, reconnecting subscription for the lifetime of the mount
   // (Req 8.5, 8.6, 10.5, 10.6). The subscribe factory is injectable for tests.
+  //
+  // IMPORTANT: wire `onReconnect` to refetch the full run list. A WebSocket
+  // subscription can drop (network blip, AppSync idle timeout) and the manager
+  // reconnects — but a reconnected subscription only delivers FUTURE events, so
+  // any run/task changes that occurred DURING the disconnect window are missed.
+  // Without a refetch, the list silently goes stale until a manual page refresh
+  // (the observed bug). Refetching current state on every (re)connection
+  // re-syncs the list so no update is lost across a drop (Req 10.6).
   useEffect(() => {
+    // The manager fires `onReconnect` on its very first connection too; the
+    // initial `load` effect has already fetched once (Req 10.4), so skip that
+    // first callback and only refetch on subsequent RECONNECTS — matching the
+    // run-detail view. On a genuine reconnect we re-sync the full list so
+    // updates missed during the disconnect are not lost (the stale-until-
+    // refresh bug).
+    let seenFirstConnect = false;
     const managed = createReconnectingSubscription<Run>({
       subscribe,
       onNext: applyRunUpdate,
+      onReconnect: () => {
+        if (!seenFirstConnect) {
+          seenFirstConnect = true;
+          return;
+        }
+        void load();
+      },
     });
     return () => managed.stop();
-  }, [subscribe, applyRunUpdate]);
+  }, [subscribe, applyRunUpdate, load]);
 
   // Retry re-issues the query on demand (Req 8.2). Allowed because it is a
   // user-initiated action, not the automatic per-mount query.
