@@ -3,6 +3,20 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import ReportsView from './ReportsView';
 import type { WorkflowGroup, WorkflowReport, RunPoint } from '../api/types';
 
+// Recharts' ResponsiveContainer measures its parent at runtime; jsdom reports a
+// zero-size layout, so the inner ScatterChart (and the scatter's sr-only
+// open-run buttons) would not render without a fixed size. Mock it to a
+// fixed-size div so the scatter's data path is observable under test.
+vi.mock('recharts', async (orig) => {
+  const actual = await orig<typeof import('recharts')>();
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
+      <div style={{ width: 600, height: 280 }}>{children}</div>
+    ),
+  };
+});
+
 const NOW = Date.parse('2024-02-01T00:00:00.000Z');
 
 const GROUPS: WorkflowGroup[] = [
@@ -159,7 +173,7 @@ describe('ReportsView', () => {
       return vi.fn().mockResolvedValue({ items: points, nextToken: null });
     }
 
-    it('renders the scatter block and a jump list with only the timed runs (null-duration omitted)', async () => {
+    it('renders the scatter block with one marker per timed run (null-duration omitted)', async () => {
       render(
         <ReportsView
           now={NOW}
@@ -171,18 +185,18 @@ describe('ReportsView', () => {
       );
 
       expect(await screen.findByTestId('reports-run-scatter')).toBeInTheDocument();
-      const jump = await screen.findByTestId('reports-run-scatter-jump');
-      // Both timed runs appear as jump links; the null-duration run does not.
-      const links = await screen.findAllByTestId('reports-run-scatter-link');
-      const text = links.map((l) => l.textContent).join(' | ');
+      // The scatter renders one keyboard/sr open-run affordance per plottable
+      // run (data-path proxy for the SVG markers). Only the two timed runs are
+      // present; the null-duration run is omitted (never fabricated).
+      const openers = await screen.findAllByTestId('run-scatter-sr-open');
+      expect(openers).toHaveLength(2);
+      const text = openers.map((o) => o.textContent).join(' | ');
       expect(text).toContain('run-slow');
       expect(text).toContain('run-fast');
       expect(text).not.toContain('run-nodur');
-      // Longest run is listed first (descending by duration).
-      expect(jump).toHaveTextContent(/run-slow[\s\S]*run-fast/);
     });
 
-    it('clicking a jump link calls onOpenRun with that run id', async () => {
+    it('activating a run marker calls onOpenRun with that run id', async () => {
       const onOpenRun = vi.fn();
       render(
         <ReportsView
@@ -194,14 +208,14 @@ describe('ReportsView', () => {
         />,
       );
 
-      const links = await screen.findAllByTestId('reports-run-scatter-link');
-      const slow = links.find((l) => l.textContent?.includes('run-slow'));
+      const openers = await screen.findAllByTestId('run-scatter-sr-open');
+      const slow = openers.find((o) => o.textContent?.includes('run-slow'));
       expect(slow).toBeDefined();
       fireEvent.click(slow!);
       expect(onOpenRun).toHaveBeenCalledWith('run-slow');
     });
 
-    it('shows the empty affordance and no jump links when all runs lack a usable duration', async () => {
+    it('shows the empty affordance and no markers when all runs lack a usable duration', async () => {
       render(
         <ReportsView
           now={NOW}
@@ -216,12 +230,11 @@ describe('ReportsView', () => {
 
       expect(await screen.findByTestId('reports-run-scatter')).toBeInTheDocument();
       await waitFor(() => {
-        expect(screen.getByTestId('reports-run-scatter-empty')).toHaveTextContent(
+        expect(screen.getByTestId('run-scatter-empty')).toHaveTextContent(
           'No timed runs to plot.',
         );
       });
-      expect(screen.queryByTestId('reports-run-scatter-jump')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('reports-run-scatter-link')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('run-scatter-sr-open')).not.toBeInTheDocument();
     });
   });
 });

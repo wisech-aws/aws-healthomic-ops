@@ -26,11 +26,6 @@ import DateRangePicker, {
   type DateRangePickerProps,
 } from '@cloudscape-design/components/date-range-picker';
 import BarChart from '@cloudscape-design/components/bar-chart';
-// LineChart is used (not ScatterPlot) because the pinned Cloudscape 3.0.1356
-// ships no scatter-plot component — only area/bar/line/mixed cartesian charts.
-// See runScatter block below for the per-run scatter rationale.
-import LineChart from '@cloudscape-design/components/line-chart';
-import Link from '@cloudscape-design/components/link';
 import type { SelectProps } from '@cloudscape-design/components/select';
 import {
   listWorkflowGroups as defaultListWorkflowGroups,
@@ -44,11 +39,8 @@ import type {
   RunPoint,
 } from '../api/types';
 import { toReportCsv } from './reportCsv';
-import {
-  runPointsToScatterData,
-  topLongestRuns,
-  formatDurationMs,
-} from './runScatter';
+import { runPointsToScatterData, formatDurationMs } from './runScatter';
+import RunDurationScatter from './RunDurationScatter';
 import './reportsPrint.css';
 
 /** Default window: last 30 days (Req 4.2). */
@@ -60,8 +52,8 @@ export interface ReportsViewProps {
   readonly onBack?: () => void;
   /**
    * Navigate to a run's detail view. Wired from App's `openRun`, which sets
-   * `selectedRunId` and pushes `#/run/<runId>`. Clicking a jump-to-run link in
-   * the per-run scatter block calls this with that run's id.
+   * `selectedRunId` and pushes `#/run/<runId>`. Clicking (or keyboard-opening)
+   * a marker in the per-run duration scatter calls this with that run's id.
    */
   readonly onOpenRun?: (runId: string) => void;
   readonly listWorkflowGroups?: (variables: {
@@ -181,7 +173,7 @@ function fmtStat(m: AggregateMetric, value: number | null | undefined): string {
     return '—';
   }
   if (m.key === 'durationMs') {
-    // Shared with the per-run scatter popover / jump list (one source of truth).
+    // Shared with the per-run scatter tooltip (one source of truth).
     return formatDurationMs(value);
   }
   const rounded = Math.round(value * 100) / 100;
@@ -333,22 +325,6 @@ export default function ReportsView({
     () => runPointsToScatterData(scatterPoints),
     [scatterPoints],
   );
-  // Resolve a highlighted {x,y} back to its run (Cloudscape Datum<T> is strictly
-  // {x,y}, so runId can't ride on the datum). Key on x epoch-ms; on identical
-  // stop times keep the datum nearest in y to the highlighted point.
-  const scatterByX = useMemo(() => {
-    const m = new Map<number, typeof scatterData>();
-    for (const d of scatterData) {
-      const list = m.get(d.x);
-      if (list) {
-        list.push(d);
-      } else {
-        m.set(d.x, [d]);
-      }
-    }
-    return m;
-  }, [scatterData]);
-  const topRuns = useMemo(() => topLongestRuns(scatterData, 5), [scatterData]);
 
   const groupOptions: SelectProps.Option[] = groups.map((g) => ({
     value: groupKey(g),
@@ -645,115 +621,20 @@ export default function ReportsView({
                   </div>
                 )}
 
-              {/* Per-run duration scatter — one point per run with a usable
-                  duration + parseable stop time, so an operator can spot a
-                  duration outlier, see its run id on hover, and jump straight
-                  to that run. Pure-additive; both BarCharts above are untouched.
-
-                  Component choice: Cloudscape 3.0.1356 ships NO scatter-plot
-                  component (only area/bar/line/mixed cartesian charts), so this
-                  uses LineChart with a single 'line' series — one datum per run.
-                  LineChart in this version always draws a connecting polyline
-                  (its series type union is only 'line' | 'threshold', no
-                  markers-only option) and its cartesian API exposes NO per-point
-                  click (only onFilterChange / onHighlightChange, series-level).
-                  So the primary click path is the keyboard-accessible
-                  "Jump to run" list below; the chart supplies the run id on
-                  hover via detailPopoverSeriesContent. Points are never
-                  fabricated — zero plottable runs renders the empty affordance. */}
+              {/* Per-run duration scatter — a true interactive Recharts
+                  ScatterChart with one clickable marker per run (no connecting
+                  line). Each run has a usable duration + parseable stop time
+                  (filtered by runPointsToScatterData), so an operator can spot
+                  a duration outlier, read its run id on hover, and click (or
+                  keyboard-open) straight to that run. Consumes the full paged
+                  `scatterData` (every run in the window, not report.sample), so
+                  no outlier can be hidden. Both BarCharts around it are
+                  untouched; points are never fabricated. */}
               <div data-testid="reports-run-scatter">
                 <Box variant="awsui-key-label">
                   Per-run duration (click a point to open the run)
                 </Box>
-                {scatterData.length === 0 ? (
-                  // Zero plottable runs: show an explicit empty affordance
-                  // rather than handing LineChart an empty series (which, in
-                  // jsdom, draws bare axes instead of its empty slot). Never a
-                  // fabricated point.
-                  <Box textAlign="center" data-testid="reports-run-scatter-empty">
-                    No timed runs to plot.
-                  </Box>
-                ) : (
-                <LineChart
-                  hideFilter
-                  hideLegend
-                  height={260}
-                  xScaleType="time"
-                  series={[
-                    {
-                      title: 'Runs',
-                      type: 'line',
-                      data: scatterData.map((d) => ({ x: new Date(d.x), y: d.y })),
-                    },
-                  ]}
-                  xTitle="Run stop time"
-                  yTitle="Duration (minutes)"
-                  ariaLabel="Per-run duration scatter"
-                  detailPopoverSeriesContent={({ x, y }) => {
-                    // Resolve the highlighted point back to its run so the run
-                    // id is visible on hover (core requirement).
-                    const xMs = x instanceof Date ? x.getTime() : Number(x);
-                    const candidates = scatterByX.get(xMs) ?? [];
-                    const resolved =
-                      candidates.length <= 1
-                        ? candidates[0]
-                        : [...candidates].sort(
-                            (a, b) => Math.abs(a.y - y) - Math.abs(b.y - y),
-                          )[0];
-                    const subItems: Array<{ key: React.ReactNode; value: React.ReactNode }> = [
-                      {
-                        key: 'Run',
-                        value: resolved ? resolved.runId : '—',
-                      },
-                      {
-                        key: 'Duration',
-                        value: formatDurationMs(y * 60000),
-                      },
-                    ];
-                    if (resolved?.status) {
-                      subItems.push({ key: 'Status', value: resolved.status });
-                    }
-                    return {
-                      key: resolved ? resolved.runId : 'Run',
-                      value: formatDurationMs(y * 60000),
-                      subItems,
-                      expandable: false,
-                    };
-                  }}
-                  empty={<Box textAlign="center">No timed runs to plot.</Box>}
-                />
-                )}
-                {/* Accessible primary click path: top-N longest runs as links.
-                    Keyboard-reachable even though chart point-click is
-                    unavailable in this Cloudscape version. */}
-                {topRuns.length > 0 && (
-                  <Box margin={{ top: 's' }} data-testid="reports-run-scatter-jump">
-                    <Box variant="awsui-key-label">Jump to run (longest durations)</Box>
-                    <SpaceBetween size="xxs">
-                      {topRuns.map((d) =>
-                        onOpenRun ? (
-                          <Link
-                            key={d.runId}
-                            href={`#/run/${d.runId}`}
-                            data-testid="reports-run-scatter-link"
-                            onFollow={(e) => {
-                              e.preventDefault();
-                              onOpenRun(d.runId);
-                            }}
-                          >
-                            {d.runId} — {formatDurationMs(d.y * 60000)}
-                            {d.status ? ` (${d.status})` : ''}
-                          </Link>
-                        ) : (
-                          <span key={d.runId} data-testid="reports-run-scatter-link">
-                            {d.runId} — {formatDurationMs(d.y * 60000)}
-                            {d.status ? ` (${d.status})` : ''}
-                          </span>
-                        ),
-                      )}
-                    </SpaceBetween>
-                  </Box>
-                )}
+                <RunDurationScatter points={scatterData} onOpenRun={onOpenRun} />
               </div>
 
               {/* Duration trend over time — a fixed-size time-binned series

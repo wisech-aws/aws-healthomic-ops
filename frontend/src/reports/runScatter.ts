@@ -44,8 +44,8 @@ export function runPointsToScatterData(points: readonly RunPoint[]): ScatterDatu
 
 /**
  * Format a duration in milliseconds as `H:MM:SS`. Mirrors the existing
- * `fmtStat` duration branch in ReportsView so the scatter popover and the
- * jump-to-run list share one source of truth.
+ * `fmtStat` duration branch in ReportsView so the scatter tooltip and the
+ * aggregate table share one source of truth.
  */
 export function formatDurationMs(ms: number): string {
   const totalSec = Math.round(ms / 1000);
@@ -53,21 +53,4 @@ export function formatDurationMs(ms: number): string {
   const mm = Math.floor((totalSec % 3600) / 60);
   const ss = totalSec % 60;
   return `${h}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-}
-
-/**
- * Return the `n` longest-duration runs, descending by `y` (duration). The sort
- * is stable, so runs with equal duration keep their input order. Never returns
- * more than the input length.
- */
-export function topLongestRuns(data: readonly ScatterDatum[], n: number): ScatterDatum[] {
-  if (n <= 0) {
-    return [];
-  }
-  // Stable descending sort by y: decorate with index, compare, then strip.
-  return data
-    .map((d, i) => ({ d, i }))
-    .sort((a, b) => (b.d.y - a.d.y) || (a.i - b.i))
-    .slice(0, n)
-    .map((e) => e.d);
 }

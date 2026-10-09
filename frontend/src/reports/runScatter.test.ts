@@ -3,8 +3,6 @@ import fc from 'fast-check';
 import {
   runPointsToScatterData,
   formatDurationMs,
-  topLongestRuns,
-  type ScatterDatum,
 } from './runScatter';
 import type { RunPoint } from '../api/types';
 
@@ -93,35 +91,14 @@ describe('formatDurationMs', () => {
   });
 });
 
-describe('topLongestRuns', () => {
-  const data: ScatterDatum[] = [
-    { runId: 'a', x: 1, y: 10 },
-    { runId: 'b', x: 2, y: 30 },
-    { runId: 'c', x: 3, y: 20 },
-    { runId: 'd', x: 4, y: 30 },
-  ];
-
-  it('returns the N highest-y datums descending by y, stable on ties', () => {
-    expect(topLongestRuns(data, 2).map((d) => d.runId)).toEqual(['b', 'd']);
-    expect(topLongestRuns(data, 3).map((d) => d.runId)).toEqual(['b', 'd', 'c']);
-  });
-
-  it('never returns more than the input length', () => {
-    expect(topLongestRuns(data, 100)).toHaveLength(4);
-  });
-
-  it('returns empty for n <= 0', () => {
-    expect(topLongestRuns(data, 0)).toEqual([]);
-    expect(topLongestRuns(data, -5)).toEqual([]);
-  });
-});
-
 describe('runPointsToScatterData — properties', () => {
   const runArb: fc.Arbitrary<RunPoint> = fc.record({
     runId: fc.string({ minLength: 1, maxLength: 8 }),
     stoppedAt: fc.oneof(
       fc.constantFrom('2024-01-02T10:00:00.000Z', '2026-09-02T17:04:59.935Z', 'not-a-date', ''),
-      fc.date({ min: new Date('2000-01-01'), max: new Date('2030-01-01') }).map((d) => d.toISOString()),
+      fc
+        .date({ min: new Date('2000-01-01'), max: new Date('2030-01-01'), noInvalidDate: true })
+        .map((d) => d.toISOString()),
     ),
     durationMs: fc.oneof(
       fc.constantFrom<number | null | undefined>(null, undefined, Number.NaN, Number.POSITIVE_INFINITY, -1),
