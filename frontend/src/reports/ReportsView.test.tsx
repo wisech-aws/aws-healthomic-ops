@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import ReportsView from './ReportsView';
-import type { WorkflowGroup, WorkflowReport } from '../api/types';
+import type { WorkflowGroup, WorkflowReport, RunPoint } from '../api/types';
 
 const NOW = Date.parse('2024-02-01T00:00:00.000Z');
 
@@ -143,6 +143,85 @@ describe('ReportsView', () => {
       expect(screen.getByTestId('reports-run-count')).toHaveTextContent('14');
       expect(screen.getByTestId('reports-metrics-table')).toBeInTheDocument();
       expect(screen.getByTestId('reports-duration-chart')).toBeInTheDocument();
+    });
+  });
+
+  // Per-run duration scatter (interactive, click-to-open-run).
+  describe('per-run duration scatter', () => {
+    const SCATTER_POINTS: RunPoint[] = [
+      { runId: 'run-fast', stoppedAt: '2024-01-02T10:00:00.000Z', status: 'COMPLETED', durationMs: 600000 },
+      { runId: 'run-slow', stoppedAt: '2024-01-02T12:00:00.000Z', status: 'FAILED', durationMs: 1_800_000 },
+      // Null-duration run must be omitted (never fabricated).
+      { runId: 'run-nodur', stoppedAt: '2024-01-02T13:00:00.000Z', status: 'CANCELLED', durationMs: null },
+    ];
+
+    function pager(points: RunPoint[]) {
+      return vi.fn().mockResolvedValue({ items: points, nextToken: null });
+    }
+
+    it('renders the scatter block and a jump list with only the timed runs (null-duration omitted)', async () => {
+      render(
+        <ReportsView
+          now={NOW}
+          listWorkflowGroups={vi.fn().mockResolvedValue(GROUPS)}
+          getWorkflowReport={vi.fn().mockResolvedValue(makeReport())}
+          listWorkflowRunPoints={pager(SCATTER_POINTS)}
+          onOpenRun={vi.fn()}
+        />,
+      );
+
+      expect(await screen.findByTestId('reports-run-scatter')).toBeInTheDocument();
+      const jump = await screen.findByTestId('reports-run-scatter-jump');
+      // Both timed runs appear as jump links; the null-duration run does not.
+      const links = await screen.findAllByTestId('reports-run-scatter-link');
+      const text = links.map((l) => l.textContent).join(' | ');
+      expect(text).toContain('run-slow');
+      expect(text).toContain('run-fast');
+      expect(text).not.toContain('run-nodur');
+      // Longest run is listed first (descending by duration).
+      expect(jump).toHaveTextContent(/run-slow[\s\S]*run-fast/);
+    });
+
+    it('clicking a jump link calls onOpenRun with that run id', async () => {
+      const onOpenRun = vi.fn();
+      render(
+        <ReportsView
+          now={NOW}
+          listWorkflowGroups={vi.fn().mockResolvedValue(GROUPS)}
+          getWorkflowReport={vi.fn().mockResolvedValue(makeReport())}
+          listWorkflowRunPoints={pager(SCATTER_POINTS)}
+          onOpenRun={onOpenRun}
+        />,
+      );
+
+      const links = await screen.findAllByTestId('reports-run-scatter-link');
+      const slow = links.find((l) => l.textContent?.includes('run-slow'));
+      expect(slow).toBeDefined();
+      fireEvent.click(slow!);
+      expect(onOpenRun).toHaveBeenCalledWith('run-slow');
+    });
+
+    it('shows the empty affordance and no jump links when all runs lack a usable duration', async () => {
+      render(
+        <ReportsView
+          now={NOW}
+          listWorkflowGroups={vi.fn().mockResolvedValue(GROUPS)}
+          getWorkflowReport={vi.fn().mockResolvedValue(makeReport())}
+          listWorkflowRunPoints={pager([
+            { runId: 'r-x', stoppedAt: '2024-01-02T10:00:00.000Z', status: 'FAILED', durationMs: null },
+          ])}
+          onOpenRun={vi.fn()}
+        />,
+      );
+
+      expect(await screen.findByTestId('reports-run-scatter')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByTestId('reports-run-scatter-empty')).toHaveTextContent(
+          'No timed runs to plot.',
+        );
+      });
+      expect(screen.queryByTestId('reports-run-scatter-jump')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('reports-run-scatter-link')).not.toBeInTheDocument();
     });
   });
 });
