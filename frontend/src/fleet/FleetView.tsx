@@ -71,8 +71,7 @@ import type {
 } from './runFilters';
 import { evaluateStaleness } from './staleness';
 import { statusIndicatorType } from './statusIndicator';
-import { runDuration } from './duration';
-import RelativeTime from '../components/RelativeTime';
+import { formatStartTime, runDuration } from './duration';
 import CopyId from '../components/CopyId';
 
 /** Loading/error/ready phases of the initial `listRuns` query (Req 10.1–10.3). */
@@ -709,7 +708,7 @@ export default function FleetView({
     {
       id: 'startTime',
       header: 'Start time',
-      cell: (run) => <RelativeTime value={run.startedAt ?? null} now={now} />,
+      cell: (run) => formatStartTime(run.startedAt),
     },
     {
       id: 'duration',

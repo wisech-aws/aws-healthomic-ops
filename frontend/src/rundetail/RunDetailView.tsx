@@ -118,7 +118,6 @@ import type { TaskNodeData } from './graphLayout';
 import TaskNode from './TaskNode';
 import { matchNodeIds } from './nodeSearch';
 import { formatDuration, taskDuration } from '../fleet/duration';
-import RelativeTime from '../components/RelativeTime';
 import CopyId from '../components/CopyId';
 import { summarizeResources } from '../metrics/resourceSummary';
 import type { ResourceSummary } from '../metrics/resourceSummary';
@@ -1287,51 +1286,6 @@ export default function RunDetailView({
             </span>
           }
         />
-
-        {/* Timeline (QoL #5): the run's created/started/stopped/updated
-            instants as relative strings, each exposing the exact absolute
-            timestamp on hover (native title + Cloudscape Popover) via
-            {@link RelativeTime}. Rendered just below the orientation strip so
-            an operator can orient in time without the timestamps scrolling
-            away. Absent instants render the dash sentinel '—' (no fabricated
-            value). `nowMs` is the view's single resolved instant so the
-            relative strings are deterministic. */}
-        <div aria-label="timeline" data-testid="run-timeline">
-          <ColumnLayout columns={4} variant="text-grid">
-            <div>
-              <Box variant="awsui-key-label">Created</Box>
-              <RelativeTime
-                value={run?.createdAt ?? null}
-                now={nowMs}
-                data-testid="timeline-created"
-              />
-            </div>
-            <div>
-              <Box variant="awsui-key-label">Started</Box>
-              <RelativeTime
-                value={run?.startedAt ?? null}
-                now={nowMs}
-                data-testid="timeline-started"
-              />
-            </div>
-            <div>
-              <Box variant="awsui-key-label">Stopped</Box>
-              <RelativeTime
-                value={run?.stoppedAt ?? null}
-                now={nowMs}
-                data-testid="timeline-stopped"
-              />
-            </div>
-            <div>
-              <Box variant="awsui-key-label">Updated</Box>
-              <RelativeTime
-                value={run?.updatedAt ?? null}
-                now={nowMs}
-                data-testid="timeline-updated"
-              />
-            </div>
-          </ColumnLayout>
-        </div>
 
         {/* Run-level failure banner (zone 1, Req 2.1–2.4): surfaces
             HealthOmics' own `statusMessage` (and `failureReason` when present)
