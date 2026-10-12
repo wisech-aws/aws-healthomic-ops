@@ -15,6 +15,7 @@
  */
 import Box from '@cloudscape-design/components/box';
 import Button from '@cloudscape-design/components/button';
+import ExpandableSection from '@cloudscape-design/components/expandable-section';
 import Link from '@cloudscape-design/components/link';
 import Popover from '@cloudscape-design/components/popover';
 import SpaceBetween from '@cloudscape-design/components/space-between';
@@ -86,10 +87,12 @@ function BucketRunList({
 }
 
 /**
- * A compact row of one click-triggered popover per NON-EMPTY bucket. A
- * zero-run bucket renders no trigger (nothing to list). Each trigger is labeled
- * with the bucket's minute range + run count; opening it reveals that bucket's
- * runs as new-tab hyperlinks.
+ * A COLLAPSIBLE (collapsed-by-default) browser of one click-triggered popover
+ * per NON-EMPTY bucket, laid out in a grid of ~7 per row. A zero-run bucket
+ * renders no trigger (nothing to list). Each trigger is labeled with the
+ * bucket's minute range + run count; opening it reveals that bucket's runs as
+ * new-tab hyperlinks. When no bucket has runs, nothing (not even an empty
+ * section) is rendered.
  */
 export default function DurationBucketPopovers({
   buckets,
@@ -103,10 +106,21 @@ export default function DurationBucketPopovers({
     return null;
   }
 
+  const totalRunsAcrossBuckets = triggers.reduce((sum, t) => sum + t.runs.length, 0);
+
   return (
-    <Box margin={{ top: 'xs' }}>
-      <Box variant="awsui-key-label">Open a bucket to list its runs</Box>
-      <SpaceBetween direction="horizontal" size="xs">
+    <ExpandableSection
+      data-testid="reports-bucket-section"
+      defaultExpanded={false}
+      headerText={`Browse runs by duration bucket (${totalRunsAcrossBuckets} runs across ${triggers.length} buckets)`}
+    >
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
+          gap: '8px',
+        }}
+      >
         {triggers.map(({ bucket, runs }) => {
           const label = `${toMin(bucket.lo)}–${toMin(bucket.hi)} min (${runs.length})`;
           const header = `Runs in ${toMin(bucket.lo)}–${toMin(bucket.hi)} min — ${runs.length} run${
@@ -128,7 +142,7 @@ export default function DurationBucketPopovers({
             </Popover>
           );
         })}
-      </SpaceBetween>
-    </Box>
+      </div>
+    </ExpandableSection>
   );
 }
