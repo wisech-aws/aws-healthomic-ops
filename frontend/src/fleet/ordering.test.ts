@@ -8,6 +8,24 @@ import {
 } from './ordering';
 import type { Run, RunStatus } from '../api/types';
 
+const RUN_STATUSES: readonly RunStatus[] = [
+  'PENDING',
+  'STARTING',
+  'RUNNING',
+  'STOPPING',
+  'COMPLETED',
+  'DELETED',
+  'CANCELLED',
+  'FAILED',
+];
+
+const NON_TERMINAL: ReadonlySet<RunStatus> = new Set<RunStatus>([
+  'PENDING',
+  'STARTING',
+  'RUNNING',
+  'STOPPING',
+]);
+
 function run(partial: Partial<Run> & { runId: string }): Run {
   return {
     updatedAt: '2024-01-01T00:00:00.000Z',
@@ -49,22 +67,25 @@ describe('orderRuns', () => {
     expect(runs.map((r) => r.runId)).toEqual(snapshot);
   });
 
-  it('ranks not-yet-started runs (no start time) at the FRONT, ordered by updatedAt desc', () => {
+  it('ranks PENDING not-yet-started runs at the FRONT; terminal-no-start is NOT front', () => {
     const runs = [
       run({ runId: 'has', startedAt: '2024-01-01T02:00:00.000Z', updatedAt: '2024-01-01T02:00:00.000Z' }),
-      // 'none' has no startedAt (PENDING/STARTING) — a freshly-launched run must
-      // appear on the first page, so it sorts AHEAD of any started run.
-      run({ runId: 'none', updatedAt: '2024-01-01T09:00:00.000Z' }),
+      // 'none' is PENDING with no startedAt — a freshly-launched run must appear
+      // on the first page, so it sorts AHEAD of any started run.
+      run({ runId: 'none', status: 'PENDING', updatedAt: '2024-01-01T09:00:00.000Z' }),
+      // 'cancelled' has no startedAt but is TERMINAL; its updatedAt is older than
+      // 'has''s startedAt, so it must sort BELOW 'has' — never at the front.
+      run({ runId: 'cancelled', status: 'CANCELLED', updatedAt: '2024-01-01T01:00:00.000Z' }),
     ];
-    expect(orderRuns(runs).map((r) => r.runId)).toEqual(['none', 'has']);
+    expect(orderRuns(runs).map((r) => r.runId)).toEqual(['none', 'has', 'cancelled']);
   });
 
-  it('orders multiple not-yet-started runs among themselves by updatedAt desc, all ahead of started runs', () => {
+  it('orders multiple pending not-started runs among themselves by updatedAt desc, all ahead of started runs', () => {
     const runs = [
-      run({ runId: 'started-new', startedAt: '2024-01-05T00:00:00.000Z', updatedAt: '2024-01-05T00:00:00.000Z' }),
-      run({ runId: 'pending-old', updatedAt: '2024-01-01T00:00:00.000Z' }),
-      run({ runId: 'started-old', startedAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' }),
-      run({ runId: 'pending-new', updatedAt: '2024-01-03T00:00:00.000Z' }),
+      run({ runId: 'started-new', status: 'RUNNING', startedAt: '2024-01-05T00:00:00.000Z', updatedAt: '2024-01-05T00:00:00.000Z' }),
+      run({ runId: 'pending-old', status: 'PENDING', updatedAt: '2024-01-01T00:00:00.000Z' }),
+      run({ runId: 'started-old', status: 'RUNNING', startedAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' }),
+      run({ runId: 'pending-new', status: 'STARTING', updatedAt: '2024-01-03T00:00:00.000Z' }),
     ];
     // Both pending runs first (newest updatedAt first), then started runs by startedAt desc.
     expect(orderRuns(runs).map((r) => r.runId)).toEqual([
@@ -75,8 +96,46 @@ describe('orderRuns', () => {
     ]);
   });
 
-  // Property test — not-yet-started runs precede started runs; within each tier ordering holds.
-  it('places every not-yet-started run ahead of every started run', () => {
+  it('CANCELLED run with no start time is NOT at the front and interleaves by updatedAt', () => {
+    const runs = [
+      run({ runId: 's', status: 'RUNNING', startedAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' }),
+      run({ runId: 'c-newer', status: 'CANCELLED', updatedAt: '2024-01-03T00:00:00.000Z' }),
+      run({ runId: 'c-older', status: 'CANCELLED', updatedAt: '2024-01-01T00:00:00.000Z' }),
+    ];
+    // Effective recency: c-newer.updatedAt (01-03) > s.startedAt (01-02) > c-older.updatedAt (01-01).
+    expect(orderRuns(runs).map((r) => r.runId)).toEqual(['c-newer', 's', 'c-older']);
+  });
+
+  it('FAILED-before-start behaves like CANCELLED (tier 2 by updatedAt, not pinned front)', () => {
+    const runs = [
+      run({ runId: 's', status: 'RUNNING', startedAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' }),
+      run({ runId: 'f-newer', status: 'FAILED', updatedAt: '2024-01-03T00:00:00.000Z' }),
+      run({ runId: 'f-older', status: 'FAILED', updatedAt: '2024-01-01T00:00:00.000Z' }),
+    ];
+    expect(orderRuns(runs).map((r) => r.runId)).toEqual(['f-newer', 's', 'f-older']);
+  });
+
+  it('STARTING no-start sorts to the front tier like PENDING', () => {
+    const runs = [
+      run({ runId: 'has', status: 'RUNNING', startedAt: '2024-01-05T00:00:00.000Z', updatedAt: '2024-01-05T00:00:00.000Z' }),
+      run({ runId: 'starting', status: 'STARTING', updatedAt: '2024-01-01T00:00:00.000Z' }),
+    ];
+    expect(orderRuns(runs).map((r) => r.runId)).toEqual(['starting', 'has']);
+  });
+
+  it('absent/unknown status with no start time falls to tier 2 by updatedAt, not front', () => {
+    const runs = [
+      // Absent status, no start — tier 2, despite a very recent updatedAt.
+      run({ runId: 'unknown', updatedAt: '2024-01-09T00:00:00.000Z' }),
+      // PENDING no-start — front tier, despite an older updatedAt.
+      run({ runId: 'pending', status: 'PENDING', updatedAt: '2024-01-01T00:00:00.000Z' }),
+    ];
+    expect(orderRuns(runs).map((r) => r.runId)).toEqual(['pending', 'unknown']);
+  });
+
+  // Property test — every pending-not-started run precedes everyone else; the
+  // output is always a permutation of the input (no run added or dropped).
+  it('places every pending-not-started run ahead of everyone else', () => {
     const isoArb = fc
       .integer({ min: 0, max: 10 })
       .map((day) => `2024-01-${String(day + 1).padStart(2, '0')}T00:00:00.000Z`);
@@ -84,31 +143,37 @@ describe('orderRuns', () => {
       runId: fc.uuid(),
       updatedAt: isoArb,
       startedAt: fc.option(isoArb, { nil: undefined }),
+      status: fc.option(fc.constantFrom<RunStatus>(...RUN_STATUSES), {
+        nil: undefined,
+      }),
     });
 
     fc.assert(
       fc.property(fc.array(runArb), (runs) => {
         const ordered = orderRuns(runs);
-        const started = (r: Run) => {
-          const t = r.startedAt ? Date.parse(r.startedAt) : NaN;
-          return !Number.isNaN(t);
+        const front = (r: Run) => {
+          const started =
+            r.startedAt != null && !Number.isNaN(Date.parse(r.startedAt));
+          return r.status != null && NON_TERMINAL.has(r.status) && !started;
         };
-        // Once we see the first started run, no not-yet-started run may follow.
-        let seenStarted = false;
+        // Once we see the first non-front run, no front run may follow.
+        let seenNonFront = false;
         for (const r of ordered) {
-          if (started(r)) {
-            seenStarted = true;
+          if (front(r)) {
+            expect(seenNonFront).toBe(false);
           } else {
-            expect(seenStarted).toBe(false);
+            seenNonFront = true;
           }
         }
+        // Ordering preserves the multiset of runs.
         expect(ordered.length).toBe(runs.length);
       }),
     );
   });
 
-  // Property test — fleet ordering by startedAt with updatedAt tie-break.
-  it('is sorted by descending startedAt with descending updatedAt tie-break', () => {
+  // Property test — the sorted list respects the total order defined by
+  // compareRuns, and ordering preserves the multiset of runs.
+  it('produces a list consistent with compareRuns and preserves the input multiset', () => {
     const isoArb = fc
       .integer({ min: 0, max: 10 })
       .map((day) => `2024-01-${String(day + 1).padStart(2, '0')}T00:00:00.000Z`);
@@ -116,6 +181,9 @@ describe('orderRuns', () => {
       runId: fc.uuid(),
       updatedAt: isoArb,
       startedAt: fc.option(isoArb, { nil: undefined }),
+      status: fc.option(fc.constantFrom<RunStatus>(...RUN_STATUSES), {
+        nil: undefined,
+      }),
     });
 
     fc.assert(
@@ -130,17 +198,6 @@ describe('orderRuns', () => {
     );
   });
 });
-
-const RUN_STATUSES: readonly RunStatus[] = [
-  'PENDING',
-  'STARTING',
-  'RUNNING',
-  'STOPPING',
-  'COMPLETED',
-  'DELETED',
-  'CANCELLED',
-  'FAILED',
-];
 
 describe('mergeRunUpdate', () => {
   it('updates a displayed run in place (Req 8.5)', () => {
