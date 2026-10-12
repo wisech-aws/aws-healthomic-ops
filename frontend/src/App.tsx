@@ -291,7 +291,7 @@ export function Dashboard({
         content={
           showReports ? (
             <ContentLayout>
-              <ReportsView onBack={goToFleet} onOpenRun={openRun} />
+              <ReportsView onBack={goToFleet} />
             </ContentLayout>
           ) : compareRunIds !== null ? (
             // Parameters diff between two runs (enhancement #6, Req 6.7).

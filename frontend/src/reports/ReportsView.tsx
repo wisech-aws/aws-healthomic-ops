@@ -39,8 +39,8 @@ import type {
   RunPoint,
 } from '../api/types';
 import { toReportCsv } from './reportCsv';
-import { runPointsToScatterData, formatDurationMs } from './runScatter';
-import RunDurationScatter from './RunDurationScatter';
+import { formatDurationMs, runsInBuckets } from './durationBuckets';
+import DurationBucketPopovers from './DurationBucketPopovers';
 import './reportsPrint.css';
 
 /** Default window: last 30 days (Req 4.2). */
@@ -50,12 +50,6 @@ type LoadPhase = 'idle' | 'loading' | 'error' | 'ready' | 'empty';
 
 export interface ReportsViewProps {
   readonly onBack?: () => void;
-  /**
-   * Navigate to a run's detail view. Wired from App's `openRun`, which sets
-   * `selectedRunId` and pushes `#/run/<runId>`. Clicking (or keyboard-opening)
-   * a marker in the per-run duration scatter calls this with that run's id.
-   */
-  readonly onOpenRun?: (runId: string) => void;
   readonly listWorkflowGroups?: (variables: {
     start: string;
     end: string;
@@ -173,7 +167,7 @@ function fmtStat(m: AggregateMetric, value: number | null | undefined): string {
     return '—';
   }
   if (m.key === 'durationMs') {
-    // Shared with the per-run scatter tooltip (one source of truth).
+    // Shared with the duration-bucket popovers (one source of truth).
     return formatDurationMs(value);
   }
   const rounded = Math.round(value * 100) / 100;
@@ -182,7 +176,6 @@ function fmtStat(m: AggregateMetric, value: number | null | undefined): string {
 
 export default function ReportsView({
   onBack,
-  onOpenRun,
   listWorkflowGroups = defaultListWorkflowGroups,
   getWorkflowReport = defaultGetWorkflowReport,
   listWorkflowRunPoints = defaultListWorkflowRunPoints,
@@ -199,8 +192,9 @@ export default function ReportsView({
   const [phase, setPhase] = useState<LoadPhase>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // Every run point in the window (paged, not the size-bounded report.sample)
-  // so the per-run scatter can plot every run and never hide an outlier.
-  const [scatterPoints, setScatterPoints] = useState<RunPoint[]>([]);
+  // so the duration-bucket popovers can list every run in a bucket and never
+  // hide an outlier.
+  const [runPoints, setRunPoints] = useState<RunPoint[]>([]);
 
   const windowRange = useMemo(() => resolveRange(range, nowMs), [range, nowMs]);
 
@@ -276,13 +270,14 @@ export default function ReportsView({
     };
   }, [selectedGroup, getWorkflowReport, windowRange.start, windowRange.end]);
 
-  // Page the full per-run window into state for the per-run scatter. Mirrors
-  // handleExportCsv's paging (limit 1000, follow nextToken, guard < 1000) so
-  // the scatter plots EVERY run in the window rather than report.sample's
-  // bounded subset — no outlier can be hidden. Reset to [] when no group.
+  // Page the full per-run window into state for the duration-bucket popovers.
+  // Mirrors handleExportCsv's paging (limit 1000, follow nextToken, guard <
+  // 1000) so each bucket's popover lists EVERY run in the window rather than
+  // report.sample's bounded subset — no outlier can be hidden. Reset to []
+  // when no group.
   useEffect(() => {
     if (selectedGroup == null) {
-      setScatterPoints([]);
+      setRunPoints([]);
       return;
     }
     let cancelled = false;
@@ -305,14 +300,14 @@ export default function ReportsView({
           guard += 1;
         } while (nextToken && guard < 1000);
         if (!cancelled) {
-          setScatterPoints(rows);
+          setRunPoints(rows);
         }
       } catch {
-        // Scatter is a secondary visualization; a paging failure must not break
-        // the primary report. Leave prior points and let the report surface
-        // any error state.
+        // The bucket popovers are a secondary affordance; a paging failure must
+        // not break the primary report. Leave prior points and let the report
+        // surface any error state.
         if (!cancelled) {
-          setScatterPoints([]);
+          setRunPoints([]);
         }
       }
     })();
@@ -320,11 +315,6 @@ export default function ReportsView({
       cancelled = true;
     };
   }, [selectedGroup, listWorkflowRunPoints, windowRange.start, windowRange.end]);
-
-  const scatterData = useMemo(
-    () => runPointsToScatterData(scatterPoints),
-    [scatterPoints],
-  );
 
   const groupOptions: SelectProps.Option[] = groups.map((g) => ({
     value: groupKey(g),
@@ -618,24 +608,22 @@ export default function ReportsView({
                         />
                       );
                     })()}
+                    {/* Clickable per-bucket run lists. The pinned Cloudscape
+                        BarChart has no interactable detail popover, so this
+                        parallel click-triggered control (one popover per
+                        non-empty bucket) hosts the run hyperlinks. Each run
+                        opens in a NEW BROWSER TAB. The bucket->runs mapping uses
+                        the server's exact bucketing convention so each bar's
+                        count equals the number of runs listed in its popover. */}
+                    <DurationBucketPopovers
+                      buckets={report.durationHistogram.buckets}
+                      runsByBucket={runsInBuckets(
+                        runPoints,
+                        report.durationHistogram.buckets,
+                      )}
+                    />
                   </div>
                 )}
-
-              {/* Per-run duration scatter — a true interactive Recharts
-                  ScatterChart with one clickable marker per run (no connecting
-                  line). Each run has a usable duration + parseable stop time
-                  (filtered by runPointsToScatterData), so an operator can spot
-                  a duration outlier, read its run id on hover, and click (or
-                  keyboard-open) straight to that run. Consumes the full paged
-                  `scatterData` (every run in the window, not report.sample), so
-                  no outlier can be hidden. Both BarCharts around it are
-                  untouched; points are never fabricated. */}
-              <div data-testid="reports-run-scatter">
-                <Box variant="awsui-key-label">
-                  Per-run duration (click a point to open the run)
-                </Box>
-                <RunDurationScatter points={scatterData} onOpenRun={onOpenRun} />
-              </div>
 
               {/* Duration trend over time — a fixed-size time-binned series
                   (bounded bin count), independent of run count (Req 11.2). */}

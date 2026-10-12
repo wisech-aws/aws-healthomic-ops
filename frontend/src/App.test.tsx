@@ -100,23 +100,12 @@ vi.mock('./api/client', () => ({
   onTaskUpdated: vi.fn(() => ({ unsubscribe: () => {} })),
 }));
 
-// Stub ReportsView so the App-level routing test can drive the onOpenRun path
-// without standing up the real reports data layer. The stub renders a button
-// that calls the injected onOpenRun; the real wiring under test is App's
-// `onOpenRun={openRun}` and openRun's hash navigation.
+// Stub ReportsView so App-level routing tests don't stand up the real reports
+// data layer. New-tab run links in the real view are plain anchors (not in-app
+// nav), so the stub only needs to be a lightweight placeholder.
 vi.mock('./reports/ReportsView', () => ({
   __esModule: true,
-  default: ({ onOpenRun }: { onOpenRun?: (runId: string) => void }) => (
-    <div data-testid="reports-view-stub">
-      <button
-        type="button"
-        data-testid="stub-open-run"
-        onClick={() => onOpenRun?.('run-2')}
-      >
-        open run-2
-      </button>
-    </div>
-  ),
+  default: () => <div data-testid="reports-view-stub" />,
 }));
 
 vi.mock('reactflow', () => ({
@@ -448,30 +437,23 @@ describe('Dashboard deep links (#3)', () => {
     expect(screen.queryByTestId('layer-indicator')).not.toBeInTheDocument();
   });
 
-  it('routes a Reports scatter click through openRun to the run deep-link hash', async () => {
-    // The Reports view wires its onOpenRun to App's openRun, which both selects
-    // the run and pushes '#/run/<id>'. Drive that path end-to-end via a Reports
-    // stub that invokes onOpenRun, and assert the resulting deep-link hash.
-    const pushSpy = vi
-      .spyOn(window.history, 'pushState')
-      .mockImplementation(() => {});
-    historySpies.push(pushSpy);
+  it('opens the Reports view from the top-nav', async () => {
+    // Reports run links are now real new-tab anchors (not in-app nav through
+    // openRun), so there is no scatter->openRun path to assert. Verify the
+    // top-nav still routes to the Reports view.
     window.location.hash = '#/';
     render(<Dashboard />);
     await screen.findAllByText('my-workflow');
 
     // Open Reports from the top-nav. In jsdom the Cloudscape TopNavigation
     // collapses its utilities into an overflow menu, so click the overflow
-    // trigger, then the "Reports" item. The stubbed ReportsView (see mock
-    // below) renders a button that calls onOpenRun('run-2').
+    // trigger, then the "Reports" item.
     const overflow = screen
       .getAllByRole('button')
       .find((b) => b.getAttribute('aria-haspopup') === 'true');
     expect(overflow).toBeDefined();
     fireEvent.pointerDown(overflow!);
     fireEvent.click(overflow!);
-    // The overflow menu lists a "Reports" item; click it (not the collapsed
-    // utility-link label of the same text).
     await waitFor(() => {
       expect(
         document.querySelector('[class*="overflow-menu-list-item"]'),
@@ -482,10 +464,7 @@ describe('Dashboard deep links (#3)', () => {
     ).find((el) => el.textContent === 'Reports');
     expect(reportsItem).toBeTruthy();
     fireEvent.click(reportsItem!);
-    fireEvent.click(await screen.findByTestId('stub-open-run'));
 
-    // openRun pushed the run's deep-link hash: Reports clicks route exactly like
-    // a fleet click, producing '#/run/<runId>'.
-    expect(pushSpy).toHaveBeenCalledWith(null, '', '#/run/run-2');
+    expect(await screen.findByTestId('reports-view-stub')).toBeInTheDocument();
   });
 });

@@ -3,20 +3,6 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import ReportsView from './ReportsView';
 import type { WorkflowGroup, WorkflowReport, RunPoint } from '../api/types';
 
-// Recharts' ResponsiveContainer measures its parent at runtime; jsdom reports a
-// zero-size layout, so the inner ScatterChart (and the scatter's sr-only
-// open-run buttons) would not render without a fixed size. Mock it to a
-// fixed-size div so the scatter's data path is observable under test.
-vi.mock('recharts', async (orig) => {
-  const actual = await orig<typeof import('recharts')>();
-  return {
-    ...actual,
-    ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
-      <div style={{ width: 600, height: 280 }}>{children}</div>
-    ),
-  };
-});
-
 const NOW = Date.parse('2024-02-01T00:00:00.000Z');
 
 const GROUPS: WorkflowGroup[] = [
@@ -160,12 +146,16 @@ describe('ReportsView', () => {
     });
   });
 
-  // Per-run duration scatter (interactive, click-to-open-run).
-  describe('per-run duration scatter', () => {
-    const SCATTER_POINTS: RunPoint[] = [
-      { runId: 'run-fast', stoppedAt: '2024-01-02T10:00:00.000Z', status: 'COMPLETED', durationMs: 600000 },
-      { runId: 'run-slow', stoppedAt: '2024-01-02T12:00:00.000Z', status: 'FAILED', durationMs: 1_800_000 },
-      // Null-duration run must be omitted (never fabricated).
+  // Duration-bucket popovers (the histogram bars' clickable companion control).
+  describe('duration bucket popovers', () => {
+    // makeReport() buckets: [300000,600000) count 1 and [600000,900000] count 2.
+    const BUCKET_RUNS: RunPoint[] = [
+      // Lands in bucket 0 ([300000, 600000)).
+      { runId: 'run-b0', stoppedAt: '2024-01-02T10:00:00.000Z', status: 'COMPLETED', durationMs: 450000 },
+      // Lands in bucket 1 ([600000, 900000]).
+      { runId: 'run-b1a', stoppedAt: '2024-01-02T11:00:00.000Z', status: 'COMPLETED', durationMs: 600000 },
+      { runId: 'run-b1b', stoppedAt: '2024-01-02T12:00:00.000Z', status: 'FAILED', durationMs: 900000 },
+      // Null-duration run must be bucketed into NO bucket (never fabricated).
       { runId: 'run-nodur', stoppedAt: '2024-01-02T13:00:00.000Z', status: 'CANCELLED', durationMs: null },
     ];
 
@@ -173,68 +163,65 @@ describe('ReportsView', () => {
       return vi.fn().mockResolvedValue({ items: points, nextToken: null });
     }
 
-    it('renders the scatter block with one marker per timed run (null-duration omitted)', async () => {
+    it('does not render the removed Recharts scatter block', async () => {
       render(
         <ReportsView
           now={NOW}
           listWorkflowGroups={vi.fn().mockResolvedValue(GROUPS)}
           getWorkflowReport={vi.fn().mockResolvedValue(makeReport())}
-          listWorkflowRunPoints={pager(SCATTER_POINTS)}
-          onOpenRun={vi.fn()}
+          listWorkflowRunPoints={pager(BUCKET_RUNS)}
         />,
       );
-
-      expect(await screen.findByTestId('reports-run-scatter')).toBeInTheDocument();
-      // The scatter renders one keyboard/sr open-run affordance per plottable
-      // run (data-path proxy for the SVG markers). Only the two timed runs are
-      // present; the null-duration run is omitted (never fabricated).
-      const openers = await screen.findAllByTestId('run-scatter-sr-open');
-      expect(openers).toHaveLength(2);
-      const text = openers.map((o) => o.textContent).join(' | ');
-      expect(text).toContain('run-slow');
-      expect(text).toContain('run-fast');
-      expect(text).not.toContain('run-nodur');
-    });
-
-    it('activating a run marker calls onOpenRun with that run id', async () => {
-      const onOpenRun = vi.fn();
-      render(
-        <ReportsView
-          now={NOW}
-          listWorkflowGroups={vi.fn().mockResolvedValue(GROUPS)}
-          getWorkflowReport={vi.fn().mockResolvedValue(makeReport())}
-          listWorkflowRunPoints={pager(SCATTER_POINTS)}
-          onOpenRun={onOpenRun}
-        />,
-      );
-
-      const openers = await screen.findAllByTestId('run-scatter-sr-open');
-      const slow = openers.find((o) => o.textContent?.includes('run-slow'));
-      expect(slow).toBeDefined();
-      fireEvent.click(slow!);
-      expect(onOpenRun).toHaveBeenCalledWith('run-slow');
-    });
-
-    it('shows the empty affordance and no markers when all runs lack a usable duration', async () => {
-      render(
-        <ReportsView
-          now={NOW}
-          listWorkflowGroups={vi.fn().mockResolvedValue(GROUPS)}
-          getWorkflowReport={vi.fn().mockResolvedValue(makeReport())}
-          listWorkflowRunPoints={pager([
-            { runId: 'r-x', stoppedAt: '2024-01-02T10:00:00.000Z', status: 'FAILED', durationMs: null },
-          ])}
-          onOpenRun={vi.fn()}
-        />,
-      );
-
-      expect(await screen.findByTestId('reports-run-scatter')).toBeInTheDocument();
       await waitFor(() => {
-        expect(screen.getByTestId('run-scatter-empty')).toHaveTextContent(
-          'No timed runs to plot.',
-        );
+        expect(screen.getByTestId('reports-duration-chart')).toBeInTheDocument();
       });
+      // Scatter is GONE.
+      expect(screen.queryByTestId('reports-run-scatter')).not.toBeInTheDocument();
       expect(screen.queryByTestId('run-scatter-sr-open')).not.toBeInTheDocument();
+    });
+
+    it('keeps the duration histogram and renders one trigger per non-empty bucket', async () => {
+      render(
+        <ReportsView
+          now={NOW}
+          listWorkflowGroups={vi.fn().mockResolvedValue(GROUPS)}
+          getWorkflowReport={vi.fn().mockResolvedValue(makeReport())}
+          listWorkflowRunPoints={pager(BUCKET_RUNS)}
+        />,
+      );
+      await waitFor(() => {
+        expect(screen.getByTestId('reports-duration-chart')).toBeInTheDocument();
+      });
+      // Both buckets have runs, so there are two triggers.
+      await waitFor(() => {
+        expect(screen.getAllByTestId('reports-bucket-trigger')).toHaveLength(2);
+      });
+    });
+
+    it('clicking a bucket trigger surfaces new-tab run links with a #/run/<id> href', async () => {
+      render(
+        <ReportsView
+          now={NOW}
+          listWorkflowGroups={vi.fn().mockResolvedValue(GROUPS)}
+          getWorkflowReport={vi.fn().mockResolvedValue(makeReport())}
+          listWorkflowRunPoints={pager(BUCKET_RUNS)}
+        />,
+      );
+      const triggers = await screen.findAllByTestId('reports-bucket-trigger');
+      // Second trigger = bucket 1 ([600000,900000]) with run-b1a + run-b1b.
+      fireEvent.click(triggers[1]);
+
+      const links = await screen.findAllByTestId('reports-bucket-run-link');
+      const ids = links.map((l) => l.textContent?.trim());
+      expect(ids).toContain('run-b1a');
+      expect(ids).toContain('run-b1b');
+      // The null-duration run is in no bucket's list.
+      expect(ids).not.toContain('run-nodur');
+
+      const b1a = links.find((l) => l.textContent?.trim() === 'run-b1a')!;
+      expect(b1a.getAttribute('href')).toContain('#/run/run-b1a');
+      expect(b1a.getAttribute('target')).toBe('_blank');
+      expect(b1a.getAttribute('rel')).toContain('noopener');
     });
   });
 });
