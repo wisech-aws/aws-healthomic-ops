@@ -1,24 +1,47 @@
 /**
  * Fleet-view ordering.
  *
- * Not-yet-started runs (no `startedAt` — e.g. PENDING/STARTING) sort to the
- * **front** of the list (ordered among themselves by `updatedAt` descending),
- * because a run the user just launched but that has not started executing yet
- * is the *newest* thing in the fleet and should be visible on the first page —
- * not buried at the back for lacking a Start time. Started runs follow, ordered
- * by most recent `startedAt` (the run's Start time) descending, ties broken by
- * `updatedAt` descending. This module is a pure helper so the ordering rule can
- * be unit- and property-tested independently of the React view.
+ * Runs are ordered into two tiers:
+ *
+ *   1. **Pending-not-started runs first.** A run that is still NON-TERMINAL
+ *      (PENDING/STARTING per {@link NON_TERMINAL_STATUSES}) *and* has no usable
+ *      `startedAt` has genuinely just been launched and is not executing yet.
+ *      It is the newest thing in the fleet and must be visible on the first
+ *      page, so it sorts to the front, ordered among its peers by `updatedAt`
+ *      descending (most recently created/updated first).
+ *   2. **Everyone else** — started runs *and* runs that reached a TERMINAL
+ *      state (CANCELLED/FAILED/COMPLETED/DELETED) before they ever started —
+ *      ordered by an **effective recency** timestamp descending, tie-broken by
+ *      `updatedAt` descending.
+ *
+ * Effective recency = `startedAt` if the run has started, else `updatedAt`.
+ *
+ * Rationale: a terminal status is a run's *final resting state*, not "about to
+ * start". A run cancelled or failed before it started has no `startedAt`, but
+ * it is dead — pinning it to the front (as a naive "no start time → front" rule
+ * would) is wrong. Its `updatedAt` is the moment it reached that terminal state
+ * (i.e. *when it was cancelled*), so `updatedAt` is the correct recency key and
+ * it interleaves honestly among the started runs by when it actually ended.
+ * This is why tier 1 gates on {@link NON_TERMINAL_STATUSES}, not merely on the
+ * absence of a start time.
+ *
+ * A run whose status is absent/unknown is not in {@link NON_TERMINAL_STATUSES},
+ * so it falls to tier 2 and is ordered by its `updatedAt` (no-fabrication: we
+ * do not assume an unknown status is pending).
+ *
+ * This module is a pure helper so the ordering rule can be unit- and
+ * property-tested independently of the React view.
  */
-import type { Run } from '../api/types';
+import type { Run, RunStatus } from '../api/types';
+import { NON_TERMINAL_STATUSES } from './staleness';
 
 /**
  * Parses an ISO 8601 timestamp into epoch milliseconds for comparison.
  *
- * A null/undefined or unparseable value yields negative infinity. Callers that
- * treat "absent start time" specially (see {@link compareRuns}) branch on
- * {@link hasStarted} first, so this sentinel only affects ordering *within* a
- * tier where all values are present.
+ * A null/undefined or unparseable value yields negative infinity. The sentinel
+ * keeps {@link descending} well-defined when a timestamp is missing; in
+ * practice `updatedAt` is always a real ISO string, so tier-2 effective
+ * recency resolves to a genuine epoch and the sentinel is only a safety net.
  */
 function toEpoch(value: string | null | undefined): number {
   if (value == null) {
@@ -30,51 +53,75 @@ function toEpoch(value: string | null | undefined): number {
 
 /**
  * Whether a run has a usable Start time (i.e. it has begun executing). A run
- * with an absent or unparseable `startedAt` has not started yet
- * (PENDING/STARTING) and is treated as a "not-yet-started" run for ordering.
+ * with an absent or unparseable `startedAt` has not started yet. Note that
+ * "not started" alone does NOT make a run front-tier — see
+ * {@link isPendingNotStarted}, which also requires a non-terminal status.
  */
 function hasStarted(run: Run): boolean {
   return toEpoch(run.startedAt) !== Number.NEGATIVE_INFINITY;
 }
 
 /**
+ * The run's **effective recency** epoch used by tier 2: the Start time if the
+ * run has started, otherwise its last-change time (`updatedAt`). For a
+ * cancelled/failed-before-start run, `updatedAt` is when it reached its
+ * terminal state — i.e. when it was cancelled — which is the honest recency key.
+ */
+function recencyEpoch(run: Run): number {
+  return hasStarted(run) ? toEpoch(run.startedAt) : toEpoch(run.updatedAt);
+}
+
+/**
+ * Whether a run belongs to the front tier: it is NON-TERMINAL
+ * (PENDING/STARTING/RUNNING/STOPPING per {@link NON_TERMINAL_STATUSES}) *and*
+ * has not started yet. In practice this is a just-launched PENDING/STARTING run
+ * (a RUNNING/STOPPING run normally has a `startedAt`). A run with an
+ * absent/unknown status is not in the set, so this returns `false` and the run
+ * falls to tier 2.
+ */
+function isPendingNotStarted(run: Run): boolean {
+  return (
+    NON_TERMINAL_STATUSES.has(run.status as RunStatus) && !hasStarted(run)
+  );
+}
+
+/**
  * Compares two runs for fleet order.
  *
  * Tiering:
- *   1. **Not-yet-started runs first.** A run with no usable `startedAt`
- *      (PENDING/STARTING — just launched, not executing yet) sorts ahead of any
- *      started run, so freshly-launched runs land on the first page instead of
- *      being pushed to the back for lacking a Start time. Within this tier,
- *      order by `updatedAt` descending (most recently created/updated first).
- *   2. **Started runs**, ordered by `startedAt` descending — the run's **Start
- *      time** (the field shown in the Run List "Start time" column), so
- *      "recency" means newest-started run first. Tie-break: `updatedAt`
- *      descending, so two runs that started at the same instant order by most
- *      recent activity.
+ *   1. **Pending-not-started runs first.** A non-terminal run with no usable
+ *      `startedAt` (just-launched PENDING/STARTING, per
+ *      {@link isPendingNotStarted}) sorts ahead of everyone, so freshly-launched
+ *      runs land on the first page. Within this tier, order by `updatedAt`
+ *      descending.
+ *   2. **Everyone else** — started runs *and* terminal-before-start runs —
+ *      ordered by {@link recencyEpoch} (effective recency: `startedAt` if
+ *      started, else `updatedAt`) descending, tie-broken by `updatedAt`
+ *      descending.
  *
- * NOTE: the primary key was originally `updatedAt` (last status-change time),
- * which made an OLD run bubble to the top whenever any of its tasks changed
- * state. Sorting started runs by `startedAt` fixes that. A later refinement
- * moved not-yet-started runs from the back to the **front**, because those are
- * the newest runs and burying them was a UX regression.
+ * A terminal run (CANCELLED/FAILED/COMPLETED/DELETED) is NOT front-tier even
+ * with no `startedAt`: it is in its final state, not about to start, so it is
+ * placed by WHEN it ended (its `updatedAt`), interleaving honestly among the
+ * started runs rather than being pinned to the top. An absent/unknown status
+ * also lands in tier 2 (no-fabrication).
  *
  * Returns a negative number when `a` should sort before `b`.
  */
 export function compareRuns(a: Run, b: Run): number {
-  const aStarted = hasStarted(a);
-  const bStarted = hasStarted(b);
-  if (aStarted !== bStarted) {
-    // Not-yet-started (false) sorts before started (true) — front of the list.
-    return aStarted ? 1 : -1;
+  const aFront = isPendingNotStarted(a);
+  const bFront = isPendingNotStarted(b);
+  if (aFront !== bFront) {
+    // Front tier (true) sorts before tier 2 (false).
+    return aFront ? -1 : 1;
   }
-  if (!aStarted) {
-    // Both not-yet-started: newest activity first.
+  if (aFront) {
+    // Both front: newest activity first.
     return descending(toEpoch(a.updatedAt), toEpoch(b.updatedAt));
   }
-  // Both started: by Start time desc, then last activity desc.
-  const startedDelta = descending(toEpoch(a.startedAt), toEpoch(b.startedAt));
-  if (startedDelta !== 0) {
-    return startedDelta;
+  // Both tier 2: by effective recency desc, then last activity desc.
+  const recencyDelta = descending(recencyEpoch(a), recencyEpoch(b));
+  if (recencyDelta !== 0) {
+    return recencyDelta;
   }
   return descending(toEpoch(a.updatedAt), toEpoch(b.updatedAt));
 }
@@ -93,9 +140,10 @@ function descending(a: number, b: number): number {
 }
 
 /**
- * Returns a new array of runs ordered per {@link compareRuns}: not-yet-started
- * runs first (by `updatedAt` desc), then started runs by `startedAt` (Start
- * time) desc, ties broken by `updatedAt` desc. The input array is not mutated.
+ * Returns a new array of runs ordered per {@link compareRuns}: pending-not-
+ * started runs first (by `updatedAt` desc), then everyone else by effective
+ * recency (`startedAt` if started, else `updatedAt`) desc, ties broken by
+ * `updatedAt` desc. The input array is not mutated.
  */
 export function orderRuns(runs: readonly Run[]): Run[] {
   return [...runs].sort(compareRuns);
