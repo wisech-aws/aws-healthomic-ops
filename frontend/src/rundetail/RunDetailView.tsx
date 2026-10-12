@@ -1879,9 +1879,9 @@ function S3Value({
     isPrefix && rawPrefix !== '' && !rawPrefix.endsWith('/')
       ? `${rawPrefix}/`
       : rawPrefix;
-  const consoleUrl = `https://s3.console.aws.amazon.com/s3/buckets/${bucket}?prefix=${encodeURIComponent(
-    prefix,
-  )}`;
+  const consoleUrl = `https://s3.console.aws.amazon.com/s3/buckets/${encodeURIComponent(
+    bucket,
+  )}?prefix=${encodeURIComponent(prefix)}`;
   return (
     <SpaceBetween direction="horizontal" size="xxs">
       <Link href={consoleUrl} external>
