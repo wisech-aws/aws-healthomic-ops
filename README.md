@@ -32,7 +32,7 @@ Each package pins its dependencies to exact versions and exposes `build` and `te
 
 ## 1. Architecture
 
-The system is fully managed and event-driven end to end. HealthOmics publishes run and task status-change events to the default EventBridge bus; a rule matching `source = aws.omics` invokes the ingest Lambda. The Lambda defensively maps the event, enriches missing fields through HealthOmics read APIs (event-triggered only), upserts run/task/graph items into a single on-demand DynamoDB table with a monotonic `updatedAt` guard, then calls the AppSync `publishRunUpdate` / `publishTaskUpdate` mutations. AppSync fans those mutations out to subscribed browsers and also serves the initial `listRuns` / `getRun` / `listTasksForRun` queries. The React SPA is served privately from S3 through CloudFront (Origin Access Control) and authenticates to AppSync through a Cognito user pool.
+The system is fully managed and event-driven end to end. HealthOmics publishes run and task status-change events to the default EventBridge bus; a rule matching `source = aws.omics` routes them to the ingest path. Depending on the configured ingest mode (see [Alternative Kinesis ingest path](#alternative-kinesis-ingest-path)) that is either the ingest Lambda directly or an Amazon Kinesis Data Stream fronting a batch-consumer Lambda that runs the same pipeline; the deployed environment uses the Kinesis path. The Lambda defensively maps the event, enriches missing fields through HealthOmics read APIs (event-triggered only), upserts run/task/graph items into a single on-demand DynamoDB table with a monotonic `updatedAt` guard, then calls the AppSync `publishRunUpdate` / `publishTaskUpdate` mutations. AppSync fans those mutations out to subscribed browsers and also serves the initial `listRuns` / `getRun` / `listTasksForRun` queries. The React SPA is served privately from S3 through CloudFront (Origin Access Control) and authenticates to AppSync through a Cognito user pool.
 
 ```mermaid
 flowchart TD
@@ -56,10 +56,48 @@ Infrastructure is one AWS CDK v2 app split into four stacks by lifecycle and bla
 |-------|------------------|
 | `DataStack` | DynamoDB single table (on-demand, point-in-time recovery, `GSI1`). |
 | `ApiStack` | AppSync GraphQL API, schema, JS resolvers, Cognito user pool + app client (strong password policy + enforced threat protection), default Cognito authz plus IAM authz for the ingest publish mutations. |
-| `IngestStack` | Ingest Lambda, EventBridge rule, SQS dead-letter queue, retry policy, least-privilege IAM. The Lambda **bundles** the pinned AWS SDK v3 clients (rather than using the older SDK baked into the Node 20 runtime) so newer `GetRun` response fields — e.g. `networkingMode`, `configuration`, `vpcConfig` — are not silently dropped during deserialization. Also owns the **deferred re-sweep**: a Reconciler Lambda plus a one-shot EventBridge Scheduler group (see [Deferred re-sweep](#deferred-re-sweep-late-settling-reconciliation)). |
+| `IngestStack` | Ingest Lambda, EventBridge rule, SQS dead-letter queue, retry policy, least-privilege IAM. The Lambda **bundles** the pinned AWS SDK v3 clients (rather than using the older SDK baked into the Node 20 runtime) so newer `GetRun` response fields — e.g. `networkingMode`, `configuration`, `vpcConfig` — are not silently dropped during deserialization. Also owns the **deferred re-sweep** (a Reconciler Lambda plus a one-shot EventBridge Scheduler group; see [Deferred re-sweep](#deferred-re-sweep-late-settling-reconciliation)) and the toggle-able [Kinesis ingest path](#alternative-kinesis-ingest-path) (an on-demand Kinesis Data Stream + batch-consumer Lambda + event-source mapping). |
 | `FrontendStack` | Private S3 bucket, CloudFront distribution with OAC, SPA 403/404 → `index.html` routing, build-config injection. |
 
 Stack ordering ensures the Cognito user pool exists before API authorization is configured, and a failure in any stack fails the whole deployment (CloudFormation rolls back rather than leaving a partially-provisioned stack in service).
+
+### Alternative Kinesis ingest path
+
+Alongside the direct EventBridge → Lambda path, the `IngestStack` can provision
+an alternative ingest path backed by **Amazon Kinesis Data Streams**. It is
+controlled entirely by a single CDK context flag — `-c kinesisIngestMode=<mode>`
+(`infra/lib/ingest-stack.ts`) — with three modes:
+
+- **`off`** (default): only the direct path exists. The EventBridge rule
+  (`source = aws.omics`) targets the ingest Lambda directly, as described above.
+- **`present`**: the Kinesis stream, a **batch-consumer Lambda** (reusing the
+  exact ingest pipeline), and the Kinesis event-source mapping are provisioned
+  **alongside** the direct path, but EventBridge **still targets the ingest
+  Lambda** — the Kinesis path sits idle. This lets you deploy and validate the
+  resources without changing live ingestion.
+- **`active`**: the EventBridge rule targets the **Kinesis stream** instead of
+  the Lambda, using a **native dynamic partition key** (`$.detail.runId`). Events
+  then flow **EventBridge → Kinesis → batch-consumer Lambda**: all of a run's
+  events land on one shard (per-run ordering by shard, parallel across runs), and
+  the event-source mapping uses `ReportBatchItemFailures` for partial-batch retry
+  (plus bisect-on-error, a bounded retry/age, and an on-failure SQS DLQ).
+
+The toggle is additive and reversible: switching between modes is a single
+context change + redeploy and never deletes either path, so you can cut over
+(`active`) and roll back (`present`/`off`) with one deploy. Kinesis was chosen
+over SQS FIFO because EventBridge → Kinesis supports the native dynamic
+partition key with no enqueue Lambda and no bridging queue; the tradeoff is that
+an on-demand Kinesis stream does not scale to zero (a small idle hourly cost).
+
+**The deployed environment runs with the Kinesis path (`active`).**
+
+```mermaid
+flowchart LR
+    EB["EventBridge rule<br/>source = aws.omics"] -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Streams<br/>(on-demand, 24h retention)"]
+    KDS -->|"batch per shard<br/>(ReportBatchItemFailures)"| CONS["Batch-consumer Lambda<br/>(reuses ingest pipeline)"]
+    CONS -.->|"exhausted / poison records"| KDLQ["Amazon SQS<br/>Kinesis DLQ"]
+    CONS -->|"same downstream as direct path"| DDB[("DynamoDB + AppSync")]
+```
 
 ### Deferred re-sweep (late-settling reconciliation)
 
@@ -192,11 +230,19 @@ strict no-fabrication rule: when the underlying data is absent, the UI shows an
 explicit "unavailable"/"unknown" affordance or a dash rather than a guessed
 value.
 
+Views are **deep-linkable** via the History API: a run opens at `#/run/<id>` and
+a selected task at `#/run/<id>/task/<id>`, so a URL can be bookmarked or shared,
+and browser **back/forward** restores the corresponding view without a page
+reload. All displayed timestamps (fleet Start time, run-detail times) are
+**absolute** — there is no relative "N ago" rendering.
+
 ### Fleet view (run list)
 
-- **Columns:** status (with a stale-run warning badge), workflow (clickable, opens the run detail view), run name, run ID, workflow ID, engine version, batch ID, start time, and wall-clock duration.
+- **Columns:** status (with a stale-run warning badge), workflow (clickable, opens the run detail view), run name, run ID, workflow ID, engine version, batch ID, start time (shown as an **absolute** timestamp), and wall-clock duration.
+- **Default ordering:** genuinely-pending runs — a non-terminal run (e.g. `PENDING`/`STARTING`) that has no start time — sort to the **front**, since they are the newest things in the fleet. Every other run — runs that have started **and** terminal runs that never started (e.g. a run `CANCELLED`/`FAILED` before start) — is ordered by **effective recency** (`startedAt` if present, else `updatedAt`, tie-broken by `updatedAt`). For a cancelled/failed-before-start run `updatedAt` is when it reached that terminal state, so **cancelled runs are not pinned to the top** — they appear by when they were actually cancelled (`frontend/src/fleet/ordering.ts`).
 - **Free-form search:** a text box that filters the list by case-insensitive substring across run name, run ID, workflow name/ID, status, engine version, and batch ID.
-- **Filtering & sorting:** multi-select status filter, workflow filter, and sort by recency or duration (ascending/descending). The default (recency, no filters) preserves the original ordering.
+- **Filtering & sorting:** multi-select status filter, workflow filter, and sort by recency or duration (ascending/descending). The default (recency, no filters) preserves the ordering described above.
+- **Copy affordances:** a one-click copy control sits beside identifiers that are present — run ID and workflow ID in the list — so an operator can copy them without hand-selecting text (absent values keep their `—` sentinel with no copy control).
 - **Grouping:** mutually-exclusive toggles to group the list by engine version or by batch ID (runs started together via a batch share a `batchId`); each group renders as its own sub-table.
 - **Pagination:** client-side paging of the flat list (25 runs per page). Grouped views are not paged. Search resets to page 1.
 - **Stale-run detection:** a non-terminal run whose `updatedAt` is older than a threshold is flagged with a warning badge.
@@ -210,8 +256,9 @@ value.
 - **Longest-running tasks:** the top tasks by wall-clock duration (an approximation explicitly labeled as such, not a dependency-graph critical path); the slowest is highlighted on the DAG.
 - **Task timeline:** a collapsible per-task queue-wait vs run-time breakdown. Queue-wait is shown under an "unconfirmed `createdAt`" caveat; run-time is not.
 - **Failed-task filter:** a toggle plus count badge to show only `FAILED`/`CANCELLED` tasks.
-- **Inputs & outputs:** the run's parameters as a Parameter/Value table (S3 values link to the console; folder locations complete the prefix with a trailing slash), plus a **Run configuration** table surfacing the IAM role, storage, run cache, networking (VPC + configuration name), and log level captured from `GetRun`. An engine-version badge appears on the header.
-- **Logs:** read-only CloudWatch logs for a selected task (opened by clicking its node) or the run/engine streams, rendered below the DAG.
+- **Inputs & outputs:** the run's parameters as a Parameter/Value table (S3 values link to the console; folder locations complete the prefix with a trailing slash), plus a **Run configuration** table surfacing storage, run cache, networking (VPC + configuration name), and log level captured from `GetRun`. The IAM run-role ARN is **not** shown — it is a sensitive identifier captured only in the non-exposed `rawGetRun` blob and is not exposed via GraphQL (see the confirm-against-docs list below). An engine-version badge appears on the header.
+- **Logs:** read-only CloudWatch logs for a selected task (opened by clicking its node) or the run/engine streams, rendered below the DAG. The panel adds an **in-panel search/filter** over the loaded lines and a **Download** button that saves exactly the loaded log lines as a `.log` file (no refetch, no fabrication; disabled when there are no events).
+- **Copy affordances:** one-click copy controls sit beside the identifiers and URIs the view shows — the task ID, the workflow ID, S3 URIs (the raw `s3://` URI, copied alongside its console link), and ARNs — so they can be copied without hand-selecting text.
 
 ### Reports view (aggregate performance)
 
@@ -222,8 +269,10 @@ detail views.
 
 - **Grouping:** runs are grouped by the friendly **workflow name + version**; a run with no version name is bucketed as **"(unversioned)"**. The underlying `workflowId` is tracked (hidden) so that when one friendly name+version maps to more than one workflow, the report flags a **collision** rather than silently blending unrelated workflows.
 - **Time window:** a calendar date-range picker, defaulting to the **last 30 days**.
-- **Statistics:** for each tracked metric — wall-clock duration, mean/peak CPU, mean/peak memory (GiB), CPU-hours, peak concurrent tasks, tasks per run, failed tasks per run — the report shows **mean, median, and p90**. Cost is intentionally out of scope for this view.
-- **Availability honesty:** each metric's statistics are computed only over the runs where that metric was actually available, shown with an explicit **"N of M runs"** denominator; an unavailable metric is never counted as zero. Utilization (CPU/memory) exists only for runs whose IAM run role held `cloudwatch:PutMetricData` at run start (see [section 6](#6-enable-run-metrics-emission), the `ensure-run-metrics-permission.mjs` prerequisite); the view surfaces a note explaining why some runs lack utilization.
+- **Statistics:** for each tracked metric — wall-clock duration, mean/peak CPU, mean/peak memory (GiB), CPU-hours, peak concurrent tasks, tasks per run, failed tasks per run — the report shows **mean, median, and p90** in summary cards and an aggregate table. Cost is intentionally out of scope for this view.
+- **Charts:** a **duration-distribution bar histogram** (a server-computed, fixed-size set of buckets so the chart is bounded regardless of run count) and a **"Runs over time (per bin)"** bar chart (a server-computed, fixed-size time-binned series). Both are plain bar charts — there is no scatter/per-run chart.
+- **Browse runs by duration bucket (drill-down):** below the histogram, a **collapsible section (collapsed by default)** titled "Browse runs by duration bucket" lays out one clickable control per **non-empty** duration bucket in a grid (~7 per row, so many buckets stay visually organized). Clicking a bucket opens a popover listing that bucket's runs; each run is a hyperlink that **opens the run in a new browser tab** via its deep link (`#/run/<id>`). Empty buckets render no control, and the per-bucket run lists are paged over the full window so no outlier run is hidden.
+- **Availability honesty:** each metric's statistics are computed only over the runs where that metric was actually available, shown with an explicit **"N of M runs"** denominator; an unavailable metric is never counted as zero. Utilization (CPU/memory) exists only for runs whose IAM run role held `cloudwatch:PutMetricData` at run start (see [section 6](#6-verifying-end-to-end-event-flow), the `ensure-run-metrics-permission.mjs` prerequisite); the view surfaces a note explaining why some runs lack utilization.
 - **Data source:** the pipeline persists a compact **per-run performance rollup** (a `Run_Summary` item) once when a run reaches a terminal state, so reports are fast indexed reads rather than live CloudWatch fan-outs. Existing finished runs can be populated with the one-time [`backfill-run-summaries.mjs`](scripts/README.md#backfill-run-summariesmjs--one-time-run_summary-backfill-workflow-performance-reports-req-9) script.
 - **Downloads:** **CSV** (per-run + aggregate data, for analytics) and **print-to-PDF** (a print-friendly layout of the cards + charts, for executive reporting). Unavailable metrics remain blank (never zero) in both exports, and memory stays in GiB.
 
@@ -562,7 +611,7 @@ The real HealthOmics event JSON and read-API response shapes are **not** hardcod
 | 2 | Event `detail-type` strings used to classify run vs task events | `ingest/src/eventMapper.ts` | `detectKind()` — the `RUN_DETAIL_TYPE` / `TASK_DETAIL_TYPE` constants |
 | 3 | Run event `detail` field names (run id, status, run name, workflow id/name) | `ingest/src/eventMapper.ts` | `mapRunEvent()` — the `RUN_FIELDS` constant |
 | 4 | Task event `detail` field names, including that the task id is carried only by the task `arn` (`.../task/<id>`) | `ingest/src/eventMapper.ts` | `mapTaskEvent()` — the `TASK_FIELDS`, `TASK_ARN_FIELD`, and `TASK_ARN_RESOURCE_PREFIX` constants (and `parseTaskIdFromArn`) |
-| 5 | `GetRun` response → RunRecord mapping. Beyond the core fields (timestamps, status, workflowId, outputUri, parameters, engineVersion) this now also maps the run configuration — `roleArn`, `storageType`/`storageCapacity`, `cacheId`/`cacheBehavior`, `networkingMode`, `configuration.name`, `logLevel`, and `batchId` — and captures the **entire raw `GetRun` response** as a JSON string (`rawGetRun`, `$metadata` stripped) so no returned field is lost. `rawGetRun` is persisted in DynamoDB for audit/completeness and is **not** exposed through the GraphQL API (it can contain sensitive values such as role ARN and VPC subnet/SG ids). | `ingest/src/enrichment/tasks.ts` | `mapRunResponse()` field mapping |
+| 5 | `GetRun` response → RunRecord mapping. Beyond the core fields (timestamps, status, workflowId, outputUri, parameters, engineVersion) this also maps the run configuration surfaced via GraphQL — `storageType`/`storageCapacity`, `cacheId`/`cacheBehavior`, `networkingMode`, `configuration.name`, `logLevel`, and `batchId` — and captures the **entire raw `GetRun` response** as a JSON string (`rawGetRun`, `$metadata` stripped) so no returned field is lost. The IAM run-role ARN (`roleArn`) is intentionally **captured only in the non-exposed `rawGetRun` blob** (it is a sensitive identifier): it is **not** a field on the `Run` type / `RunInput` in the GraphQL schema and is never queryable or rendered in the UI. `rawGetRun` itself is persisted in DynamoDB for audit/completeness and is **not** exposed through the GraphQL API (it can contain sensitive values such as the role ARN and VPC subnet/SG ids). | `ingest/src/enrichment/tasks.ts` | `mapRunResponse()` field mapping |
 | 6 | `ListRunTasks` item / `GetRunTask` response → TaskRecord mapping (status, cpus, memory units, timestamps) | `ingest/src/enrichment/tasks.ts` | `mapTaskFields()` field mapping (used by `enrichRun` / `enrichTasks`) |
 | 7 | `GetWorkflow` export mode + the response field holding the definition. **Confirmed against AWS:** for the workflows tested, `GetWorkflow` with `export=[DEFINITION]` returns the `definition` field as a **presigned S3 URL to a `definition.zip` bundle** (plus `main` = the entry file, e.g. `main.nf`, and `definitionRepositoryDetails` for Git-sourced workflows) — **not** inline definition text. `resolveDefinitionSource()` currently expects inline text, so imported/bundled workflows yield no static graph and fall back to the Inferred/Timeline layers until the resolver is extended to download and unzip the bundle. | `ingest/src/enrichment/workflow.ts` | `resolveDefinitionSource()` — the `WORKFLOW_EXPORT_DEFINITION` and `DEFINITION_SOURCE_FIELD` constants |
 | 8 | `GetWorkflow` engine/language spellings mapped to the parser `Language` union | `ingest/src/enrichment/workflow.ts` | `mapEngineToLanguage()` / `resolveDefinitionSource`'s companion `resolveLanguage()` — the `WORKFLOW_LANGUAGE_FIELD` constant |
