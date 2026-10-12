@@ -59,16 +59,22 @@ export class DataStack extends Stack {
     super(scope, id, props);
 
     // Single table, on-demand (PAY_PER_REQUEST) capacity with point-in-time
-    // recovery enabled (Req 3.6, 12.3). RemovalPolicy.DESTROY so `cdk destroy`
-    // tears the table down cleanly with no orphaned resources (Req 11.9); this
-    // is a demo/dashboard store, not a system of record.
+    // recovery enabled (Req 3.6, 12.3). As the dashboard's production data
+    // store, the table is protected against accidental loss: deletion
+    // protection is ON and the removal policy RETAINs the table on stack
+    // delete/replacement, so a `cdk destroy` (or a replacing update) leaves the
+    // data in place rather than dropping it. Combined with PITR (which does not
+    // survive an actual table deletion), this is defense-in-depth for the data.
+    // To intentionally tear the table down, remove deletion protection and
+    // delete it out-of-band.
     this.table = new Table(this, 'Table', {
       partitionKey: { name: 'PK', type: AttributeType.STRING },
       sortKey: { name: 'SK', type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       pointInTimeRecovery: true,
       encryption: TableEncryption.AWS_MANAGED,
-      removalPolicy: RemovalPolicy.DESTROY,
+      deletionProtection: true,
+      removalPolicy: RemovalPolicy.RETAIN,
     });
 
     // GSI1 supports listing all runs ordered by `updatedAt` recency (Req 3.7).
