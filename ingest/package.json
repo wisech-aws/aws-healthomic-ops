@@ -14,7 +14,6 @@
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "5.2.0",
-    "@aws-sdk/client-appsync": "3.1119.0",
     "@aws-sdk/client-cloudwatch-logs": "3.1119.0",
     "@aws-sdk/client-dynamodb": "3.1119.0",
     "@aws-sdk/client-omics": "3.1119.0",
