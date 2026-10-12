@@ -16,7 +16,7 @@ const MIN_LIMIT = 1;
 const MAX_LIMIT = 100;
 
 export function request(ctx) {
-  const { limit, nextToken } = ctx.args;
+  const { limit, nextToken, start, end } = ctx.args;
 
   // Default when omitted (null/undefined); otherwise validate the supplied
   // value is an integer within [1, 100] (Req 5.2, 5.3).
@@ -38,13 +38,53 @@ export function request(ctx) {
     effectiveLimit = limit;
   }
 
+  // Optional time window on `updatedAt` (= GSI1SK). `start`/`end` are inclusive
+  // ISO-8601 UTC bounds. Each supplied bound must be a non-empty string; the
+  // client sends canonical ISO instants (same contract as the limit note on the
+  // runtime subset — no `Date`/regex parsing here, only typeof + a trim check,
+  // both of which the APPSYNC_JS runtime supports).
+  const hasStart = start !== null && start !== undefined;
+  const hasEnd = end !== null && end !== undefined;
+  if (hasStart && (typeof start !== 'string' || start.trim() === '')) {
+    util.error('start must be a non-empty ISO-8601 string', 'BadRequest');
+  }
+  if (hasEnd && (typeof end !== 'string' || end.trim() === '')) {
+    util.error('end must be a non-empty ISO-8601 string', 'BadRequest');
+  }
+
+  // Assemble the key-condition expression from whichever bounds are present.
+  // Base is the PK-only query (unchanged legacy behavior when no window is
+  // given); the `#gsi1sk` expression name is added only when a bound is used so
+  // DynamoDB never sees an unused expression attribute name.
+  //   both  -> #gsi1pk = :gsi1pk AND #gsi1sk BETWEEN :start AND :end
+  //   start -> #gsi1pk = :gsi1pk AND #gsi1sk >= :start
+  //   end   -> #gsi1pk = :gsi1pk AND #gsi1sk <= :end
+  //   none  -> #gsi1pk = :gsi1pk
+  let expression = '#gsi1pk = :gsi1pk';
+  const expressionNames = { '#gsi1pk': 'GSI1PK' };
+  const rawValues = { ':gsi1pk': 'RUNS' };
+  if (hasStart && hasEnd) {
+    expression = '#gsi1pk = :gsi1pk AND #gsi1sk BETWEEN :start AND :end';
+    expressionNames['#gsi1sk'] = 'GSI1SK';
+    rawValues[':start'] = start;
+    rawValues[':end'] = end;
+  } else if (hasStart) {
+    expression = '#gsi1pk = :gsi1pk AND #gsi1sk >= :start';
+    expressionNames['#gsi1sk'] = 'GSI1SK';
+    rawValues[':start'] = start;
+  } else if (hasEnd) {
+    expression = '#gsi1pk = :gsi1pk AND #gsi1sk <= :end';
+    expressionNames['#gsi1sk'] = 'GSI1SK';
+    rawValues[':end'] = end;
+  }
+
   return {
     operation: 'Query',
     index: 'GSI1',
     query: {
-      expression: '#gsi1pk = :gsi1pk',
-      expressionNames: { '#gsi1pk': 'GSI1PK' },
-      expressionValues: util.dynamodb.toMapValues({ ':gsi1pk': 'RUNS' }),
+      expression: expression,
+      expressionNames: expressionNames,
+      expressionValues: util.dynamodb.toMapValues(rawValues),
     },
     scanIndexForward: false,
     limit: effectiveLimit,

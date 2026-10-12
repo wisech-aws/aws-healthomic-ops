@@ -46,6 +46,9 @@ import Multiselect from '@cloudscape-design/components/multiselect';
 import type { MultiselectProps } from '@cloudscape-design/components/multiselect';
 import Toggle from '@cloudscape-design/components/toggle';
 import FormField from '@cloudscape-design/components/form-field';
+import DateRangePicker, {
+  type DateRangePickerProps,
+} from '@cloudscape-design/components/date-range-picker';
 import SpaceBetween from '@cloudscape-design/components/space-between';
 import StatusIndicator from '@cloudscape-design/components/status-indicator';
 import Spinner from '@cloudscape-design/components/spinner';
@@ -72,6 +75,7 @@ import type {
 import { evaluateStaleness } from './staleness';
 import { statusIndicatorType } from './statusIndicator';
 import { formatStartTime, runDuration } from './duration';
+import { resolveRange } from '../reports/dateRange';
 import CopyId from '../components/CopyId';
 
 /** Loading/error/ready phases of the initial `listRuns` query (Req 10.1–10.3). */
@@ -145,6 +149,8 @@ export interface FleetViewProps {
   readonly listRuns?: (variables?: {
     limit?: number;
     nextToken?: string;
+    start?: string;
+    end?: string;
   }) => Promise<RunConnection>;
   readonly subscribe?: SubscribeRuns;
   readonly onReady?: (controls: FleetViewControls) => void;
@@ -209,6 +215,42 @@ const FLEET_LOAD_CAP = 1000;
 /** Per-request page size used while paging the fleet with `nextToken`. */
 const FLEET_FETCH_PAGE_SIZE = 100;
 
+/**
+ * Relative-range presets for the time-window picker, mirroring the Reports view
+ * (7/30/90 days). The default (no explicit range) resolves to the last 30 days.
+ */
+const FLEET_RELATIVE_OPTIONS: DateRangePickerProps.RelativeOption[] = [
+  { key: 'prev-7', amount: 7, unit: 'day', type: 'relative' },
+  { key: 'prev-30', amount: 30, unit: 'day', type: 'relative' },
+  { key: 'prev-90', amount: 90, unit: 'day', type: 'relative' },
+];
+
+/** i18n strings for the time-window DateRangePicker (mirrors ReportsView). */
+const FLEET_DATE_RANGE_I18N: DateRangePickerProps.I18nStrings = {
+  relativeModeTitle: 'Relative range',
+  absoluteModeTitle: 'Absolute range',
+  relativeRangeSelectionHeading: 'Choose a range',
+  formatRelativeRange: (e) => {
+    const unit = e.amount === 1 ? e.unit : `${e.unit}s`;
+    return `Last ${e.amount} ${unit}`;
+  },
+  formatUnit: (unit, value) => (value === 1 ? unit : `${unit}s`),
+  startDateLabel: 'Start date',
+  endDateLabel: 'End date',
+  startTimeLabel: 'Start time',
+  endTimeLabel: 'End time',
+  clearButtonLabel: 'Clear',
+  cancelButtonLabel: 'Cancel',
+  applyButtonLabel: 'Apply',
+  customRelativeRangeOptionLabel: 'Custom range',
+  customRelativeRangeOptionDescription: 'Set a custom range',
+  customRelativeRangeUnitLabel: 'Unit',
+  customRelativeRangeDurationLabel: 'Duration',
+  todayAriaLabel: 'Today',
+  nextMonthAriaLabel: 'Next month',
+  previousMonthAriaLabel: 'Previous month',
+};
+
 
 export default function FleetView({
   listRuns = defaultListRuns,
@@ -254,6 +296,17 @@ export default function FleetView({
   // Req 6.7). Only used when `onCompareRuns` is provided; the "Compare
   // parameters" action is enabled once exactly two runs are selected.
   const [selectedRuns, setSelectedRuns] = useState<readonly Run[]>([]);
+  // Server-side time window on `updatedAt`. `null` resolves to the default
+  // last-30-days window (resolveRange(null, nowMs)); the DateRangePicker shows
+  // its "Last 30 days" placeholder until the operator applies a specific range.
+  // A production account with thousands of runs/month narrows the server result
+  // by window rather than relying on the client-side FLEET_LOAD_CAP.
+  const [range, setRange] = useState<DateRangePickerProps.Value | null>(null);
+
+  // Injected clock makes the default window and tests deterministic (Req 1.5).
+  const nowMs = useMemo(() => now ?? Date.now(), [now]);
+  // Concrete ISO window bounds pushed into every `listRuns` page fetch.
+  const windowRange = useMemo(() => resolveRange(range, nowMs), [range, nowMs]);
 
   // Guards the "query exactly once per mount" contract (Req 10.4) against React
   // 18/19 StrictMode double-invocation of effects in development.
@@ -273,7 +326,15 @@ export default function FleetView({
       do {
         const remaining = FLEET_LOAD_CAP - collected.length;
         const limit = Math.min(FLEET_FETCH_PAGE_SIZE, remaining);
-        const connection = await listRuns({ limit, nextToken });
+        // Push the active window into every page fetch so the SERVER returns
+        // only runs whose `updatedAt` is in [start, end]; the FLEET_LOAD_CAP
+        // then bounds a very dense window rather than the whole fleet.
+        const connection = await listRuns({
+          limit,
+          nextToken,
+          start: windowRange.start,
+          end: windowRange.end,
+        });
         collected.push(...connection.items);
         nextToken = connection.nextToken ?? undefined;
         if (collected.length >= FLEET_LOAD_CAP) {
@@ -293,31 +354,72 @@ export default function FleetView({
       );
       setPhase('error');
     }
-  }, [listRuns]);
+    // `load` re-runs when the window bounds change so a new window re-queries
+    // the server (see the window-change effect below).
+  }, [listRuns, windowRange.start, windowRange.end]);
 
+  // Initial per-mount query (Req 10.4), guarded against StrictMode's double
+  // invoke. Subsequent window changes are handled by the window-change effect
+  // below (which must NOT be blocked by this one-shot guard).
   useEffect(() => {
     if (hasQueried.current) {
       return;
     }
     hasQueried.current = true;
     void load();
-  }, [load]);
+    // Intentionally runs once on mount; `load` is stable except for window
+    // changes, which the dedicated effect below drives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-run the load whenever the time window changes (the operator picked a new
+  // range), resetting to page 1 so the paged client view starts at the top of
+  // the fresh window. Skips the very first run so it does not double-fetch on
+  // mount alongside the one-shot initial query above.
+  const didInitialWindowLoad = useRef(false);
+  useEffect(() => {
+    if (!didInitialWindowLoad.current) {
+      didInitialWindowLoad.current = true;
+      return;
+    }
+    setCurrentPage(1);
+    void load();
+    // `load` already closes over windowRange.start/end; keying on them makes the
+    // reload fire exactly when the window changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowRange.start, windowRange.end]);
 
   // Applies an incoming run update from any source subject to the fleet
   // ordering (Req 8.5, 8.6, 8.10). Clears any pending indicator for that run
   // once the merge is committed (Req 8.11). No page reload occurs — this is a
   // pure state transition.
-  const applyRunUpdate = useCallback((updatedRun: Run) => {
-    setRuns((current) => mergeRunUpdate(current, updatedRun));
-    setPendingRunIds((current) => {
-      if (!current.has(updatedRun.runId)) {
-        return current;
+  const applyRunUpdate = useCallback(
+    (updatedRun: Run) => {
+      // Honor the active window: a live update for a run whose `updatedAt` falls
+      // OUTSIDE [windowStart, windowEnd] must NOT pop into the current view
+      // (that would misrepresent the selected window). ISO-8601 UTC strings
+      // sort lexicographically in chronological order, so a plain string
+      // compare is a correct inclusive bound check. A run already shown whose
+      // update keeps it in-window updates in place via mergeRunUpdate.
+      const inWindow =
+        updatedRun.updatedAt >= windowRange.start &&
+        updatedRun.updatedAt <= windowRange.end;
+      if (inWindow) {
+        setRuns((current) => mergeRunUpdate(current, updatedRun));
       }
-      const next = new Set(current);
-      next.delete(updatedRun.runId);
-      return next;
-    });
-  }, []);
+      // Always clear any pending indicator for the run, even when the update is
+      // dropped for being out of window, so a flagged row never spins forever.
+      setPendingRunIds((current) => {
+        if (!current.has(updatedRun.runId)) {
+          return current;
+        }
+        const next = new Set(current);
+        next.delete(updatedRun.runId);
+        return next;
+      });
+    },
+    [windowRange.start, windowRange.end],
+  );
 
   // Marks a run as awaiting an update so its row shows a loading indicator
   // (Req 8.11). Exposed as a transient state that update sources can trigger
@@ -497,6 +599,17 @@ export default function FleetView({
   const filterControl = (
     <div data-testid="fleet-controls">
       <SpaceBetween direction="horizontal" size="s">
+        <FormField label="Time window">
+          <DateRangePicker
+            value={range}
+            onChange={({ detail }) => setRange(detail.value)}
+            relativeOptions={FLEET_RELATIVE_OPTIONS}
+            isValidRange={() => ({ valid: true })}
+            placeholder="Last 30 days"
+            data-testid="fleet-date-range"
+            i18nStrings={FLEET_DATE_RANGE_I18N}
+          />
+        </FormField>
         <FormField label="Filter by status">
           <Multiselect
             selectedOptions={selectedStatusOptions}
@@ -630,9 +743,9 @@ export default function FleetView({
   // loaded set; narrowing by status/workflow/search helps find capped runs.
   const cappedNotice = loadCapped ? (
     <Alert type="info" data-testid="fleet-capped-notice">
-      Showing the most recent {runs.length.toLocaleString()} runs. More runs
-      exist than are loaded here — narrow by status, workflow, or search to find
-      a specific run.
+      Showing the most recent {runs.length.toLocaleString()} runs in this
+      window. More runs exist in the selected window than are loaded here —
+      narrow the time window, status, workflow, or search to see all.
     </Alert>
   ) : null;
 

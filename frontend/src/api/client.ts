@@ -138,8 +138,8 @@ function runSubscription<T>(
 // --- GraphQL documents -----------------------------------------------------
 
 const LIST_RUNS = /* GraphQL */ `
-  query ListRuns($limit: Int, $nextToken: String) {
-    listRuns(limit: $limit, nextToken: $nextToken) {
+  query ListRuns($limit: Int, $nextToken: String, $start: String, $end: String) {
+    listRuns(limit: $limit, nextToken: $nextToken, start: $start, end: $end) {
       items {
         runId
         status
@@ -494,14 +494,38 @@ interface ListWorkflowRunPointsData {
 
 // --- One-shot query functions (call exactly once per view mount, Req 10.4) --
 
-/** Fetches a page of runs. Optional server-side limit and pagination cursor. */
+/**
+ * Fetches a page of runs. Optional server-side limit and pagination cursor, and
+ * an optional inclusive time window on `updatedAt` (`start`/`end`, ISO-8601
+ * UTC). The window is pushed to the resolver so a large production account
+ * narrows the server-side result instead of relying on the client-side load
+ * cap; omitting both bounds keeps the full unwindowed query (back-compatible).
+ */
 export async function listRuns(
-  variables: { limit?: number; nextToken?: string } = {},
+  variables: {
+    limit?: number;
+    nextToken?: string;
+    start?: string;
+    end?: string;
+  } = {},
 ): Promise<RunConnection> {
   if (isLocalMockMode()) {
     // Local mock mode: return sample data without configuring Amplify or
-    // requiring a Cognito sign-in (no auth, no "No federated jwt").
-    return { items: MOCK_RUNS, nextToken: null };
+    // requiring a Cognito sign-in (no auth, no "No federated jwt"). Honor the
+    // window honestly by filtering the mock runs by `updatedAt` against the
+    // supplied bounds — ISO-8601 UTC strings sort lexicographically in
+    // chronological order, so a plain string compare is correct and inclusive.
+    const { start, end } = variables;
+    const filtered = MOCK_RUNS.filter((r) => {
+      if (start !== undefined && r.updatedAt < start) {
+        return false;
+      }
+      if (end !== undefined && r.updatedAt > end) {
+        return false;
+      }
+      return true;
+    });
+    return { items: filtered, nextToken: null };
   }
   const data = await runQuery<ListRunsData>(LIST_RUNS, variables);
   return data.listRuns;

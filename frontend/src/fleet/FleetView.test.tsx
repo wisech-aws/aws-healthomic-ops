@@ -11,6 +11,7 @@ import FleetView from './FleetView';
 import type { FleetViewControls, SubscribeRuns } from './FleetView';
 import type { Run, RunConnection } from '../api/types';
 import type { Subscription, SubscriptionHandlers } from '../api/client';
+import { resolveRange } from '../reports/dateRange';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 
 function run(partial: Partial<Run> & { runId: string }): Run {
@@ -315,6 +316,10 @@ describe('FleetView', () => {
   });
 
   it('updates a displayed run in place on onRunUpdated (Req 8.5)', async () => {
+    // Fixed "now" ~2 weeks after the fixtures so the default last-30-days
+    // window covers both the loaded run and the emitted update (otherwise the
+    // real-clock window would be ~2 years after these 2024 dates).
+    const NOW = Date.parse('2024-01-15T00:00:00.000Z');
     const listRuns = vi.fn().mockResolvedValue(
       connection([
         run({
@@ -326,7 +331,7 @@ describe('FleetView', () => {
       ]),
     );
     const { subscribe, emit } = makeSubscribe();
-    render(<FleetView listRuns={listRuns} subscribe={subscribe} />);
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} now={NOW} />);
 
     const table = await screen.findByRole('table');
     expect(within(table).getByLabelText(/status RUNNING/i)).toBeInTheDocument();
@@ -348,6 +353,9 @@ describe('FleetView', () => {
   });
 
   it('inserts an undisplayed run in ordered position on onRunUpdated (Req 8.6)', async () => {
+    // Fixed "now" so the default last-30-days window covers the fixtures and
+    // the in-window insert.
+    const NOW = Date.parse('2024-01-15T00:00:00.000Z');
     const listRuns = vi.fn().mockResolvedValue(
       connection([
         run({ runId: 'a', workflowName: 'wf-a', updatedAt: '2024-01-01T00:00:00.000Z' }),
@@ -355,7 +363,7 @@ describe('FleetView', () => {
       ]),
     );
     const { subscribe, emit } = makeSubscribe();
-    render(<FleetView listRuns={listRuns} subscribe={subscribe} />);
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} now={NOW} />);
 
     await screen.findByRole('table');
 
@@ -367,6 +375,8 @@ describe('FleetView', () => {
   });
 
   it('shows a per-run loading indicator until the update is applied (Req 8.11)', async () => {
+    // Fixed "now" so the in-window update applies under the default window.
+    const NOW = Date.parse('2024-01-15T00:00:00.000Z');
     const listRuns = vi.fn().mockResolvedValue(
       connection([
         run({ runId: 'r1', status: 'RUNNING', workflowName: 'wf-1', updatedAt: '2024-01-01T00:00:00.000Z' }),
@@ -377,6 +387,7 @@ describe('FleetView', () => {
       <FleetView
         listRuns={listRuns}
         subscribe={noopSubscribe}
+        now={NOW}
         onReady={(c) => {
           controls = c;
         }}
@@ -771,6 +782,10 @@ describe('FleetView', () => {
 });
 
 describe('FleetView — hybrid paging (nextToken up to cap)', () => {
+  // Fixed clock so the default last-30-days window bounds are deterministic.
+  const NOW = Date.parse('2024-06-15T12:00:00.000Z');
+  const WINDOW = resolveRange(null, NOW);
+
   it('follows nextToken and aggregates all pages into the loaded set', async () => {
     // Two pages of 100, then a final short page with no token.
     const pageA = Array.from({ length: 100 }, (_, i) => run({ runId: `a-${i}` }));
@@ -782,7 +797,7 @@ describe('FleetView — hybrid paging (nextToken up to cap)', () => {
       .mockResolvedValueOnce({ items: pageB, nextToken: 'tokB' })
       .mockResolvedValueOnce({ items: pageC, nextToken: null });
 
-    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />);
 
     // Header counter reflects the full aggregated set (201 runs), not one page.
     await waitFor(() => {
@@ -790,23 +805,43 @@ describe('FleetView — hybrid paging (nextToken up to cap)', () => {
     });
     // Three fetches: it followed both tokens until nextToken was null.
     expect(listRuns).toHaveBeenCalledTimes(3);
-    // Each call carried a limit and the prior page's token.
-    expect(listRuns.mock.calls[0][0]).toEqual({ limit: 100, nextToken: undefined });
-    expect(listRuns.mock.calls[1][0]).toEqual({ limit: 100, nextToken: 'tokA' });
-    expect(listRuns.mock.calls[2][0]).toEqual({ limit: 100, nextToken: 'tokB' });
+    // Each call carried a limit, the prior page's token, and the default
+    // last-30-days window (pushed to the server on every page).
+    expect(listRuns.mock.calls[0][0]).toEqual({
+      limit: 100,
+      nextToken: undefined,
+      start: WINDOW.start,
+      end: WINDOW.end,
+    });
+    expect(listRuns.mock.calls[1][0]).toEqual({
+      limit: 100,
+      nextToken: 'tokA',
+      start: WINDOW.start,
+      end: WINDOW.end,
+    });
+    expect(listRuns.mock.calls[2][0]).toEqual({
+      limit: 100,
+      nextToken: 'tokB',
+      start: WINDOW.start,
+      end: WINDOW.end,
+    });
     // No capped notice when the server ran out of pages.
     expect(screen.queryByTestId('fleet-capped-notice')).not.toBeInTheDocument();
   });
 
   it('stops at the 1000-run cap and shows the capped notice when more remain', async () => {
     // Every page returns 100 items and always a token => would be unbounded.
-    const listRuns = vi.fn(async ({ nextToken }: { limit?: number; nextToken?: string } = {}) => {
-      const base = nextToken ?? '0';
-      const items = Array.from({ length: 100 }, (_, i) => run({ runId: `${base}-${i}` }));
-      return { items, nextToken: `${Number(base) + 1}` };
-    });
+    const listRuns = vi.fn(
+      async ({
+        nextToken,
+      }: { limit?: number; nextToken?: string; start?: string; end?: string } = {}) => {
+        const base = nextToken ?? '0';
+        const items = Array.from({ length: 100 }, (_, i) => run({ runId: `${base}-${i}` }));
+        return { items, nextToken: `${Number(base) + 1}` };
+      },
+    );
 
-    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />);
 
     await waitFor(() => {
       expect(screen.getByTestId('fleet-capped-notice')).toBeInTheDocument();
@@ -815,5 +850,125 @@ describe('FleetView — hybrid paging (nextToken up to cap)', () => {
     expect(listRuns).toHaveBeenCalledTimes(10);
     // Loaded set is capped at 1000.
     expect(screen.getByText('(1000)')).toBeInTheDocument();
+    // The capped notice is window-scoped.
+    expect(screen.getByTestId('fleet-capped-notice')).toHaveTextContent(
+      /in this window/i,
+    );
+  });
+});
+
+describe('FleetView — server-side time window (updatedAt, default last 30 days)', () => {
+  const NOW = Date.parse('2024-06-15T12:00:00.000Z');
+
+  /** Opens the time-window picker and applies the given relative-range key. */
+  function applyRelativeRange(container: HTMLElement, optionKey: string): void {
+    const picker = wrapperForTestId(
+      container,
+      'fleet-date-range',
+    ).findDateRangePicker();
+    if (!picker) {
+      throw new Error('date range picker not found');
+    }
+    picker.openDropdown();
+    const radioGroup = picker.findDropdown()?.findRelativeRangeRadioGroup();
+    if (!radioGroup) {
+      throw new Error('relative range radio group not found');
+    }
+    radioGroup.findInputByValue(optionKey)!.click();
+    picker.findDropdown()!.findApplyButton()!.click();
+  }
+
+  it('mounts with the default last-30-days window on the first listRuns call', async () => {
+    const WINDOW = resolveRange(null, NOW);
+    const listRuns = vi.fn().mockResolvedValue(connection([]));
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />);
+
+    await waitFor(() => expect(listRuns).toHaveBeenCalled());
+    expect(listRuns.mock.calls[0][0]).toMatchObject({
+      start: WINDOW.start,
+      end: WINDOW.end,
+    });
+  });
+
+  it('re-queries with the new window when a relative range is applied', async () => {
+    const listRuns = vi.fn().mockResolvedValue(connection([]));
+    const { container } = render(
+      <FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />,
+    );
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(1));
+
+    // Pick "Last 7 days" (relativeOptions key 'prev-7').
+    applyRelativeRange(container, 'prev-7');
+
+    const expected = resolveRange(
+      { type: 'relative', amount: 7, unit: 'day', key: 'prev-7' },
+      NOW,
+    );
+    await waitFor(() => {
+      // A new load fired for the changed window.
+      expect(listRuns.mock.calls.length).toBeGreaterThan(1);
+      const last = listRuns.mock.calls[listRuns.mock.calls.length - 1][0];
+      expect(last).toMatchObject({ start: expected.start, end: expected.end });
+    });
+  });
+
+  it('drops a live update for a run OUTSIDE the active window (honest window)', async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({
+          runId: 'in-1',
+          workflowName: 'wf-in',
+          updatedAt: '2024-06-10T00:00:00.000Z',
+        }),
+      ]),
+    );
+    const { subscribe, emit } = makeSubscribe();
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} now={NOW} />);
+    await screen.findByRole('table');
+    expect(workflowColumnText()).toEqual(['wf-in']);
+
+    // A run updated LONG before the 30-day window start must not be inserted.
+    emit(
+      run({
+        runId: 'old-1',
+        workflowName: 'wf-old',
+        updatedAt: '2023-01-01T00:00:00.000Z',
+      }),
+    );
+    // Still only the in-window run; the out-of-window update did not pop in.
+    expect(workflowColumnText()).toEqual(['wf-in']);
+    expect(screen.queryByText('wf-old')).not.toBeInTheDocument();
+  });
+
+  it('applies a live update for a run INSIDE the active window', async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({
+          runId: 'a',
+          workflowName: 'wf-a',
+          updatedAt: '2024-06-01T00:00:00.000Z',
+        }),
+        run({
+          runId: 'c',
+          workflowName: 'wf-c',
+          updatedAt: '2024-06-12T00:00:00.000Z',
+        }),
+      ]),
+    );
+    const { subscribe, emit } = makeSubscribe();
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} now={NOW} />);
+    await screen.findByRole('table');
+
+    // An in-window run inserts in ordered position (by updatedAt desc).
+    emit(
+      run({
+        runId: 'b',
+        workflowName: 'wf-b',
+        updatedAt: '2024-06-05T00:00:00.000Z',
+      }),
+    );
+    await waitFor(() => {
+      expect(workflowColumnText()).toEqual(['wf-c', 'wf-b', 'wf-a']);
+    });
   });
 });
