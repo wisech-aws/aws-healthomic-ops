@@ -626,10 +626,14 @@ export default function ReportsView({
                 )}
 
               {/* Duration trend over time — a fixed-size time-binned series
-                  (bounded bin count), independent of run count (Req 11.2). */}
+                  (bounded bin count), independent of run count (Req 11.2).
+                  Extra top padding separates it from the duration-bucket
+                  popovers above. */}
               {report.timeBins.some((b) => b.runCount > 0) && (
                 <div data-testid="reports-timebins-chart">
-                  <Box variant="awsui-key-label">Runs over time (per bin)</Box>
+                  <Box padding={{ top: 'l' }} variant="awsui-key-label">
+                    Runs over time (per bin)
+                  </Box>
                   {(() => {
                     const bars = report.timeBins.map((b) => ({
                       x: b.start.slice(0, 10), // YYYY-MM-DD label
