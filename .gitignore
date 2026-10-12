@@ -13,6 +13,17 @@ cdk.out/
 # Git worktrees (local scratch checkouts, not source)
 .worktrees/
 
+# Compiled CDK output committed alongside TS sources (CDK runs via ts-node).
+# Scoped to lib/ and bin/ ONLY — infra/resolvers/*.js are hand-written AppSync
+# resolvers (real source) and must stay tracked.
+infra/lib/*.js
+infra/lib/*.d.ts
+infra/bin/*.js
+infra/bin/*.d.ts
+
+# Agent/workflow planning artifacts (dev scaffolding, not product).
+.agents/
+
 # Test / coverage
 coverage/
 
