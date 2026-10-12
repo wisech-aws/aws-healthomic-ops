@@ -1,7 +1,7 @@
 /**
  * Kinesis batch-consumer entry point — the toggle-able alternative ingest path.
  *
- * Architecture (see docs/design-sqs-fifo-batch-ingest.md): an EventBridge rule
+ * Architecture: an EventBridge rule
  * targets a Kinesis Data Stream instead of invoking the ingest Lambda directly,
  * with the record **PartitionKey set from `$.detail.runId`** (EventBridge →
  * Kinesis supports a NATIVE dynamic partition key — the reason we chose Kinesis
