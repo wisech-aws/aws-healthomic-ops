@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": ["bin/**/*.ts", "lib/**/*.ts", "test/**/*.ts", "resolvers/**/*.js"]
+}

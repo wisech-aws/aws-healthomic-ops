@@ -342,7 +342,18 @@ type WorkflowReport @aws_cognito_user_pools {
 }
 
 type Query {
-  listRuns(limit: Int, nextToken: String): RunConnection!
+  # `start`/`end` are OPTIONAL inclusive ISO-8601 UTC bounds on `updatedAt`
+  # (the GSI1 sort key). When both are supplied the resolver range-queries
+  # GSI1SK BETWEEN start AND end; when omitted the query is the full unwindowed
+  # run list (back-compatible). The frontend defaults the window to the last 30
+  # days so a large production account narrows the server-side result instead of
+  # relying on the client-side load cap.
+  listRuns(
+    limit: Int
+    nextToken: String
+    start: String
+    end: String
+  ): RunConnection!
     @aws_cognito_user_pools
   getRun(runId: ID!): Run @aws_cognito_user_pools
   listTasksForRun(runId: ID!): [Task!]! @aws_cognito_user_pools
