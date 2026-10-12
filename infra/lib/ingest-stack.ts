@@ -31,7 +31,7 @@ const KINESIS_CONSUMER_ENTRY = path.join(
 
 /**
  * Toggle for the alternative Kinesis Data Streams ingest path
- * (docs/design-sqs-fifo-batch-ingest.md). Set via CDK context
+ * Set via CDK context
  * `-c kinesisIngestMode=<mode>`:
  *   - 'off'     (default): only the direct EventBridge -> Lambda path exists.
  *   - 'present': ALSO provision the Kinesis stream + batch-consumer + event-
