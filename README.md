@@ -16,22 +16,22 @@ Each package pins its dependencies to exact versions and exposes `build` and `te
 
 ## Contents
 
-- [1. Architecture](#1-architecture)
+- [Architecture](#architecture)
 - [Run locally with one command](#run-locally-with-one-command)
 - [Dashboard features](#dashboard-features)
-- [2. Prerequisites](#2-prerequisites)
-- [3. Deploy](#3-deploy)
-- [4. Teardown](#4-teardown)
-- [5. Pointing the dashboard at a HealthOmics account](#5-pointing-the-dashboard-at-a-healthomics-account)
-- [6. Verifying end-to-end event flow](#6-verifying-end-to-end-event-flow)
-- [7. Cost documentation](#7-cost-documentation)
+- [Prerequisites](#prerequisites)
+- [Deploy](#deploy)
+- [Teardown](#teardown)
+- [Pointing the dashboard at a HealthOmics account](#pointing-the-dashboard-at-a-healthomics-account)
+- [Verifying end-to-end event flow](#verifying-end-to-end-event-flow)
+- [Cost documentation](#cost-documentation)
 - [Known limitations of task dependency inference and DAG inference](#known-limitations-of-task-dependency-inference-and-dag-inference)
 - [Confirm against AWS docs](#confirm-against-aws-docs)
 - [Toolchain](#toolchain)
 
 ---
 
-## 1. Architecture
+## Architecture
 
 The system is fully managed and event-driven end to end. HealthOmics publishes run and task status-change events to the default EventBridge bus; a rule matching `source = aws.omics` routes them to the ingest path. Depending on the configured ingest mode (see [Alternative Kinesis ingest path](#alternative-kinesis-ingest-path)) that is either the ingest Lambda directly or an Amazon Kinesis Data Stream fronting a batch-consumer Lambda that runs the same pipeline; the deployed environment uses the Kinesis path. The Lambda defensively maps the event, enriches missing fields through HealthOmics read APIs (event-triggered only), upserts run/task/graph items into a single on-demand DynamoDB table with a monotonic `updatedAt` guard, then calls the AppSync `publishRunUpdate` / `publishTaskUpdate` mutations. AppSync fans those mutations out to subscribed browsers and also serves the initial `listRuns` / `getRun` / `listTasksForRun` queries. The React SPA is served privately from S3 through CloudFront (Origin Access Control) and authenticates to AppSync through a Cognito user pool.
 
@@ -218,8 +218,8 @@ default authorization is the Cognito user pool). Alternatively, export
 > The full event pipeline (Lambda, DynamoDB, AppSync) requires a deployed stack.
 > Tests run entirely locally with no AWS: `cd ingest && npm test`,
 > `cd infra && npm test`, `cd frontend && npm test`. See
-> [section 6](#6-verifying-end-to-end-event-flow) to exercise the pipeline with
-> synthetic events.
+> [Verifying end-to-end event flow](#verifying-end-to-end-event-flow) to
+> exercise the pipeline with synthetic events.
 
 ---
 
@@ -273,21 +273,21 @@ detail views.
 - **Statistics:** for each tracked metric — wall-clock duration, mean/peak CPU, mean/peak memory (GiB), CPU-hours, peak concurrent tasks, tasks per run, failed tasks per run — the report shows **mean, median, and p90** in summary cards and an aggregate table. Cost is intentionally out of scope for this view.
 - **Charts:** a **duration-distribution bar histogram** (a server-computed, fixed-size set of buckets so the chart is bounded regardless of run count) and a **"Runs over time (per bin)"** bar chart (a server-computed, fixed-size time-binned series). Both are plain bar charts — there is no scatter/per-run chart.
 - **Browse runs by duration bucket (drill-down):** below the histogram, a **collapsible section (collapsed by default)** titled "Browse runs by duration bucket" lays out one clickable control per **non-empty** duration bucket in a grid (~7 per row, so many buckets stay visually organized). Clicking a bucket opens a popover listing that bucket's runs; each run is a hyperlink that **opens the run in a new browser tab** via its deep link (`#/run/<id>`). Empty buckets render no control, and the per-bucket run lists are paged over the full window so no outlier run is hidden.
-- **Availability honesty:** each metric's statistics are computed only over the runs where that metric was actually available, shown with an explicit **"N of M runs"** denominator; an unavailable metric is never counted as zero. Utilization (CPU/memory) exists only for runs whose IAM run role held `cloudwatch:PutMetricData` at run start (see [section 6](#6-verifying-end-to-end-event-flow), the `ensure-run-metrics-permission.mjs` prerequisite); the view surfaces a note explaining why some runs lack utilization.
+- **Availability honesty:** each metric's statistics are computed only over the runs where that metric was actually available, shown with an explicit **"N of M runs"** denominator; an unavailable metric is never counted as zero. Utilization (CPU/memory) exists only for runs whose IAM run role held `cloudwatch:PutMetricData` at run start (see [Verifying end-to-end event flow](#verifying-end-to-end-event-flow), the `ensure-run-metrics-permission.mjs` prerequisite); the view surfaces a note explaining why some runs lack utilization.
 - **Data source:** the pipeline persists a compact **per-run performance rollup** (a `Run_Summary` item) once when a run reaches a terminal state, so reports are fast indexed reads rather than live CloudWatch fan-outs. Existing finished runs can be populated with the one-time [`backfill-run-summaries.mjs`](scripts/README.md#backfill-run-summariesmjs--one-time-run_summary-backfill-workflow-performance-reports-req-9) script.
 - **Downloads:** **CSV** (per-run + aggregate data, for analytics) and **print-to-PDF** (a print-friendly layout of the cards + charts, for executive reporting). Unavailable metrics remain blank (never zero) in both exports, and memory stays in GiB.
 
 ---
 
-## 2. Prerequisites
+## Prerequisites
 
-- **An AWS account** with permission to deploy the resources above (DynamoDB, Lambda, EventBridge, SQS, AppSync, Cognito, S3, CloudFront, IAM). This account is also where HealthOmics runs (or is the account whose default event bus receives HealthOmics events — see [section 5](#5-pointing-the-dashboard-at-a-healthomics-account)).
+- **An AWS account** with permission to deploy the resources above (DynamoDB, Lambda, EventBridge, SQS, AppSync, Cognito, S3, CloudFront, IAM). This account is also where HealthOmics runs (or is the account whose default event bus receives HealthOmics events — see [Pointing the dashboard at a HealthOmics account](#pointing-the-dashboard-at-a-healthomics-account)).
 - **Node.js 20.x.** Node 20 is the Lambda runtime target and the minimum for the local toolchain. Verify with `node --version`.
 - **npm** (bundled with Node) as the package manager.
 - **AWS CDK v2 CLI.** Install globally with `npm install -g aws-cdk`, or invoke via `npx cdk`. Verify with `cdk --version` (must report a v2 version).
 - **AWS credentials** configured for the target account and region (for example via `aws configure`, `AWS_PROFILE`, or `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` environment variables). Prefer least-privilege credentials scoped to what the deploy needs.
 - **A target AWS region** chosen for deployment. HealthOmics, the dashboard, and the EventBridge rule must all be in the same region so events reach the ingest Lambda.
-- **CDK bootstrap** completed once per account/region (see [section 3](#3-deploy)).
+- **CDK bootstrap** completed once per account/region (see [Deploy](#deploy)).
 - **Per-package install/build.** Install and build each package from its own directory before deploying:
 
   ```bash
@@ -298,7 +298,7 @@ detail views.
 
 ---
 
-## 3. Deploy
+## Deploy
 
 Deploying is two commands: **build the SPA**, then **`cdk deploy --all`**. The
 `FrontendStack` publishes the built assets to S3, injects the backend config at
@@ -432,7 +432,7 @@ for full flag documentation.
 
 ---
 
-## 4. Teardown
+## Teardown
 
 Destroy all stacks with the CDK CLI from `infra/`:
 
@@ -451,7 +451,7 @@ Notes:
 
 ---
 
-## 5. Pointing the dashboard at a HealthOmics account
+## Pointing the dashboard at a HealthOmics account
 
 The dashboard is driven entirely by HealthOmics events landing on the **default** EventBridge bus in the account and region where the stacks are deployed. To point the dashboard at a HealthOmics account:
 
@@ -466,7 +466,7 @@ The dashboard is driven entirely by HealthOmics events landing on the **default*
 
 ---
 
-## 6. Verifying end-to-end event flow
+## Verifying end-to-end event flow
 
 Use `scripts/send-event.mjs` to push a synthetic `aws.omics` event through the real pipeline. It validates the fixture against the same schema the ingest pipeline assumes and, on validation failure, rejects the event and sends nothing (leaving run/task data unchanged). Fixtures live under `fixtures/events/` (`run-status-change.json`, `task-status-change.json`; shorthands `run` and `task`).
 
@@ -495,7 +495,7 @@ scripts/send-event.mjs --mode lambda --fixture run \
 
 ---
 
-## 7. Cost documentation
+## Cost documentation
 
 The design goal is **zero cost at idle**: every component is fully managed and scales to zero when no events or requests are being processed. No EC2, ECS, or Fargate is provisioned, and no NAT gateways are created, so there are no recurring hourly compute or networking charges. DynamoDB uses on-demand (PAY_PER_REQUEST) capacity only — no provisioned/reserved throughput.
 
