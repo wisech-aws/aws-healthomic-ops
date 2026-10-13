@@ -29,10 +29,10 @@
  * custom metrics — see https://aws.amazon.com/cloudwatch/pricing/. Runs started
  * BEFORE this policy is applied never emit metrics retroactively (Req 4.3).
  *
- * IMPORTANT — default role: `OmicsWorkflow-20260224075057` is the run role
- * used in THIS PROJECT'S TEST/dev environment only. Pass --role-name (or set
- * $RUN_ROLE_NAME) to target the correct role in any other account/environment
- * — do not rely on the default outside this project's test setup.
+ * REQUIRED — run role: the HealthOmics run role is deployment-specific, so it
+ * must be supplied via --role-name (or the $RUN_ROLE_NAME environment variable).
+ * There is no baked-in default; the script errors with clear guidance if none
+ * is provided.
  *
  * The `--help` path never imports the AWS SDK and never touches AWS, so usage
  * can be checked without credentials. `--dry-run` performs the same read-only
@@ -47,9 +47,7 @@
  *
  * Options:
  *   --role-name <name>    HealthOmics run role to grant the policy to.
- *                          Defaults to $RUN_ROLE_NAME, or
- *                          "OmicsWorkflow-20260224075057" (this project's TEST
- *                          environment role — override for other accounts).
+ *                          REQUIRED (or set $RUN_ROLE_NAME); no default.
  *   --region <region>     AWS region for client construction (or $AWS_REGION).
  *                          IAM is a global service; this only affects which
  *                          regional endpoint/partition the client resolves,
@@ -92,9 +90,11 @@ import path from 'node:path';
 // to emit run/task utilization metrics for future runs.
 // ---------------------------------------------------------------------------
 
-// NOTE: this default is specific to THIS PROJECT'S TEST environment. Override
-// with --role-name / $RUN_ROLE_NAME for any other account or role.
-const DEFAULT_ROLE_NAME = 'OmicsWorkflow-20260224075057';
+// No baked-in default role: the HealthOmics run role is deployment-specific, so
+// it must be supplied via --role-name or the $RUN_ROLE_NAME environment
+// variable. An empty default makes the required-arg validation below fire with
+// a clear error when neither is provided.
+const DEFAULT_ROLE_NAME = '';
 const DEFAULT_POLICY_NAME = 'HealthOmicsRunMetrics-PutMetricData';
 
 /** The inline policy document this script ensures is attached to the run role. */
@@ -125,10 +125,8 @@ Usage:
   ensure-run-metrics-permission.mjs [options]
 
 Options:
-  --role-name <name>    Run role to grant the policy to. Defaults to
-                         $RUN_ROLE_NAME, or "${DEFAULT_ROLE_NAME}"
-                         (this project's TEST environment role only — pass
-                         --role-name for any other account/role).
+  --role-name <name>    Run role to grant the policy to. REQUIRED
+                         (or set $RUN_ROLE_NAME); there is no default.
   --region <region>     AWS region for client construction (or $AWS_REGION).
                          IAM is global; kept for consistency with other
                          scripts here.

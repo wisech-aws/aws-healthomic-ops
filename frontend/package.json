@@ -2,6 +2,7 @@
   "name": "@healthomics-dashboard/frontend",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "React + Vite (TypeScript) single-page app for the HealthOmics Workflow Dashboard.",
   "scripts": {
