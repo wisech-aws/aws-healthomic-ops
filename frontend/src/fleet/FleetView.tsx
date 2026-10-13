@@ -307,10 +307,27 @@ export default function FleetView({
   const nowMs = useMemo(() => now ?? Date.now(), [now]);
   // Concrete ISO window bounds pushed into every `listRuns` page fetch.
   const windowRange = useMemo(() => resolveRange(range, nowMs), [range, nowMs]);
+  // Discriminates an OPEN-TO-NOW window (default last-30-days or a relative
+  // range, whose `end` is `resolveRange`'s `now`) from an ABSOLUTE past-bounded
+  // range (a fixed historical `end`). Read off `range` rather than comparing
+  // timestamps: `resolveRange` sets `end = now` only for `null`/relative, so
+  // this is the authoritative, clock-free signal (BUG 2 upper-bound gate).
+  const windowEndsAtNow = range == null || range.type === 'relative';
 
   // Guards the "query exactly once per mount" contract (Req 10.4) against React
   // 18/19 StrictMode double-invocation of effects in development.
   const hasQueried = useRef(false);
+
+  // Latest-callback refs so the single subscription effect (below) can call the
+  // CURRENT `applyRunUpdate`/`load` closures without being re-created when their
+  // identity changes on a window/range change (BUG 1 subscription churn). An
+  // effect with no dependency array keeps these pointed at the latest closures
+  // every render. `seenFirstConnectRef` persists the skip-first-connect guard
+  // across renders so it is not reset by a re-render (which would make every
+  // first connect look "initial" and break genuine reconnect-refetch, Req 10.6).
+  const applyRunUpdateRef = useRef<(updatedRun: Run) => void>(() => {});
+  const loadRef = useRef<() => void | Promise<void>>(() => {});
+  const seenFirstConnectRef = useRef(false);
 
   const load = useCallback(async () => {
     setPhase('loading');
@@ -401,9 +418,17 @@ export default function FleetView({
       // sort lexicographically in chronological order, so a plain string
       // compare is a correct inclusive bound check. A run already shown whose
       // update keeps it in-window updates in place via mergeRunUpdate.
+      // The lower bound always applies: an OLD run updated before the window
+      // start must never pop in. The upper bound is conditional (BUG 2): for an
+      // OPEN-TO-NOW window `windowRange.end` is a stale `Date.now()` captured at
+      // an earlier render, so a genuinely-current update whose `updatedAt` is
+      // slightly AFTER that captured instant would be wrongly rejected — skip
+      // the upper bound and let the lower bound alone gate. For an ABSOLUTE
+      // past-bounded range the end is a fixed historical instant, so keep the
+      // inclusive upper bound to reject updates newer than the selected end.
       const inWindow =
         updatedRun.updatedAt >= windowRange.start &&
-        updatedRun.updatedAt <= windowRange.end;
+        (windowEndsAtNow || updatedRun.updatedAt <= windowRange.end);
       if (inWindow) {
         setRuns((current) => mergeRunUpdate(current, updatedRun));
       }
@@ -418,7 +443,7 @@ export default function FleetView({
         return next;
       });
     },
-    [windowRange.start, windowRange.end],
+    [windowRange.start, windowRange.end, windowEndsAtNow],
   );
 
   // Marks a run as awaiting an update so its row shows a loading indicator
@@ -442,6 +467,16 @@ export default function FleetView({
     onReady?.({ markRunPending, applyRunUpdate });
   }, [onReady, markRunPending, applyRunUpdate]);
 
+  // Keep the latest-callback refs pointed at the current `applyRunUpdate`/`load`
+  // closures on every render (no dependency array = runs each render by design).
+  // The subscription effect reads these refs, so it always invokes the current
+  // closure (current window, current `listRuns`) without being re-created —
+  // the decoupling that fixes BUG 1 subscription churn.
+  useEffect(() => {
+    applyRunUpdateRef.current = applyRunUpdate;
+    loadRef.current = load;
+  });
+
   // Open the live, reconnecting subscription for the lifetime of the mount
   // (Req 8.5, 8.6, 10.5, 10.6). The subscribe factory is injectable for tests.
   //
@@ -452,27 +487,38 @@ export default function FleetView({
   // Without a refetch, the list silently goes stale until a manual page refresh
   // (the observed bug). Refetching current state on every (re)connection
   // re-syncs the list so no update is lost across a drop (Req 10.6).
+  //
+  // BUG 1 fix: depend only on `[subscribe]` so the subscription is created
+  // EXACTLY ONCE on mount and torn down (`managed.stop()`) ONLY on unmount. A
+  // window/range change or any unrelated re-render no longer churns the
+  // subscription (which previously dropped pushed updates in the teardown gap).
+  // The manager reads the latest-callback refs instead of closing over
+  // `applyRunUpdate`/`load`, so it still sees the current window/`listRuns`.
   useEffect(() => {
     // The manager fires `onReconnect` on its very first connection too; the
     // initial `load` effect has already fetched once (Req 10.4), so skip that
     // first callback and only refetch on subsequent RECONNECTS — matching the
     // run-detail view. On a genuine reconnect we re-sync the full list so
     // updates missed during the disconnect are not lost (the stale-until-
-    // refresh bug).
-    let seenFirstConnect = false;
+    // refresh bug). `seenFirstConnectRef` persists this guard across renders so
+    // a re-render cannot reset it and misclassify a genuine reconnect (Req 10.6).
     const managed = createReconnectingSubscription<Run>({
       subscribe,
-      onNext: applyRunUpdate,
+      onNext: (value) => applyRunUpdateRef.current(value),
       onReconnect: () => {
-        if (!seenFirstConnect) {
-          seenFirstConnect = true;
+        if (!seenFirstConnectRef.current) {
+          seenFirstConnectRef.current = true;
           return;
         }
-        void load();
+        void loadRef.current();
       },
     });
     return () => managed.stop();
-  }, [subscribe, applyRunUpdate, load]);
+    // Intentionally depends only on `subscribe` (the stable injected factory):
+    // the manager uses refs for the per-render closures, so this must NOT
+    // re-run on window/state changes (BUG 1). All other values read here
+    // (the refs) are stable, so exhaustive-deps is satisfied without a disable.
+  }, [subscribe]);
 
   // Retry re-issues the query on demand (Req 8.2). Allowed because it is a
   // user-initiated action, not the automatic per-mount query.
