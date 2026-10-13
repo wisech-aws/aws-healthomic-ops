@@ -17,6 +17,7 @@ Each package pins its dependencies to exact versions and exposes `build` and `te
 ## Contents
 
 - [1. Architecture](#1-architecture)
+- [Run locally with one command](#run-locally-with-one-command)
 - [Dashboard features](#dashboard-features)
 - [2. Prerequisites](#2-prerequisites)
 - [3. Deploy](#3-deploy)
@@ -24,9 +25,9 @@ Each package pins its dependencies to exact versions and exposes `build` and `te
 - [5. Pointing the dashboard at a HealthOmics account](#5-pointing-the-dashboard-at-a-healthomics-account)
 - [6. Verifying end-to-end event flow](#6-verifying-end-to-end-event-flow)
 - [7. Cost documentation](#7-cost-documentation)
-- [Run locally with one command](#run-locally-with-one-command)
 - [Known limitations of task dependency inference and DAG inference](#known-limitations-of-task-dependency-inference-and-dag-inference)
 - [Confirm against AWS docs](#confirm-against-aws-docs)
+- [Toolchain](#toolchain)
 
 ---
 
