@@ -181,6 +181,90 @@ describe('FleetView', () => {
     await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2), { timeout: 4000 });
   });
 
+  // (e) extension of the reconnect test: a SECOND drop+reconnect must trigger a
+  // THIRD listRuns, proving the persistent `seenFirstConnectRef` keeps counting
+  // genuine reconnects across the mount (and is not reset by re-renders).
+  it('refetches on every genuine reconnect, not just the first (persistent skip-first guard)', async () => {
+    let handlers: SubscriptionHandlers<Run> | undefined;
+    const subscribe: SubscribeRuns = (h) => {
+      handlers = h;
+      return { unsubscribe: () => {} };
+    };
+    const listRuns = vi.fn().mockResolvedValue(connection([]));
+
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} />);
+    await waitFor(() =>
+      expect(screen.getByText(/no runs are available/i)).toBeInTheDocument(),
+    );
+    // Initial mount load; the first connect's onReconnect is skipped.
+    expect(listRuns).toHaveBeenCalledTimes(1);
+
+    // First drop -> reconnect -> refetch (2nd load).
+    act(() => {
+      handlers?.error?.(new Error('socket dropped once'));
+    });
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2), { timeout: 4000 });
+
+    // Second drop -> reconnect -> refetch (3rd load). This fails if the
+    // skip-first guard lives in a per-effect `let` that a re-subscribe resets.
+    act(() => {
+      handlers?.error?.(new Error('socket dropped twice'));
+    });
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(3), { timeout: 4000 });
+  });
+
+  // (d) BUG 1 regression: the subscribe factory is invoked EXACTLY ONCE on
+  // mount and NOT re-created on a window change or an unrelated re-render; the
+  // subscription is torn down ONLY on unmount. This fails on the pre-fix effect
+  // (which depended on applyRunUpdate/load and churned the subscription).
+  it('subscribes exactly once and tears down only on unmount, despite window/state changes', async () => {
+    let callCount = 0;
+    const unsubscribe = vi.fn();
+    const subscribe: SubscribeRuns = () => {
+      callCount += 1;
+      return { unsubscribe };
+    };
+    const NOW = Date.parse('2024-06-15T12:00:00.000Z');
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([run({ runId: 'r1', name: 'searchable', workflowName: 'wf-1' })]),
+    );
+
+    const { container, unmount } = render(
+      <FleetView listRuns={listRuns} subscribe={subscribe} now={NOW} />,
+    );
+    await screen.findByRole('table');
+    expect(callCount).toBe(1);
+
+    // A window change (apply a relative range) must NOT re-create the factory.
+    const picker = wrapperForTestId(
+      container,
+      'fleet-date-range',
+    ).findDateRangePicker()!;
+    picker.openDropdown();
+    picker
+      .findDropdown()!
+      .findRelativeRangeRadioGroup()!
+      .findInputByValue('prev-7')!
+      .click();
+    picker.findDropdown()!.findApplyButton()!.click();
+    await waitFor(() => expect(listRuns.mock.calls.length).toBeGreaterThan(1));
+    expect(callCount).toBe(1);
+
+    // An unrelated re-render (typing in the search box) must NOT re-create it.
+    const searchInput = container.querySelector(
+      '[data-testid="fleet-search"] input',
+    ) as HTMLInputElement;
+    fireEvent.change(searchInput, { target: { value: 'searchable' } });
+    await waitFor(() => expect(workflowColumnText()).toEqual(['wf-1']));
+    expect(callCount).toBe(1);
+
+    // The subscription is still open (not torn down) until unmount.
+    expect(unsubscribe).not.toHaveBeenCalled();
+
+    unmount();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it('shows an empty state when no runs are returned (Req 8.3, 10.3)', async () => {
     const listRuns = vi.fn().mockResolvedValue(connection([]));
     render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
@@ -970,5 +1054,103 @@ describe('FleetView — server-side time window (updatedAt, default last 30 days
     await waitFor(() => {
       expect(workflowColumnText()).toEqual(['wf-c', 'wf-b', 'wf-a']);
     });
+  });
+
+  // (a) BUG 2 regression: for the default/relative OPEN-TO-NOW window the
+  // captured upper bound is a stale `Date.now()`. A genuinely-current update
+  // whose `updatedAt` is slightly AFTER that captured end must STILL merge —
+  // otherwise an actively-progressing run's latest state is dropped. This fails
+  // on the pre-fix inclusive upper bound and passes once the open-to-now window
+  // gates on the lower bound alone.
+  it('merges a live update whose updatedAt is after the captured default-window end (open-to-now)', async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({
+          runId: 'r1',
+          status: 'RUNNING',
+          workflowName: 'wf-1',
+          updatedAt: '2024-06-14T00:00:00.000Z',
+        }),
+      ]),
+    );
+    const { subscribe, emit } = makeSubscribe();
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} now={NOW} />);
+    await screen.findByRole('table');
+    expect(screen.getByLabelText(/status RUNNING/i)).toBeInTheDocument();
+
+    // `updatedAt` is 5s AFTER the window end captured from `NOW` at mount, yet
+    // this is the run's genuinely-current state and must update in place.
+    emit(
+      run({
+        runId: 'r1',
+        status: 'COMPLETED',
+        workflowName: 'wf-1',
+        updatedAt: new Date(NOW + 5000).toISOString(),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/status COMPLETED/i)).toBeInTheDocument();
+    });
+    // Still exactly one row (updated in place, not inserted).
+    expect(screen.getAllByRole('row').slice(1)).toHaveLength(1);
+  });
+
+  // (c) BUG 2 nuance guard: when an ABSOLUTE range ending in the PAST is active,
+  // the upper bound is a fixed historical instant, so an update newer than the
+  // selected end must be REJECTED (it falls outside the chosen window). This
+  // distinguishes the absolute-past case from the open-to-now case in (a).
+  it('drops a live update newer than the end of an ABSOLUTE past-ending range', async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({
+          runId: 'in-1',
+          workflowName: 'wf-in',
+          updatedAt: '2024-06-05T00:00:00.000Z',
+        }),
+      ]),
+    );
+    const { subscribe, emit } = makeSubscribe();
+    const { container } = render(
+      <FleetView listRuns={listRuns} subscribe={subscribe} now={NOW} />,
+    );
+    await screen.findByRole('table');
+
+    // Drive the picker to an absolute range entirely before NOW
+    // (2024-06-01 .. 2024-06-10), so the resolved window end is a fixed past
+    // instant (2024-06-10T23:59:59.999Z) rather than `now`.
+    const picker = wrapperForTestId(
+      container,
+      'fleet-date-range',
+    ).findDateRangePicker()!;
+    picker.openDropdown();
+    picker.findDropdown()!.findSelectionModeSwitch()!.findModesAsSelect()!.openDropdown();
+    picker
+      .findDropdown()!
+      .findSelectionModeSwitch()!
+      .findModesAsSelect()!
+      .selectOptionByValue('absolute');
+    const applyAbsolute = () => {
+      const dd = picker.findDropdown()!;
+      dd.findStartDateInput()!.setInputValue('2024/06/01');
+      dd.findEndDateInput()!.setInputValue('2024/06/10');
+      dd.findApplyButton()!.click();
+    };
+    applyAbsolute();
+
+    // Wait for the window change to re-query so the component holds the new
+    // absolute range (end in the past).
+    await waitFor(() => expect(listRuns.mock.calls.length).toBeGreaterThan(1));
+
+    // An update dated AFTER the selected end (but still before NOW) must NOT be
+    // inserted — it is outside the chosen absolute window.
+    emit(
+      run({
+        runId: 'later-1',
+        workflowName: 'wf-later',
+        updatedAt: '2024-06-14T00:00:00.000Z',
+      }),
+    );
+    expect(screen.queryByText('wf-later')).not.toBeInTheDocument();
   });
 });
