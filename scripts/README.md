@@ -115,7 +115,7 @@ scripts/ensure-run-metrics-permission.mjs \
 
 | Flag | Description |
 |------|-------------|
-| `--role-name <name>` | HealthOmics run role to grant the policy to. Defaults to `$RUN_ROLE_NAME`, or `OmicsWorkflow-20260224075057` (this project's TEST-environment role only — pass `--role-name` for any other account/role). |
+| `--role-name <name>` | HealthOmics run role to grant the policy to. **Required** (or set `$RUN_ROLE_NAME`); there is no default — the run role is deployment-specific. |
 | `--region <region>` | AWS region for client construction (or `$AWS_REGION`). IAM is a global service; this only affects which regional endpoint/partition the client resolves. |
 | `--policy-name <name>` | Inline policy name to create/update. Defaults to `HealthOmicsRunMetrics-PutMetricData`. |
 | `--dry-run` | Check current state and print what would be done; never calls `PutRolePolicy` (no mutation). |

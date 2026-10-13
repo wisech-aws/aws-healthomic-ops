@@ -2,6 +2,7 @@
   "name": "@healthomics-dashboard/ingest",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Ingest Lambda for the HealthOmics Workflow Dashboard: event normalization, enrichment, persistence, publish, and workflow-definition parsing.",
   "type": "module",
   "main": "src/handler.ts",

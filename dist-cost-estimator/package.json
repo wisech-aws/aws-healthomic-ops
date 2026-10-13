@@ -2,6 +2,7 @@
   "name": "healthomics-cost-estimator",
   "version": "1.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Standalone AWS HealthOmics per-run workflow cost estimator (APIs only; no DynamoDB, no UI).",
   "type": "module",
   "bin": {
