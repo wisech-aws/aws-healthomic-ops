@@ -15,8 +15,42 @@ scripts/deploy.sh --frontend-only          # build SPA, deploy only HealthOmicsF
 scripts/deploy.sh --stack HealthOmicsApi   # build, deploy one named stack
 scripts/deploy.sh --skip-build             # deploy without rebuilding (use with care)
 scripts/deploy.sh --region us-west-2       # override region (default: $AWS_REGION or us-east-1)
+scripts/deploy.sh --kinesis-mode present   # select the Kinesis ingest path (default: off)
 scripts/deploy.sh --help
 ```
+
+`--kinesis-mode <off|present|active>` selects the `HealthOmicsIngest` ingest
+path (passed through to CDK as `-c kinesisIngestMode=<mode>`):
+
+- `off` (default) — direct EventBridge → Lambda only; no Kinesis resources.
+- `present` — also provision the Kinesis stream + consumer, but EventBridge
+  still targets the Lambda, so the Kinesis path sits idle (≈ $30/mo idle cost
+  for the on-demand stream).
+- `active` — EventBridge targets the Kinesis stream, making Kinesis the live
+  ingest path. Toggle back to `present`/`off` with a single redeploy; neither
+  path is deleted on the toggle.
+
+The default (`off`) does not pass any `-c` flag, so a plain `scripts/deploy.sh`
+is unchanged from before.
+
+**Prerequisite checks (fail fast, no auto-install).** Before building or
+deploying, the script verifies: the **AWS CLI** is on `PATH`; **Node.js** is
+present (warns if the major version is not 20); the **CDK CLI** resolves from
+`infra/` (else it tells you to `npm install` there); **AWS credentials** resolve
+(else it tells you to run `aws configure` / set `AWS_PROFILE`); and
+`node_modules` exists in each package it will use (`ingest/`, `frontend/`,
+`infra/`), printing the exact `npm install` command for any that are missing. It
+never installs anything for you.
+
+**Bootstrap detection.** It checks whether the target account/region is
+CDK-bootstrapped (via the `CDKToolkit` stack or the `/cdk-bootstrap/hnb659fds/version`
+SSM parameter). If not, it prints `cd infra && npx cdk bootstrap aws://<account>/<region>`
+and exits — it does **not** bootstrap for you.
+
+After a successful full deploy, it prints clear next steps: create your first
+sign-in user with [`create-cognito-user.sh`](#create-cognito-usersh--create-a-sign-in-user),
+open the `HealthOmicsFrontend` `DistributionDomainName` CloudFront URL from the
+deploy outputs, and optionally grant run-metrics emission per run role.
 
 Requires AWS credentials for the target account and a one-time `cdk bootstrap`
 per account/region. Deploys are billable.
@@ -27,6 +61,63 @@ per account/region. Deploys are billable.
 > `publishRunUpdate`/`publishTaskUpdate`). CDK owns the auth config; if the live
 > API drifts, restore it by re-including BOTH the Cognito default AND
 > `--additional-authentication-providers '[{"authenticationType":"AWS_IAM"}]'`.
+
+## `create-cognito-user.sh` — create a sign-in user
+
+Creates the first (admin-provisioned) sign-in user for the dashboard. The API's
+default authorization is the Cognito user pool and **self-signup is disabled**,
+so at least one user must be created by an admin before anyone can sign in.
+
+The helper reads `UserPoolId` (and `Region`) from the deployed `HealthOmicsApi`
+stack outputs and the CloudFront domain (`DistributionDomainName`) from the
+`HealthOmicsFrontend` stack outputs — nothing is hardcoded. It creates the user
+with the invite email suppressed and sets a **permanent** password, so the user
+can sign in immediately (no forced password change).
+
+```bash
+# Create a user; you'll be prompted securely for a password:
+scripts/create-cognito-user.sh --username you@example.com
+
+# Non-email username needs an explicit --email:
+scripts/create-cognito-user.sh --username alice --email alice@example.com
+
+# Pass the password non-interactively (e.g. from your secret store):
+scripts/create-cognito-user.sh --username you@example.com --password '<StrongPassw0rd!>'
+
+scripts/create-cognito-user.sh --help
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--username <u>` | **Required.** The Cognito username (email alias is enabled, so an email works well). |
+| `--email <e>` | Email attribute. Defaults to `--username` when it looks like an email (contains `@`); otherwise required. |
+| `--password <p>` | Optional. If omitted, the enforced policy is printed and the password is read securely (`read -s`, never echoed). The script never generates a password. |
+| `--region <r>` | AWS region (or `$AWS_REGION`, else `us-east-1`). |
+| `--help`, `-h` | Show help. Never contacts AWS. |
+
+**Password policy (enforced by the user pool, validated locally first).** The
+password is checked against the policy **before** any AWS call and rejected with
+the list of unmet rules if it does not satisfy all of:
+
+- at least **12 characters**,
+- at least one **lowercase**, one **uppercase**, one **digit**, and one
+  **symbol** (non-alphanumeric),
+- not one of the last **3** passwords for that user (password history enforced
+  by Cognito), and an admin temporary password would expire in **1 day** — this
+  helper sets a `--permanent` password, so that does not apply.
+
+**Outputs on success.** It prints the sign-in URL
+(`https://<DistributionDomainName>`) and the username, and a reminder that
+self-signup is disabled. It **never** echoes the password.
+
+**Already-exists.** If the user already exists, the helper notes it and resets
+(updates) that user's permanent password instead of failing.
+
+**Prerequisites.** The AWS CLI must be on `PATH` and the `HealthOmicsApi` stack
+must already be deployed in the target region (it tells you to deploy first if
+not). `--help` never touches AWS.
 
 ## `send-event.mjs` — synthetic-event / direct-invoke (Req 13.4, 13.6)
 
