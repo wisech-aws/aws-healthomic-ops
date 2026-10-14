@@ -10,7 +10,6 @@
  * No fabrication — only nodes whose label actually contains the query match.
  */
 import type { Node } from 'reactflow';
-import type { TaskNodeData } from './graphLayout';
 
 /** Normalize a query: trimmed and lower-cased, or '' when effectively empty. */
 export function normalizeQuery(query: string): string {
@@ -24,7 +23,11 @@ export function normalizeQuery(query: string): string {
  * Matching is a plain substring test on the node's `data.label`.
  */
 export function matchNodeIds(
-  nodes: readonly Node<TaskNodeData>[],
+  // Accepts any node, regardless of its data shape. Task nodes carry a `label`
+  // (and match on it); the Inferred_DAG continuation-cue node deliberately
+  // carries NO `label`, so it can never match a query. Reading the label
+  // defensively (it may be absent) keeps this safe for both.
+  nodes: readonly Node[],
   query: string,
 ): Set<string> {
   const q = normalizeQuery(query);
@@ -33,7 +36,8 @@ export function matchNodeIds(
     return matches;
   }
   for (const node of nodes) {
-    const label = node.data?.label ?? '';
+    const raw = (node.data as { label?: unknown } | undefined)?.label;
+    const label = typeof raw === 'string' ? raw : '';
     if (label.toLowerCase().includes(q)) {
       matches.add(node.id);
     }
