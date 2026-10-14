@@ -139,6 +139,14 @@ const LAYER_LABEL: Record<LayerKind, string> = {
   Timeline_View: 'Timeline',
 };
 
+/**
+ * Feature flag for the "Show static DAG" toggle. Currently OFF: the run view
+ * always shows the Inferred (timing) DAG, and the toggle is not rendered. The
+ * static-graph fetch/state/layer machinery is kept intact so flipping this back
+ * to `true` re-enables the toggle without further rework.
+ */
+const SHOW_STATIC_DAG_TOGGLE = false;
+
 /** Custom node type registry for the task DAG (stable module-level identity). */
 const NODE_TYPES = {
   task: TaskNode,
@@ -764,6 +772,12 @@ export default function RunDetailView({
   // Static (True) DAG when the operator opts in via the toggle — a view-only
   // override with no refetch (Req 8.3). When no Static DAG is available,
   // `selectedLayer` is already Inferred_DAG/Timeline_View and is used as-is.
+  //
+  // NOTE: the "Show static DAG" toggle is currently HIDDEN (see the gated-off
+  // control below), so `showStatic` can never become true and this always
+  // resolves to Inferred_DAG when a static DAG is available — i.e. the run view
+  // shows the Inferred (timing) DAG. The `showStatic` branch is retained so the
+  // toggle can be re-enabled later without reworking this logic.
   const layer: LayerKind = staticDagAvailable
     ? (showStatic ? 'True_DAG' : 'Inferred_DAG')
     : selectedLayer;
@@ -1243,7 +1257,14 @@ export default function RunDetailView({
                   DAG is shown by default and this toggle switches UP to the
                   Static DAG for the same tasks — a view-only override with no
                   refetch (Req 8.3). Shown only while a Static DAG exists. */}
-              {!isInitializing && staticDagAvailable && (
+              {/* The "Show static DAG" toggle is temporarily HIDDEN: the run
+                  view always shows the Inferred (timing) DAG for now. The
+                  static-graph fetch, state, and layer machinery are left intact
+                  so the toggle can be re-enabled later by restoring this block
+                  (and the showStatic branch in the `layer` computation above).
+                  Gated on `false` rather than deleted to keep the change
+                  minimal and reversible. */}
+              {SHOW_STATIC_DAG_TOGGLE && !isInitializing && staticDagAvailable && (
                 <span data-testid="static-toggle">
                   <Toggle
                     checked={showStatic}
