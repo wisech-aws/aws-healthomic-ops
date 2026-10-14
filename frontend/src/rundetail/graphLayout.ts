@@ -117,6 +117,35 @@ export const TASK_NODE_WIDTH = NODE_WIDTH;
 export const TASK_NODE_HEIGHT = NODE_HEIGHT;
 
 /**
+ * The grid column index reserved exclusively for the Inferred_DAG
+ * row-continuation cue. Task nodes occupy columns 0..7 (MAX_COLS = 8); the cue
+ * sits alone in column 8 so it never collides with a task. Exported so the
+ * layout code and its tests share a single source of truth for the lane.
+ */
+export const CUE_COLUMN_INDEX = 8;
+
+/**
+ * Data attached to a band-continuation cue node. Deliberately minimal and
+ * DISJOINT from {@link TaskNodeData}: it carries NO `label` (so node search —
+ * which matches on `data.label` — can never match it), NO `status`, and NO
+ * `color`. The only field is the accessible description of what the glyph
+ * conveys.
+ */
+export interface BandContinuationNodeData {
+  readonly aria: string;
+}
+
+/**
+ * Namespaced id for a continuation-cue node. The `__cont__` prefix (mirroring
+ * the existing `__initializing__` convention) plus the fact that task nodes are
+ * keyed by `taskId` guarantees cue ids form a set disjoint from task ids — they
+ * can never collide with a real taskId.
+ */
+export function continuationCueId(levelOrder: number, row: number): string {
+  return `__cont__${levelOrder}__${row}`;
+}
+
+/**
  * Build positioned React Flow nodes/edges for a True_DAG overlay (Req 9.3).
  *
  * Node ids are the static-graph node ids; each node is colored by the matched
@@ -187,7 +216,7 @@ export function buildInferredDagFlow(
   slowestTaskId?: string | null,
   selectedTaskId?: string | null,
 ): {
-  nodes: Node<TaskNodeData>[];
+  nodes: Node<TaskNodeData | BandContinuationNodeData>[];
   edges: Edge[];
 } {
   // Lay out timing levels top-to-bottom. A single inferred level can contain a
@@ -205,7 +234,7 @@ export function buildInferredDagFlow(
   const LEVEL_GAP = 28; // extra vertical space between distinct timing levels
   const MAX_COLS = 8;
 
-  const nodes: Node<TaskNodeData>[] = [];
+  const nodes: Node<TaskNodeData | BandContinuationNodeData>[] = [];
   let y = 0;
 
   for (const level of ordering.levels) {
@@ -241,6 +270,45 @@ export function buildInferredDagFlow(
     });
 
     const rowsUsed = Math.ceil(count / cols);
+
+    // Row-continuation cue (strict no-fabrication: conveys ONLY "this
+    // concurrency band continues onto the next row"). A level that wraps into
+    // more than one row gets a single faint `↩` in the reserved column-8 lane
+    // at the right edge of every row EXCEPT the last, so the user can tell the
+    // same inferred timing level continues below. Never on a single-row level
+    // (rowsUsed <= 1) and never between distinct levels.
+    //
+    // Centering decision (documented per spec): the cue uses the centering
+    // basis of the row it sits on. Every NON-FINAL wrapped row is, by
+    // definition, a FULL row of MAX_COLS (8) tasks, so that row's width is
+    // (MAX_COLS - 1) * COL_GAP and its tasks are centered on x = 0. Placing the
+    // cue at column index CUE_COLUMN_INDEX (8) therefore means:
+    //   x = CUE_COLUMN_INDEX * COL_GAP - (MAX_COLS - 1) * COL_GAP / 2
+    // which is CONSTANT across all non-final rows of the level, so the cues
+    // line up as a straight vertical lane just past the right-most task column.
+    // Task x for columns 0..7 is unchanged (cols stays Math.min(count, 8)), so
+    // tasks never shift horizontally because a cue exists.
+    if (rowsUsed > 1) {
+      const cueX =
+        CUE_COLUMN_INDEX * COL_GAP - (MAX_COLS - 1) * COL_GAP / 2;
+      for (let row = 0; row <= rowsUsed - 2; row += 1) {
+        nodes.push({
+          id: continuationCueId(level.order, row),
+          type: 'bandContinuation',
+          data: { aria: 'band continues on next row' },
+          position: { x: cueX, y: y + row * ROW_GAP },
+          width: NODE_WIDTH,
+          height: NODE_HEIGHT,
+          // Presentational decoration, not a task: React Flow must never
+          // select, focus, drag, or connect it, and it carries no handles.
+          selectable: false,
+          focusable: false,
+          draggable: false,
+          connectable: false,
+        });
+      }
+    }
+
     y += rowsUsed * ROW_GAP + LEVEL_GAP;
   }
 

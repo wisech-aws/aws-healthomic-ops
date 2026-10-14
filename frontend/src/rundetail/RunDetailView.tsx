@@ -114,8 +114,9 @@ import {
   buildInitializingFlow,
   buildTrueDagFlow,
 } from './graphLayout';
-import type { TaskNodeData } from './graphLayout';
+import type { BandContinuationNodeData, TaskNodeData } from './graphLayout';
 import TaskNode from './TaskNode';
+import BandContinuationNode from './BandContinuationNode';
 import { matchNodeIds } from './nodeSearch';
 import { formatDuration, taskDuration } from '../fleet/duration';
 import CopyId from '../components/CopyId';
@@ -139,7 +140,11 @@ const LAYER_LABEL: Record<LayerKind, string> = {
 };
 
 /** Custom node type registry for the task DAG (stable module-level identity). */
-const NODE_TYPES = { task: TaskNode } as const;
+const NODE_TYPES = {
+  task: TaskNode,
+  // Inferred_DAG row-continuation cue (presentational decoration, not a task).
+  bandContinuation: BandContinuationNode,
+} as const;
 
 /**
  * The full set of resource-metric families the measured-usage panel requests
@@ -1100,11 +1105,17 @@ export default function RunDetailView({
 
   // Decorate flow nodes with search emphasis/dimming. When no search is active,
   // nodes are returned unchanged (referentially, per node) so nothing dims.
-  const displayNodes = useMemo<Node<TaskNodeData>[]>(() => {
+  const displayNodes = useMemo<Node<TaskNodeData | BandContinuationNodeData>[]>(() => {
     if (!searchActive) {
       return flow.nodes;
     }
     return flow.nodes.map((node) => {
+      // Continuation-cue nodes are a presentational decoration: pass them
+      // through UNMODIFIED so a search never dims or emphasizes the cue. Only
+      // task nodes carry search state.
+      if (node.type === 'bandContinuation') {
+        return node;
+      }
       const isMatch = searchMatchIds.has(node.id);
       return {
         ...node,
