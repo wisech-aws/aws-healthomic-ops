@@ -815,6 +815,7 @@ export default function RunDetailView({
   const segments = useMemo(() => segmentsForAll(tasks, nowMs), [tasks, nowMs]);
 
   const engineVersion = run?.engineVersion ?? null;
+  const workflowVersionName = run?.workflowVersionName ?? null;
 
   // Selecting a task node opens its logs. Initializing/True-DAG nodes whose id
   // is a static-graph node (not a taskId) are matched back to a task by name so
@@ -1253,6 +1254,16 @@ export default function RunDetailView({
                   {engineVersion != null
                     ? `Engine ${engineVersion}`
                     : 'Engine — (Unknown)'}
+                </Badge>
+              </span>
+              {/* Workflow version badge. Shows the run's workflow version, or
+                  an Unknown_State ("—"/Unknown) when absent so no value is
+                  fabricated. Sits on the same strip, beside the engine badge. */}
+              <span aria-label="workflow version badge" data-testid="workflow-version-badge">
+                <Badge color={workflowVersionName != null ? 'blue' : 'grey'}>
+                  {workflowVersionName != null
+                    ? `Version ${workflowVersionName}`
+                    : 'Version — (Unknown)'}
                 </Badge>
               </span>
             </SpaceBetween>

@@ -1154,3 +1154,96 @@ describe('FleetView — server-side time window (updatedAt, default last 30 days
     expect(screen.queryByText('wf-later')).not.toBeInTheDocument();
   });
 });
+
+describe('FleetView — workflow version sub-line (display only)', () => {
+  it('renders a muted version sub-line under the workflow name when present', async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({
+          runId: 'r1',
+          name: 'nightly-run',
+          workflowName: 'align-and-call',
+          workflowVersionName: 'v2-wave-fix',
+        }),
+      ]),
+    );
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+
+    const table = await screen.findByRole('table');
+    // The primary workflow name still renders.
+    expect(within(table).getAllByText('align-and-call').length).toBeGreaterThanOrEqual(1);
+    // The version sub-line is present and shows the version.
+    const sub = await screen.findByTestId('workflow-version-sub');
+    expect(sub).toHaveTextContent('v2-wave-fix');
+  });
+
+  it('renders NO version sub-line when the run has no workflowVersionName', async () => {
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({ runId: 'r1', name: 'nightly-run', workflowName: 'align-and-call' }),
+      ]),
+    );
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
+
+    const table = await screen.findByRole('table');
+    // Workflow name still renders.
+    expect(within(table).getAllByText('align-and-call').length).toBeGreaterThanOrEqual(1);
+    // No sub-line, no placeholder.
+    expect(screen.queryByTestId('workflow-version-sub')).toBeNull();
+  });
+
+  it('keeps the workflow name a working link that opens the run; adds no new column', async () => {
+    const onSelectRun = vi.fn();
+    const listRuns = vi.fn().mockResolvedValue(
+      connection([
+        run({
+          runId: 'r1',
+          name: 'nightly-run',
+          workflowName: 'align-and-call',
+          workflowVersionName: 'v2-wave-fix',
+        }),
+      ]),
+    );
+    render(
+      <FleetView
+        listRuns={listRuns}
+        subscribe={noopSubscribe}
+        onSelectRun={onSelectRun}
+      />,
+    );
+
+    const table = await screen.findByRole('table');
+
+    // Column count is unchanged (the sub-line stacks inside the Workflow cell;
+    // no new column header is added).
+    const headerCount = within(table).getAllByRole('columnheader').length;
+
+    // The workflow name is a link; clicking it opens the run.
+    const link = within(table).getByRole('link', { name: /view run/i });
+    fireEvent.click(link);
+    expect(onSelectRun).toHaveBeenCalledWith('r1');
+
+    // The sub-line still renders beside the link, not as a column.
+    expect(within(table).getByTestId('workflow-version-sub')).toHaveTextContent(
+      'v2-wave-fix',
+    );
+
+    // Re-render WITHOUT the version to confirm the column count is identical
+    // (i.e. the sub-line never introduced a column).
+    const listRunsNoVer = vi.fn().mockResolvedValue(
+      connection([
+        run({ runId: 'r2', name: 'other-run', workflowName: 'align-and-call' }),
+      ]),
+    );
+    render(
+      <FleetView
+        listRuns={listRunsNoVer}
+        subscribe={noopSubscribe}
+        onSelectRun={onSelectRun}
+      />,
+    );
+    const tables = await screen.findAllByRole('table');
+    const noVerTable = tables[tables.length - 1];
+    expect(within(noVerTable).getAllByRole('columnheader').length).toBe(headerCount);
+  });
+});

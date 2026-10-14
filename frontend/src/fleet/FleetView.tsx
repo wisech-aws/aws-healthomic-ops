@@ -812,7 +812,9 @@ export default function FleetView({
       header: 'Workflow',
       cell: (run) => {
         const workflow = run.workflowName ?? run.workflowId ?? '—';
-        return onSelectRun ? (
+        const version = run.workflowVersionName;
+        const hasVersion = version != null && version !== '';
+        const primary = onSelectRun ? (
           <Link
             href="#"
             ariaLabel={`View run ${run.name ?? run.runId}`}
@@ -825,6 +827,20 @@ export default function FleetView({
           </Link>
         ) : (
           workflow
+        );
+        return (
+          <div>
+            {primary}
+            {hasVersion && (
+              <Box
+                variant="small"
+                color="text-body-secondary"
+                data-testid="workflow-version-sub"
+              >
+                version {version}
+              </Box>
+            )}
+          </div>
         );
       },
     },

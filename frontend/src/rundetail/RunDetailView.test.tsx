@@ -1379,6 +1379,51 @@ describe('RunDetailView', () => {
     expect(badge).not.toHaveTextContent(/Engine \d/);
   });
 
+  it('renders the workflow-version badge beside the engine badge when present', async () => {
+    render(
+      <RunDetailView
+        runId="run-1"
+        now={NOW}
+        getRun={vi
+          .fn()
+          .mockResolvedValue(makeRun({ workflowVersionName: 'v2-wave-fix' }))}
+        listTasksForRun={vi
+          .fn()
+          .mockResolvedValue([makeTask({ status: 'RUNNING' })])}
+        onTaskUpdated={noopSubscribe()}
+      />,
+    );
+
+    const versionBadge = await screen.findByTestId('workflow-version-badge');
+    expect(versionBadge).toHaveTextContent(/Version v2-wave-fix/);
+    expect(versionBadge).not.toHaveTextContent(/unknown/i);
+    // Sits on the same strip as the engine badge (both present).
+    expect(screen.getByTestId('engine-version-badge')).toBeInTheDocument();
+  });
+
+  it('shows the grey Unknown workflow-version badge when workflowVersionName is absent (no fabrication)', async () => {
+    render(
+      <RunDetailView
+        runId="run-1"
+        now={NOW}
+        getRun={vi
+          .fn()
+          .mockResolvedValue(makeRun({ workflowVersionName: undefined }))}
+        listTasksForRun={vi
+          .fn()
+          .mockResolvedValue([makeTask({ status: 'RUNNING' })])}
+        onTaskUpdated={noopSubscribe()}
+      />,
+    );
+
+    const versionBadge = await screen.findByTestId('workflow-version-badge');
+    expect(versionBadge).toHaveTextContent(/unknown/i);
+    // No fabricated "Version <value>" is shown.
+    expect(versionBadge).not.toHaveTextContent(/Version v/);
+    // Still sits alongside the engine badge.
+    expect(screen.getByTestId('engine-version-badge')).toBeInTheDocument();
+  });
+
   it('searches nodes by name: emphasizes matches, dims the rest, shows a count', async () => {
     render(
       <RunDetailView
