@@ -254,7 +254,7 @@ describe('RunDetailView', () => {
     expect(legend).not.toHaveTextContent('FAILED');
   });
 
-  it('defaults to the Inferred DAG and toggles up to the Static DAG when a static graph is supplied (Req 8.3, 8.1, 8.5, 9.3)', async () => {
+  it('shows the Inferred DAG and hides the static-DAG toggle even when a static graph is supplied (toggle temporarily hidden)', async () => {
     const staticGraph: StaticGraph = {
       workflowId: 'wf-1',
       nodes: [
@@ -268,40 +268,36 @@ describe('RunDetailView', () => {
         runId="run-1"
         staticGraph={staticGraph}
         getRun={vi.fn().mockResolvedValue(makeRun())}
-        listTasksForRun={vi
-          .fn()
-          .mockResolvedValue([makeTask({ name: 'align', status: 'COMPLETED' })])}
+        listTasksForRun={vi.fn().mockResolvedValue([
+          makeTask({
+            taskId: 'align-task',
+            name: 'align',
+            status: 'COMPLETED',
+            startedAt: '2024-01-01T00:00:00Z',
+            stoppedAt: '2024-01-01T00:01:00Z',
+          }),
+        ])}
         onTaskUpdated={noopSubscribe()}
       />,
     );
 
     await screen.findByTestId('reactflow');
 
-    // DEFAULT: even though a Static DAG is available, the Inferred (timing) DAG
-    // is shown by default (Req 8.3). The "inferred" label is present and the
-    // static fidelity label is NOT shown yet.
+    // Even though a Static DAG is available, the run view shows the Inferred
+    // (timing) DAG and the "Show static DAG" toggle is temporarily HIDDEN, so
+    // the Static DAG is not reachable from the UI. The "inferred" label is
+    // present and the static fidelity label is never shown.
     expect(screen.getByTestId('inferred-label')).toBeInTheDocument();
     expect(screen.queryByTestId('fidelity-label')).not.toBeInTheDocument();
 
-    // The "Show static DAG" toggle is offered because a Static DAG is available.
-    const toggle = screen.getByTestId('static-toggle');
-    const toggleInput = toggle.querySelector('input') as HTMLInputElement;
-    expect(toggleInput).not.toBeNull();
+    // The toggle is not rendered (hidden behind the SHOW_STATIC_DAG_TOGGLE flag).
+    expect(screen.queryByTestId('static-toggle')).not.toBeInTheDocument();
 
-    // Toggle UP to the Static DAG.
-    act(() => {
-      fireEvent.click(toggleInput);
-    });
-
-    // Now the Static DAG is shown and labeled honestly by its fidelity. The
-    // supplied graph carries no `fidelity`, so it is treated as approximate
-    // (Req 8.1, 8.5) — never as an authoritative "true dependency graph".
-    expect(screen.getByTestId('fidelity-label')).toHaveTextContent(
-      /static dag \(approximate\)/i,
-    );
-    expect(screen.queryByTestId('inferred-label')).not.toBeInTheDocument();
-    // Node n1 (align) matched the COMPLETED task and is colored accordingly.
-    expect(screen.getByTestId('node-n1')).toHaveAttribute(
+    // The view stays on the Inferred DAG. Its nodes are keyed by task id (not
+    // static-graph node id), and the align task is colored by its COMPLETED
+    // status.
+    expect(screen.getByTestId('inferred-label')).toBeInTheDocument();
+    expect(screen.getByTestId('node-align-task')).toHaveAttribute(
       'data-status',
       'COMPLETED',
     );
