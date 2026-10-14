@@ -574,7 +574,7 @@ Per the idle-cost constraint, any resource that bills a **fixed recurring charge
 
 - **DynamoDB point-in-time recovery (PITR) — potential recurring charge.** PITR is enabled on the table (required by the design). PITR bills per GB-month of continuous-backup storage. When the table holds no data this rounds to zero, but any stored data incurs a small storage-based charge that is **not** driven by request traffic. Flagged as a usage-proportional storage charge that persists while data is retained, though it is not a flat per-hour fee.
 - **CloudFront / S3 storage — usage-proportional, not flat.** Stored SPA assets and CloudFront usage bill by storage and transfer, not by a fixed hourly rate; there is no minimum monthly fee, so these do not constitute a fixed recurring charge.
-- **Cognito user pool — no fixed charge at this scale.** The user pool bills per monthly active user (with a free tier) and has no flat provisioning fee, so it does not incur a fixed recurring charge when idle (no active users ⇒ no charge).
+- **Cognito user pool (PLUS plan) — usage-based per active user, no free tier.** The user pool runs on the Cognito **PLUS** feature plan (for enforced threat protection; see the security notes). PLUS bills **per monthly active user (MAU) at $0.020/MAU with no free tier** — unlike the Essentials/Lite tiers, PLUS has **no 10,000-MAU allowance**, so even a single active user bills. There is still no flat provisioning fee, so a pool with **no active users in a month costs $0** (it does not violate zero-cost-at-idle); the charge is purely proportional to monthly sign-ins. Because this is an **admin-only pool** (self-signup disabled), MAU is small — e.g. ~$0.10/mo at 5 users, ~$0.50/mo at 25, ~$2/mo at 100 — but it is **not** zero once anyone signs in during the month.
 
 **Result:** no component in this stack incurs a *flat, usage-independent hourly or monthly* charge. The only always-on cost is data-proportional storage (DynamoDB items + PITR continuous backups, and a few MB of SPA assets in S3), which trends to zero as stored data trends to zero. This satisfies the zero-idle-cost intent; the PITR/storage line items are flagged above so an operator who requires literally-zero standing cost can disable PITR and empty the table.
 
@@ -601,7 +601,8 @@ ingest Lambda invocation, a HealthOmics read (`GetRun`/`ListRunTasks`), DynamoDB
 upserts, and one AppSync publish that fans out to connected subscribers. At ~40
 tasks/run that is roughly **~124 writes and ~124 publishes per run** (~12.4M each
 across 100k runs). Prices are us-east-1 on-demand, no free tier or reserved
-capacity applied (except Cognito).
+capacity applied. (Cognito is on the **PLUS** feature plan, which has **no
+free tier** — every monthly active user bills at $0.020/MAU.)
 
 | Service | Basis | Est. monthly |
 |---------|-------|--------------|
@@ -614,7 +615,7 @@ capacity applied (except Cognito).
 | AppSync — real-time | subscription connection-minutes + ~12.4M messages delivered | ~$25–40 |
 | CloudFront | SPA loads (~3.3 MB each); assumes light viewer traffic | ~$15 |
 | S3 (SPA assets) | a few MB stored + GETs | ~$0.10 |
-| Cognito | small number of users, within free tier | ~$0 |
+| Cognito (PLUS plan) | admin-only pool, ~tens of monthly active users @ $0.020/MAU (PLUS has no free tier) | ~$0.10–2 |
 | EventBridge (`aws.omics`) | AWS-source events on the default bus | $0 (not billed) |
 | SQS dead-letter queue | only on delivery failure | ~$0 |
 | Deferred re-sweep — Scheduler | ~100k one-shot schedules (1 per terminal run) @ ~$1/M | ~$0.10 |
