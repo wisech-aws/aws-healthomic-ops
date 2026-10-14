@@ -815,7 +815,14 @@ export default function RunDetailView({
   const segments = useMemo(() => segmentsForAll(tasks, nowMs), [tasks, nowMs]);
 
   const engineVersion = run?.engineVersion ?? null;
-  const workflowVersionName = run?.workflowVersionName ?? null;
+  // Normalize an absent OR empty-string version to null so the header badge
+  // treats "" as unknown (grey "Version — (Unknown)") rather than rendering a
+  // blank "Version " — matching the fleet view's present/absent predicate and
+  // the no-fabrication rule.
+  const workflowVersionName =
+    run?.workflowVersionName != null && run.workflowVersionName !== ''
+      ? run.workflowVersionName
+      : null;
 
   // Selecting a task node opens its logs. Initializing/True-DAG nodes whose id
   // is a static-graph node (not a taskId) are matched back to a task by name so
