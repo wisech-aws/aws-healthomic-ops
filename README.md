@@ -300,18 +300,54 @@ detail views.
 
 ## Deploy
 
-Deploying is two commands: **build the SPA**, then **`cdk deploy --all`**. The
-`FrontendStack` publishes the built assets to S3, injects the backend config at
-deploy time, and invalidates CloudFront — so there is no separate `s3 sync` or
-config-injection step. Stack names below (`HealthOmicsData`, `HealthOmicsApi`,
-`HealthOmicsIngest`, `HealthOmicsFrontend`) are illustrative; run `cdk list` to
-confirm the names your CDK app defines.
+The quickest path from a fresh clone to a live dashboard:
 
-> **One-command deploy:** [`scripts/deploy.sh`](scripts/README.md#deploysh--build-and-deploy-in-one-command)
-> runs the correct sequence for you — build ingest, build the SPA, then
-> `cdk deploy` — so you never publish a stale/missing `frontend/dist`. Use
-> `scripts/deploy.sh` (all stacks), `scripts/deploy.sh --frontend-only`, or
-> `scripts/deploy.sh --stack <Name>`. The manual steps below are equivalent.
+1. **Prerequisites** — an AWS account with credentials configured
+   (`aws configure` or `AWS_PROFILE`), **Node.js 20.x**, and each package's
+   dependencies installed:
+
+   ```bash
+   cd ingest && npm install && cd ..
+   cd infra && npm install && cd ..
+   cd frontend && npm install && cd ..
+   ```
+
+2. **Bootstrap once** per account+region (CDK needs this before the first
+   deploy; it is a one-time step):
+
+   ```bash
+   cd infra && npx cdk bootstrap aws://<account>/<region>
+   ```
+
+3. **Deploy** — build ingest, build the SPA, and deploy all stacks in one step:
+
+   ```bash
+   scripts/deploy.sh                 # --kinesis-mode defaults to off
+   ```
+
+   The script checks the prerequisites above (AWS CLI, Node 20, CDK, credentials,
+   per-package `node_modules`) and the bootstrap state, and fails fast with the
+   exact command to run if anything is missing — it never installs, bootstraps,
+   or deploys silently. See
+   [`scripts/README.md`](scripts/README.md#deploysh--build-and-deploy-in-one-command)
+   for all flags (`--frontend-only`, `--stack`, `--skip-build`, `--region`,
+   `--kinesis-mode`).
+
+4. **Create your first sign-in user** (self-signup is disabled):
+
+   ```bash
+   scripts/create-cognito-user.sh --username you@example.com
+   ```
+
+5. **Open the dashboard** at the `HealthOmicsFrontend` `DistributionDomainName`
+   CloudFront URL printed in the deploy outputs, and sign in with that user.
+
+The sections below explain each step in more detail. Stack names
+(`HealthOmicsData`, `HealthOmicsApi`, `HealthOmicsIngest`, `HealthOmicsFrontend`)
+are illustrative; run `cdk list` to confirm the names your CDK app defines. The
+manual `cdk` steps below are equivalent to `scripts/deploy.sh` — the script just
+runs **build ingest → build the SPA → `cdk deploy`** in the correct order so you
+never publish a stale/missing `frontend/dist`.
 
 **1. Bootstrap the account/region (once per account+region):**
 
@@ -363,17 +399,29 @@ deployed against any backend without rebuilding. The mapping is:
 
 **5. Create a sign-in user.** The API's default authorization is the Cognito
 user pool and self-signup is disabled, so create at least one user (this is an
-operational step, not part of the stacks):
+operational step, not part of the stacks). The easiest way is the helper, which
+reads the user pool from the deployed stack outputs, validates the password
+against the policy, and sets a permanent password so you can sign in right away:
 
 ```bash
-aws cognito-idp admin-create-user \
-  --user-pool-id <UserPoolId> --username you@example.com \
-  --user-attributes Name=email,Value=you@example.com Name=email_verified,Value=true \
-  --message-action SUPPRESS
-aws cognito-idp admin-set-user-password \
-  --user-pool-id <UserPoolId> --username you@example.com \
-  --password '<StrongPassw0rd!>' --permanent
+scripts/create-cognito-user.sh --username you@example.com
 ```
+
+It prompts securely for the password (or pass `--password`); see
+[`scripts/README.md`](scripts/README.md#create-cognito-usersh--create-a-sign-in-user)
+for all flags and behavior.
+
+> **Manual fallback.** If you prefer the raw CLI, the helper is equivalent to:
+>
+> ```bash
+> aws cognito-idp admin-create-user \
+>   --user-pool-id <UserPoolId> --username you@example.com \
+>   --user-attributes Name=email,Value=you@example.com Name=email_verified,Value=true \
+>   --message-action SUPPRESS
+> aws cognito-idp admin-set-user-password \
+>   --user-pool-id <UserPoolId> --username you@example.com \
+>   --password '<StrongPassw0rd!>' --permanent
+> ```
 
 > **Password requirements (enforced by the user pool).** The `ApiStack`
 > configures an explicit strong password policy, so the password you set must
