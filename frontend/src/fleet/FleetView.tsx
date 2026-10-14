@@ -833,11 +833,15 @@ export default function FleetView({
             {primary}
             {hasVersion && (
               <Box
-                variant="small"
+                variant="span"
                 color="text-body-secondary"
+                fontSize="body-s"
                 data-testid="workflow-version-sub"
               >
-                version {version}
+                {/* Light version name inline after the workflow link, offset by
+                    a double-space-width gap (CSS, since literal spaces collapse
+                    in HTML). No "version" label — the muted text is self-evident. */}
+                <span style={{ marginLeft: '0.66em' }}>{version}</span>
               </Box>
             )}
           </div>
