@@ -167,7 +167,22 @@ async function main() {
   const { fetchRateMap } = await import('./src/priceList.mjs');
   const { PricingClient } = await import('@aws-sdk/client-pricing');
 
-  const runningInteractive = parsed.interactive !== false && parsed.inputFile === null;
+  // Mode selection (per the documented contract):
+  //  - `--input <file>` always => non-interactive (parseArgs sets interactive=false).
+  //  - `--interactive` explicitly => interactive.
+  //  - otherwise: interactive only when stdin is an attached TTY; a piped /
+  //    redirected stdin (not a TTY) => non-interactive, reading the plan JSON
+  //    from stdin. This is what makes `echo '{...}' | plan-cost --json` work
+  //    instead of the JSON being swallowed as the first interactive answer.
+  const stdinIsTty = Boolean(process.stdin.isTTY);
+  let runningInteractive;
+  if (parsed.interactive === true) {
+    runningInteractive = true;
+  } else if (parsed.inputFile !== null) {
+    runningInteractive = false;
+  } else {
+    runningInteractive = stdinIsTty;
+  }
 
   if (runningInteractive) {
     if (region === null) {
@@ -181,7 +196,35 @@ async function main() {
 
     const pricingClient = new PricingClient({});
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const prompt = (question) => new Promise((resolve) => rl.question(question, resolve));
+
+    // Handle EOF / closed stdin gracefully. When input runs out (piped input
+    // exhausted, Ctrl-D, or a non-TTY stdin), readline emits 'close': any
+    // later rl.question() throws ERR_USE_AFTER_CLOSE, and a question already
+    // in flight when 'close' fires would otherwise never resolve. Resolve the
+    // prompt to a cancel sentinel in both cases so the driver's isCancel()
+    // path exits cleanly instead of crashing with an unhandled rejection.
+    let inputClosed = false;
+    let resolvePending = null;
+    rl.on('close', () => {
+      inputClosed = true;
+      if (resolvePending) {
+        const resolve = resolvePending;
+        resolvePending = null;
+        resolve('cancel');
+      }
+    });
+    const prompt = (question) =>
+      new Promise((resolve) => {
+        if (inputClosed) {
+          resolve('cancel');
+          return;
+        }
+        resolvePending = resolve;
+        rl.question(question, (answer) => {
+          resolvePending = null;
+          resolve(answer);
+        });
+      });
     const print = (text) => process.stdout.write(`${text}\n`);
 
     try {
