@@ -51,6 +51,9 @@ cdk-outputs.json
 *.zip
 User Guide*AWS HealthOmics*.html
 
+# HealthOmics run-parameter scratch files (generated when starting runs)
+params-*.json
+
 # Kiro specs / AI agent prompt docs (not part of the open-source project)
 .kiro/
 *Coding Agent Prompt*.md
