@@ -1,0 +1,21 @@
+{
+  "name": "cost-planning-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Standalone AWS HealthOmics pre-run cost-planning assistant (guided what-if calculator; APIs only, no DynamoDB, no UI).",
+  "type": "module",
+  "bin": {
+    "plan-cost": "plan-cost.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-pricing": "3.1119.0",
+    "@aws-sdk/credential-provider-node": "3.972.81"
+  }
+}
