@@ -103,6 +103,15 @@ the instance menu and the estimate as tables, recommends instance choices
 without deciding for the user, and defers every rate and every calculation to
 this CLI — it never restates a price or re-derives the math.
 
+The skill also supports a **direct-API mode** for agents that cannot run
+`node` (some sandboxes can't execute node or read shell profiles). In that
+mode the agent calls the AWS Price List API itself (read-only
+`pricing:GetProducts`) for live rates and does the cost math by hand, using
+the exact query, parsing rules, and formulas transcribed into the skill from
+this package's verified source. Driving the CLI remains the preferred, single
+source of truth; direct-API mode mirrors it exactly and never fabricates a
+rate.
+
 ## Handoff for executed runs
 
 If you already have a Run ID for a workflow that has run (or is running),
