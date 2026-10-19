@@ -22,6 +22,12 @@
  * never zero-filled. `total` is the sum of the AVAILABLE line items only, and is
  * marked PARTIAL when any line item is unavailable.
  *
+ * Billing: AWS HealthOmics bills compute per task with a one-minute minimum
+ * task duration charge (see "Run optimization for a private HealthOmics
+ * workflow", https://docs.aws.amazon.com/omics/latest/dev/workflows-run-optimize.html).
+ * Each task's measured runtime is floored to one minute PER TASK before being
+ * aggregated by instance type, mirroring `ingest/src/cost/estimate.ts`.
+ *
  * The pricing:GetProducts rate map is fetched ONCE and reused across all runs
  * (it is region-wide), so estimating a group of runs issues one Price List
  * pagination, not one per run.
@@ -308,6 +314,17 @@ const STORAGE_UNIT = 'GB-Hours';
 const STORAGE_FAMILY_STATIC = 'Run Storage';
 const STORAGE_FAMILY_DYNAMIC = 'Dynamic Run Storage';
 
+/**
+ * One minute, expressed in hours (1/60). AWS HealthOmics bills compute per task
+ * with a one-minute minimum task duration charge — each task is billed for at
+ * least one minute even if it ran for less (see "Run optimization for a
+ * private HealthOmics workflow",
+ * https://docs.aws.amazon.com/omics/latest/dev/workflows-run-optimize.html).
+ * Mirrors `ONE_MINUTE_HOURS` in ingest/src/cost/estimate.ts so both estimators
+ * agree.
+ */
+const ONE_MINUTE_HOURS = 1 / 60;
+
 /** Wall-clock hours between two ISO timestamps; null if missing/unparseable/inverted. */
 function instanceHours(startedAt, stoppedAt) {
   if (startedAt == null || stoppedAt == null) return null;
@@ -318,7 +335,17 @@ function instanceHours(startedAt, stoppedAt) {
   return (stop - start) / HOUR_MS;
 }
 
-/** Group tasks by instanceType summing instance-hours; count the unpriceable. */
+/**
+ * Group tasks by instanceType, summing BILLED instance-hours; count the
+ * unpriceable.
+ *
+ * Each task's raw measured hours are floored to `ONE_MINUTE_HOURS` (the
+ * one-minute-minimum task duration charge) PER TASK, before summing into
+ * `byInstanceType` — two sub-minute tasks aggregate to 2 x ONE_MINUTE_HOURS,
+ * not a single floor applied to their combined raw duration. A task with no
+ * usable runtime is still excluded (not floored); a task missing its
+ * instanceType is still counted separately.
+ */
 function aggregateComputeHours(tasks) {
   const byInstanceType = new Map();
   let missingInstanceTypeCount = 0;
@@ -338,7 +365,8 @@ function aggregateComputeHours(tasks) {
       missingInstanceTypeCount += 1;
       continue;
     }
-    byInstanceType.set(type, (byInstanceType.get(type) ?? 0) + hours);
+    const billedHours = Math.max(hours, ONE_MINUTE_HOURS);
+    byInstanceType.set(type, (byInstanceType.get(type) ?? 0) + billedHours);
   }
 
   return { byInstanceType, missingInstanceTypeCount, excludedNoRuntimeCount };

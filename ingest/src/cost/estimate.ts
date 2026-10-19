@@ -10,8 +10,14 @@
  * value cannot be computed.
  *
  * Value semantics mirror design.md §5 "Cost math":
- *   - Compute: per task, `instanceHours = (stop - start)` in hours; summed by
- *     `instanceType`; × the instance type's published rate.
+ *   - Compute: per task, `instanceHours = (stop - start)` in hours, with a
+ *     one-minute-minimum floor applied PER TASK before aggregation — AWS
+ *     HealthOmics bills compute per task with a one-minute minimum task
+ *     duration charge (see "Run optimization for a private HealthOmics
+ *     workflow",
+ *     https://docs.aws.amazon.com/omics/latest/dev/workflows-run-optimize.html).
+ *     Floored hours are summed by `instanceType`; × the instance type's
+ *     published rate.
  *   - Storage STATIC: `storageCapacity` (GiB) × run wall-clock hours × the
  *     "Run Storage" rate.
  *   - Storage DYNAMIC: `trapezoidalGbHours` of the RUN_FILESYSTEM usage series
@@ -85,11 +91,27 @@ const COMPUTE_UNIT = 'Instance-hrs';
 const STORAGE_UNIT = 'GB-Hours';
 
 /**
+ * One minute, expressed in hours (`1/60`). AWS HealthOmics bills compute per
+ * task with a one-minute minimum task duration charge — each task is billed
+ * for at least one minute even if it ran for less (see "Run optimization for a
+ * private HealthOmics workflow",
+ * https://docs.aws.amazon.com/omics/latest/dev/workflows-run-optimize.html).
+ * This is the shared constant used to apply that per-task floor before
+ * aggregating compute hours by instance type.
+ */
+export const ONE_MINUTE_HOURS = 1 / 60;
+
+/**
  * Wall-clock hours from ISO `startedAt`/`stoppedAt` (Req 2.1).
  *
  * Returns `null` — never a fabricated 0 — when either timestamp is
  * missing/unparseable or when `stop < start` (an inverted interval). Otherwise
- * the difference `(stop - start)` expressed in hours.
+ * the difference `(stop - start)` expressed in hours. This is the raw measured
+ * duration; it does NOT apply the one-minute-minimum billing floor — see
+ * {@link aggregateComputeHours}, which applies that floor per task before
+ * aggregation. (`resolveRunContext`'s use of this function for the run's
+ * overall wall-clock window is unaffected by the per-task compute billing
+ * floor.)
  */
 export function instanceHours(
   startedAt?: string | null,
@@ -122,11 +144,23 @@ export interface ComputeAggregate {
 }
 
 /**
- * Group tasks by `instanceType`, summing Instance_Hours (Req 2.2, 2.4, 2.5).
+ * Group tasks by `instanceType`, summing billed Instance_Hours (Req 2.2, 2.4,
+ * 2.5).
+ *
+ * AWS HealthOmics bills compute per task with a one-minute minimum task
+ * duration charge (see "Run optimization for a private HealthOmics workflow",
+ * https://docs.aws.amazon.com/omics/latest/dev/workflows-run-optimize.html), so
+ * each task's raw measured hours are floored to `ONE_MINUTE_HOURS` (1/60)
+ * *before* summing into `byInstanceType` — a task billed below that floor
+ * never drags the per-instance-type total below what HealthOmics actually
+ * charges, and the floor is applied per task rather than to the aggregate (two
+ * sub-minute tasks are each floored individually, not floored once as their
+ * sum).
  *
  * A task with no usable start→stop runtime is excluded from every total and
  * counted in `excludedNoRuntimeCount` rather than assigned a fabricated runtime
- * (Req 2.5). A task that has runtime but no `instanceType` is counted in
+ * (Req 2.5) — it is NOT floored to one minute, since there is no measured
+ * runtime to floor. A task that has runtime but no `instanceType` is counted in
  * `missingInstanceTypeCount` rather than priced against a fabricated instance
  * type (Req 2.4). Only tasks with both a usable runtime and an `instanceType`
  * contribute to `byInstanceType`.
@@ -152,7 +186,8 @@ export function aggregateComputeHours(
       missingInstanceTypeCount += 1;
       continue;
     }
-    byInstanceType.set(type, (byInstanceType.get(type) ?? 0) + hours);
+    const billedHours = Math.max(hours, ONE_MINUTE_HOURS);
+    byInstanceType.set(type, (byInstanceType.get(type) ?? 0) + billedHours);
   }
 
   return { byInstanceType, missingInstanceTypeCount, excludedNoRuntimeCount };
