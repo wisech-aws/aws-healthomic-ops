@@ -108,7 +108,9 @@ The skill also supports a **direct-API mode** for agents that cannot run
 mode the agent calls the AWS Price List API itself (read-only
 `pricing:GetProducts`) for live rates and does the cost math by hand, using
 the exact query, parsing rules, and formulas transcribed into the skill from
-this package's verified source. Driving the CLI remains the preferred, single
+this package's verified source. The primary direct-API fetch is a single
+SigV4-signed `curl` to the Price List API (no AWS CLI, MCP, or node required).
+Driving the CLI remains the preferred, single
 source of truth; direct-API mode mirrors it exactly and never fabricates a
 rate.
 

@@ -90,13 +90,12 @@ whenever it is available.
 
 ### (b) DIRECT-API MODE — agent fetches rates and computes itself
 
-Use this if you **cannot** run `node`, but you **do** have some authenticated,
-read-only path to AWS, such as:
-
-- the AWS CLI (`aws pricing get-products ...`),
-- an AWS MCP tool that can call `pricing:GetProducts`, or
-- an HTTP client with SigV4 signing, outbound network, and read-only
-  `pricing:GetProducts` permission.
+Use this if you **cannot** run `node`, but you **do** have read-only AWS
+credentials in the environment and an outbound network. The **primary**
+method here is a single **SigV4-signed HTTPS `curl`** to the AWS Price List
+API — no AWS MCP, no `aws pricing get-products`, no `node` required. This
+method is verified working (HTTP 200 with real data). The exact command,
+credential handling, pagination, and parsing are in **Step 6**.
 
 Fetch the live rate map with the exact query and parsing rules in **Step 6**,
 then compute the estimate with the exact formulas in **Step 4**. You do the
@@ -106,9 +105,10 @@ Only read-only `pricing:GetProducts` is needed; never call any write or
 
 ### (c) LAST RESORT — ask the user to run the query
 
-If you have **no** AWS access at all, give the user the exact
-`aws pricing get-products` command from Step 6 to run themselves, ask them to
-paste the raw output back, parse it per Step 6, then compute per Step 4.
+If you have **no** AWS access at all (no credentials, no network, or no
+`curl`), give the user the exact `curl` command (or the `aws pricing
+get-products` equivalent) from Step 6 to run themselves, ask them to paste the
+raw output back, parse it per Step 6, then compute per Step 4.
 
 **If none of (a), (b), or (c) can produce a live rate, say so plainly and
 stop. Never invent, guess, or recall a rate from memory.**
@@ -345,23 +345,110 @@ Step 4 math.
 - **Pagination:** follow `NextToken` until it is absent; accumulate all pages.
 - Read-only `pricing:GetProducts` only. No write calls, no `omics:*`.
 
-AWS CLI form (fill in the target region in the `regionCode` filter):
+### How to fetch — PRIMARY: a SigV4-signed `curl` (verified working)
+
+The primary direct-API fetch is a single HTTPS `POST` to the Price List API,
+signed with `curl`'s built-in SigV4. No AWS MCP, no `aws pricing get-products`,
+and no `node` is required. This is **verified working** against the live
+Pricing API (HTTP 200 with real data).
+
+Call specifics:
+
+- **Endpoint:** `POST https://api.pricing.us-east-1.amazonaws.com/` — the
+  Pricing API only lives in `us-east-1` (and `ap-south-1`); always call
+  `us-east-1` regardless of the region being priced. The **target** region is
+  expressed via the `regionCode` filter in the body, never the endpoint.
+- **Signing:** `curl`'s built-in SigV4 via
+  `--aws-sigv4 "aws:amz:us-east-1:pricing"` (requires `curl >= 7.75`; verified
+  on `curl 8.7.1`). Service name is `pricing`, region `us-east-1`.
+- **Credentials:** `--user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY"`. These
+  come from the environment. If you only have a named AWS profile and an AWS
+  CLI exists, populate the env vars first with
+  `eval "$(aws configure export-credentials --format env)"`; otherwise the user
+  supplies them. **Never put literal keys in the command** — always the
+  `$AWS_ACCESS_KEY_ID` / `$AWS_SECRET_ACCESS_KEY` env-var placeholders.
+- **Session token (conditional):** add
+  `-H "X-Amz-Security-Token: $AWS_SESSION_TOKEN"` **only** for
+  temporary/STS/SSO credentials. **Omit it entirely for long-term IAM user
+  keys** (verified: the call succeeded with long-term keys and no token
+  header). A stray token header with long-term keys will break signing, so
+  include it if and only if `$AWS_SESSION_TOKEN` is set.
+- **Required headers:** `X-Amz-Target: AWSPriceListService.GetProducts` and
+  `Content-Type: application/x-amz-json-1.1`.
+- **Permission:** read-only `pricing:GetProducts`. Pricing data is
+  **account-agnostic** — this works with **any** AWS account's credentials; you
+  do **not** need access to the Omics account being priced.
+
+**Long-term IAM user keys** (no session token — the verified form; replace
+`us-west-2` with the target region):
 
 ```bash
-aws pricing get-products \
-  --region us-east-1 \
-  --service-code AmazonOmics \
-  --filters 'Type=TERM_MATCH,Field=regionCode,Value=us-west-2' \
-            'Type=TERM_MATCH,Field=workflowType,Value=Private' \
-  --output json
+curl -sS -X POST "https://api.pricing.us-east-1.amazonaws.com/" \
+  --aws-sigv4 "aws:amz:us-east-1:pricing" \
+  --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -H "X-Amz-Target: AWSPriceListService.GetProducts" \
+  -H "Content-Type: application/x-amz-json-1.1" \
+  -d '{"ServiceCode":"AmazonOmics","Filters":[{"Type":"TERM_MATCH","Field":"regionCode","Value":"us-west-2"},{"Type":"TERM_MATCH","Field":"workflowType","Value":"Private"}],"FormatVersion":"aws_v1","MaxResults":100}'
 ```
 
-(Repeat with `--starting-token <NextToken>` until no `NextToken` is returned.)
+**Temporary / STS / SSO credentials** (add the session-token header — include
+this line **only** when `$AWS_SESSION_TOKEN` is set):
 
-Equivalent SDK / MCP call: invoke `pricing:GetProducts` with
-`ServiceCode='AmazonOmics'` and the two `TERM_MATCH` filters above, against the
-`us-east-1` pricing endpoint, paginating on `NextToken`. The response's
-`PriceList` is an array of JSON payloads (see parsing note below).
+```bash
+curl -sS -X POST "https://api.pricing.us-east-1.amazonaws.com/" \
+  --aws-sigv4 "aws:amz:us-east-1:pricing" \
+  --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -H "X-Amz-Security-Token: $AWS_SESSION_TOKEN" \
+  -H "X-Amz-Target: AWSPriceListService.GetProducts" \
+  -H "Content-Type: application/x-amz-json-1.1" \
+  -d '{"ServiceCode":"AmazonOmics","Filters":[{"Type":"TERM_MATCH","Field":"regionCode","Value":"us-west-2"},{"Type":"TERM_MATCH","Field":"workflowType","Value":"Private"}],"FormatVersion":"aws_v1","MaxResults":100}'
+```
+
+**Pagination.** The response has a top-level `"NextToken"`. If present, repeat
+the exact same `POST` with `"NextToken":"<token>"` added to the body JSON, and
+keep going until a response returns no `NextToken`. **Accumulate the
+`PriceList` entries across every page** before building the rate map.
+
+#### Extracting rates with `jq` (no node needed)
+
+If `jq` is available, pull `instanceType -> USD rate` straight from the
+response (each `PriceList` entry is a JSON string, so `fromjson` first):
+
+```bash
+... | jq -r '.PriceList[] | fromjson
+  | {t: .product.attributes.resourceType,
+     u: (.terms.OnDemand[].priceDimensions[].unit),
+     usd: (.terms.OnDemand[].priceDimensions[].pricePerUnit.USD)}
+  | select(.u=="Instance-hrs") | "\(.t)\t\(.usd)"'
+```
+
+For storage rates, select on `.u=="GB-Hours"` instead (the `resourceType` is
+then `"Run Storage"` or `"Dynamic Run Storage"`). Apply the full scope-filter
+in the parsing rules below so out-of-scope products never pollute the rate map.
+
+### How to fetch — ALTERNATIVES
+
+If you cannot use the `curl` above, the same query works through either:
+
+- **AWS CLI** (fill in the target region in the `regionCode` filter), repeating
+  with `--starting-token <NextToken>` until no `NextToken` is returned:
+
+  ```bash
+  aws pricing get-products \
+    --region us-east-1 \
+    --service-code AmazonOmics \
+    --filters 'Type=TERM_MATCH,Field=regionCode,Value=us-west-2' \
+              'Type=TERM_MATCH,Field=workflowType,Value=Private' \
+    --output json
+  ```
+
+- **An SDK / MCP call:** invoke `pricing:GetProducts` with
+  `ServiceCode='AmazonOmics'` and the two `TERM_MATCH` filters above, against
+  the `us-east-1` pricing endpoint, paginating on `NextToken`.
+
+Every form returns the same shape: a top-level
+`{"FormatVersion", "NextToken"?, "PriceList":[...]}` where `PriceList` is an
+array of JSON payloads (see parsing note below).
 
 ### Parsing each `PriceList` entry
 
@@ -391,11 +478,32 @@ For each parsed product, keep it **only if all** of these hold:
 Storage`, sequence-store / annotation-store / variant-store products, Ready2Run
 per-run products, and any product whose unit does not match its family.
 
+**Use the API only for rates, never for specs.** A compute product's
+`attributes` also carry `vcpu` and `memory` (and `memory` can appear with a
+thousands comma, e.g. `"1,536 GiB"`). **Do not** read vCPU/memory from the API
+— the authoritative source for vCPU and memory is the embedded **Instance spec
+table** (Step 5), which is curated and clean. Take **only the USD rate** from
+the API; take every hardware spec from the table.
+
 Reduce the survivors into a rate map keyed by `resourceType`:
 `{ "<resourceType>": { pricePerUnit: <number>, unit: "<Instance-hrs|GB-Hours>" } }`.
 The currency is `USD`. Record the retrieval timestamp (the moment you fetched)
 to show in the output. A `resourceType` with no surviving entry simply has **no
 rate** — treat that line as unavailable in Step 4, never as `0`.
+
+### Honesty rules for direct-API mode (non-negotiable)
+
+- **Rates are always live.** Every rate must come from an actual call made now
+  (the `curl` above, or an alternative form of the same query). Never fabricate
+  a rate, never use a frozen snapshot, and never recall a price from memory —
+  pricing changes and a remembered number is a wrong number.
+- **If the call cannot be made** (no credentials, no network, or no `curl`),
+  do **not** invent anything: fall back to the ask-the-user path (Step 2c) and
+  have the user run the query.
+- **If a needed rate is absent** from the response, mark that line
+  **unavailable** (`—`, never `0`) and mark the whole estimate **PARTIAL**.
+- The embedded **Instance spec table** (Step 5) is static hardware data and is
+  safe to embed; **rates are not** — they must always be fetched live.
 
 ## Step 7 — Present the estimate as a clean table
 
@@ -427,8 +535,8 @@ just that part of the plan and re-estimate — do not make them start over.
 ## Summary of rules this skill always follows
 
 - **Fetch live rates.** Every rate comes from a live Price List query (via the
-  CLI, a direct API call, or the user running the query) — never a frozen
-  snapshot, never a number recalled from memory.
+  CLI, the verified SigV4 `curl`, another direct API call, or the user running
+  the query) — never a frozen snapshot, never a number recalled from memory.
 - **Never fabricate.** A missing rate or unknown spec is an explicit
   unavailable state (`—`), excluded from the total, which is then marked
   `PARTIAL`. Never guess, default, or zero-fill a number.
