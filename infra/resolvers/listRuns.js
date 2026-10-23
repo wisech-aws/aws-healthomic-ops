@@ -15,6 +15,61 @@ const DEFAULT_LIMIT = 25;
 const MIN_LIMIT = 1;
 const MAX_LIMIT = 100;
 
+/**
+ * Attributes projected from GSI1, EXACTLY the fields of the GraphQL `Run` type
+ * (infra/graphql/schema.graphql). GSI1 projects ALL, so without a projection
+ * every page also drags the non-exposed `rawGetRun` blob (~80% of item bytes)
+ * plus PK/SK/GSI keys/entityType through AppSync only to be dropped by the
+ * schema. A drift-guard test asserts this list equals the schema's Run fields,
+ * so adding a Run field fails the test until it is projected here.
+ */
+// Not exported: APPSYNC_JS treats non-handler exports specially (an exported
+// array is not iterable at runtime, verified with `evaluate-code`). Tests read
+// the projected set from request()'s output instead.
+const RUN_PROJECTION_FIELDS = [
+  'runId',
+  'status',
+  'name',
+  'createdAt',
+  'startedAt',
+  'stoppedAt',
+  'updatedAt',
+  'workflowId',
+  'workflowName',
+  'workflowVersionName',
+  'outputUri',
+  'parameters',
+  'engineVersion',
+  'storageType',
+  'storageCapacity',
+  'cacheId',
+  'cacheBehavior',
+  'networkingMode',
+  'configurationName',
+  'logLevel',
+  'batchId',
+  'tags',
+  'statusMessage',
+  'failureReason',
+];
+
+/**
+ * Builds the DynamoDB projection. Every attribute goes through an expression
+ * attribute name placeholder (`#p_<field>`) because several are DynamoDB
+ * reserved words (e.g. `status`, `name`).
+ */
+function runProjection() {
+  const expressionNames = {};
+  const placeholders = [];
+  // `forEach`: the APPSYNC_JS runtime disallows `for` statements and `++`.
+  RUN_PROJECTION_FIELDS.forEach((field) => {
+    const placeholder = `#p_${field}`;
+    expressionNames[placeholder] = field;
+    placeholders.push(placeholder);
+  });
+  return { expression: placeholders.join(', '), expressionNames: expressionNames };
+}
+
 export function request(ctx) {
   const { limit, nextToken, start, end } = ctx.args;
 
@@ -86,6 +141,8 @@ export function request(ctx) {
       expressionNames: expressionNames,
       expressionValues: util.dynamodb.toMapValues(rawValues),
     },
+    // Return only the GraphQL Run fields (see RUN_PROJECTION_FIELDS).
+    projection: runProjection(),
     scanIndexForward: false,
     limit: effectiveLimit,
     nextToken: nextToken,
