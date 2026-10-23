@@ -12,6 +12,7 @@ import type { FleetViewControls, SubscribeRuns } from './FleetView';
 import type { Run, RunConnection } from '../api/types';
 import type { Subscription, SubscriptionHandlers } from '../api/client';
 import { resolveRange } from '../reports/dateRange';
+import { createFleetCache } from './fleetCache';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 
 function run(partial: Partial<Run> & { runId: string }): Run {
@@ -144,7 +145,10 @@ describe('FleetView', () => {
     expect(screen.getByText(/loading runs/i)).toBeInTheDocument();
   });
 
-  it('queries listRuns exactly once on mount (Req 10.4)', async () => {
+  // Req 10.4 (amended): a COLD mount queries exactly once. The warm-mount
+  // counterpart (cached rows + exactly one background revalidation) is in
+  // 'FleetView — cached fleet across remounts (B)'.
+  it('cold mount queries listRuns exactly once (Req 10.4)', async () => {
     const listRuns = vi.fn().mockResolvedValue(connection([]));
     render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} />);
     await waitFor(() =>
@@ -1213,7 +1217,7 @@ describe('FleetView — window end is fresh on every load (open-to-now)', () => 
 
     await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2));
     expect(listRuns.mock.calls[1][0]).toMatchObject(resolveRange(null, later));
-    // The run updated after mount survives the Refresh replacement.
+    // The run updated after mount survives the Refresh merge + prune.
     await waitFor(() => expect(workflowColumnText()).toEqual(['wf-fresh', 'wf-old']));
   });
 
@@ -1567,5 +1571,184 @@ describe('FleetView — progressive render (A)', () => {
     expect(pagination.findCurrentPage().getElement()).toHaveTextContent('2');
     expect(screen.getByText('(60)')).toBeInTheDocument();
     expect(screen.getAllByRole('row').slice(1)).toHaveLength(25);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B — stale-while-revalidate across remounts (Req 10.4 amended: a warm mount
+// shows cached rows and issues exactly one background revalidation).
+// ---------------------------------------------------------------------------
+describe('FleetView — cached fleet across remounts (B)', () => {
+  const NOW = Date.parse('2024-06-15T12:00:00.000Z');
+  const SEVEN_DAYS = { type: 'relative', amount: 7, unit: 'day', key: 'prev-7' } as const;
+  const THIRTY_DAYS = { type: 'relative', amount: 30, unit: 'day', key: 'prev-30' } as const;
+
+  function applyRelative(container: HTMLElement, key: string): void {
+    const picker = wrapperForTestId(container, 'fleet-date-range').findDateRangePicker()!;
+    picker.openDropdown();
+    picker.findDropdown()!.findRelativeRangeRadioGroup()!.findInputByValue(key)!.click();
+    picker.findDropdown()!.findApplyButton()!.click();
+  }
+
+  it('warm remount restores rows and UI state synchronously and revalidates exactly once', async () => {
+    const cache = createFleetCache();
+    const many = runPage('r', 30).map((r) => ({ ...r, status: 'RUNNING' as const }));
+    const first = vi.fn().mockResolvedValue(connection(many));
+    const { container, unmount } = render(
+      <FleetView listRuns={first} subscribe={noopSubscribe} now={NOW} cache={cache} />,
+    );
+    await waitFor(() => expect(screen.getByText('(30)')).toBeInTheDocument());
+
+    // Window, status filter, search, sort direction, then table page 2.
+    applyRelative(container, 'prev-7');
+    await waitFor(() => expect(first).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByText('(30)')).toBeInTheDocument());
+    addStatusFilter(container, 'RUNNING');
+    fireEvent.change(
+      container.querySelector('[data-testid="fleet-search"] input') as HTMLInputElement,
+      { target: { value: 'wf-r' } },
+    );
+    const direction = wrapperForTestId(container, 'fleet-sort-direction').findSelect()!;
+    direction.openDropdown();
+    direction.selectOptionByValue('asc');
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    await waitFor(() => expect(screen.getAllByRole('row').slice(1)).toHaveLength(5));
+    const page2Rows = workflowColumnText();
+    unmount();
+
+    // Remount with a revalidation that stays pending.
+    const { listRuns, pages } = deferredListRuns();
+    const view = render(
+      <FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} cache={cache} />,
+    );
+
+    // Synchronously (no await): cached rows on the restored page, no spinner.
+    expect(screen.queryByText(/loading runs/i)).not.toBeInTheDocument();
+    expect(workflowColumnText()).toEqual(page2Rows);
+    const w = createWrapper(view.container);
+    expect(w.findPagination()!.findCurrentPage().getElement()).toHaveTextContent('2');
+    expect(
+      (view.container.querySelector('[data-testid="fleet-search"] input') as HTMLInputElement).value,
+    ).toBe('wf-r');
+    const tokens = wrapperForTestId(view.container, 'fleet-status-filter')
+      .findMultiselect()!
+      .findTokens();
+    expect(tokens.map((t) => t.getElement().textContent)).toEqual(['RUNNING']);
+    expect(
+      wrapperForTestId(view.container, 'fleet-sort-direction').findSelect()!.findTrigger().getElement(),
+    ).toHaveTextContent('Ascending');
+    expect(
+      wrapperForTestId(view.container, 'fleet-date-range').findDateRangePicker()!.findTrigger().getElement(),
+    ).toHaveTextContent('Last 7 days');
+    expect(screen.getByTestId('fleet-load-progress')).toHaveTextContent('Updating…');
+    expect(screen.getByTestId('fleet-last-refreshed')).toBeInTheDocument();
+
+    // Exactly one background revalidation, for the restored 7-day window.
+    expect(listRuns).toHaveBeenCalledTimes(1);
+    expect(listRuns.mock.calls[0]).toEqual([
+      expect.objectContaining(resolveRange(SEVEN_DAYS, NOW)),
+    ]);
+
+    await settle(pages[0], connection(many));
+    expect(screen.getByTestId('fleet-load-progress')).toHaveTextContent('');
+    expect(w.findPagination()!.findCurrentPage().getElement()).toHaveTextContent('2');
+    expect(listRuns).toHaveBeenCalledTimes(1);
+  });
+
+  it('merges the revalidation result into the cached rows', async () => {
+    const cache = createFleetCache();
+    const cached = [
+      run({ runId: 'a', status: 'RUNNING', workflowName: 'wf-a', updatedAt: '2024-06-10T00:00:00.000Z' }),
+      run({ runId: 'b', status: 'RUNNING', workflowName: 'wf-b', updatedAt: '2024-06-09T00:00:00.000Z' }),
+    ];
+    const first = vi.fn().mockResolvedValue(connection(cached));
+    const { unmount } = render(
+      <FleetView listRuns={first} subscribe={noopSubscribe} now={NOW} cache={cache} />,
+    );
+    await waitFor(() => expect(workflowColumnText()).toEqual(['wf-a', 'wf-b']));
+    unmount();
+
+    const { listRuns, pages } = deferredListRuns();
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} cache={cache} />);
+    expect(workflowColumnText()).toEqual(['wf-a', 'wf-b']);
+
+    await settle(pages[0], {
+      items: [
+        run({ runId: 'c', status: 'RUNNING', workflowName: 'wf-c', updatedAt: '2024-06-14T00:00:00.000Z' }),
+        run({ runId: 'a', status: 'COMPLETED', workflowName: 'wf-a', updatedAt: '2024-06-13T00:00:00.000Z' }),
+        cached[1],
+      ],
+      nextToken: null,
+    });
+
+    // Fleet ordering: not-started RUNNING runs (c, b) lead; the now-terminal
+    // 'a' drops to the second tier.
+    expect(workflowColumnText()).toEqual(['wf-c', 'wf-b', 'wf-a']);
+    expect(screen.getAllByLabelText(/status COMPLETED/i)).toHaveLength(1);
+    expect(screen.getByTestId('fleet-load-progress')).toHaveTextContent('');
+    expect(screen.getByTestId('fleet-last-refreshed')).toBeInTheDocument();
+    expect(listRuns).toHaveBeenCalledTimes(1);
+  });
+
+  it('cold mount with an empty cache behaves as before (blocking spinner, one load)', async () => {
+    const cache = createFleetCache();
+    const listRuns = vi.fn().mockResolvedValue(connection(runPage('r', 2)));
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} cache={cache} />);
+    expect(screen.getByText(/loading runs/i)).toBeInTheDocument();
+    await waitFor(() => expect(workflowColumnText()).toEqual(['wf-r-0', 'wf-r-1']));
+    expect(listRuns).toHaveBeenCalledTimes(1);
+    expect(cache.size).toBe(1);
+  });
+
+  it('switching to a cached window shows its rows at once; an uncached window never shows other rows', async () => {
+    const cache = createFleetCache();
+    const { listRuns, pages } = deferredListRuns();
+    const { container } = render(
+      <FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} cache={cache} />,
+    );
+    await settle(pages[0], connection(runPage('d', 2)));
+
+    // Uncached 7-day window: blocking spinner, the default window's rows gone.
+    applyRelative(container, 'prev-7');
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(/loading runs/i)).toBeInTheDocument();
+    expect(screen.queryByText('wf-d-0')).not.toBeInTheDocument();
+    await settle(pages[1], connection(runPage('s', 2, 12)));
+    expect(workflowColumnText()).toEqual(['wf-s-0', 'wf-s-1']);
+
+    applyRelative(container, 'prev-30');
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(3));
+    expect(screen.queryByText('wf-s-0')).not.toBeInTheDocument();
+    await settle(pages[2], connection(runPage('t', 1, 1)));
+    expect(listRuns.mock.calls[2]).toEqual([
+      expect.objectContaining(resolveRange(THIRTY_DAYS, NOW)),
+    ]);
+
+    // Back to the cached 7-day window: rows at once, one revalidation.
+    applyRelative(container, 'prev-7');
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(4));
+    expect(screen.queryByText(/loading runs/i)).not.toBeInTheDocument();
+    expect(workflowColumnText()).toEqual(['wf-s-0', 'wf-s-1']);
+    expect(screen.getByTestId('fleet-load-progress')).toHaveTextContent('Updating…');
+    await settle(pages[3], connection(runPage('s', 2, 12)));
+    expect(listRuns).toHaveBeenCalledTimes(4);
+    expect(workflowColumnText()).toEqual(['wf-s-0', 'wf-s-1']);
+  });
+
+  it('a cleared cache makes the next mount cold', async () => {
+    const cache = createFleetCache();
+    const first = vi.fn().mockResolvedValue(connection(runPage('r', 1)));
+    const { unmount } = render(
+      <FleetView listRuns={first} subscribe={noopSubscribe} now={NOW} cache={cache} />,
+    );
+    await waitFor(() => expect(workflowColumnText()).toEqual(['wf-r-0']));
+    unmount();
+    cache.clear();
+
+    const listRuns = vi.fn(() => new Promise<RunConnection>(() => {}));
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} cache={cache} />);
+    expect(screen.getByText(/loading runs/i)).toBeInTheDocument();
+    expect(screen.queryByText('wf-r-0')).not.toBeInTheDocument();
+    expect(listRuns).toHaveBeenCalledTimes(1);
   });
 });

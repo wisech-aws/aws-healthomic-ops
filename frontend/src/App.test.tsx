@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { Node } from 'reactflow';
 import App, { Dashboard } from './App';
+import { listRuns } from './api/client';
+import { createFleetCache } from './fleet/fleetCache';
 
 // Capture the props Cloudscape's AppLayout receives so the shell's split-panel
 // slot can be asserted directly (does AppLayout get a `splitPanel` node and
@@ -466,5 +468,65 @@ describe('Dashboard deep links (#3)', () => {
     fireEvent.click(reportsItem!);
 
     expect(await screen.findByTestId('reports-view-stub')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fleet cache (stale-while-revalidate across navigation).
+// ---------------------------------------------------------------------------
+describe('Dashboard fleet cache', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    appLayoutProps.length = 0;
+    window.location.hash = '';
+  });
+
+  it('returning from a run shows the cached fleet at once and revalidates once', async () => {
+    render(<Dashboard />);
+    const link = await screen.findByRole('link', { name: /view run my-run/i });
+    expect(listRuns).toHaveBeenCalledTimes(1);
+    fireEvent.click(link);
+    await screen.findByTestId('layer-indicator');
+
+    fireEvent.click(screen.getByRole('button', { name: /back to fleet/i }));
+    // Synchronously after the click: cached rows, no blocking spinner.
+    expect(screen.getAllByText('my-workflow').length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText(/loading runs/i)).not.toBeInTheDocument();
+    // The mount load plus exactly one background revalidation.
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByTestId('fleet-load-progress')).toHaveTextContent(''),
+    );
+    expect(listRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it('sign-out clears the fleet cache', async () => {
+    const cache = createFleetCache();
+    const onSignOut = vi.fn();
+    render(<Dashboard username="u" onSignOut={onSignOut} fleetCache={cache} />);
+    await screen.findAllByText('my-workflow');
+    expect(cache.size).toBe(1);
+    expect(cache.getUi()).not.toBeNull();
+
+    // jsdom collapses the TopNavigation utilities into an overflow menu: open
+    // it, open the user item, then click "Sign out".
+    const overflow = screen
+      .getAllByRole('button')
+      .find((b) => b.getAttribute('aria-haspopup') === 'true');
+    expect(overflow).toBeDefined();
+    fireEvent.pointerDown(overflow!);
+    fireEvent.click(overflow!);
+    const findItem = (text: string) =>
+      Array.from(
+        document.querySelectorAll('[class*="overflow-menu-list-item-text"]'),
+      ).find((el) => el.textContent === text) as HTMLElement | undefined;
+    await waitFor(() => expect(findItem('u')).toBeTruthy());
+    fireEvent.click(findItem('u')!);
+    await waitFor(() => expect(findItem('Sign out')).toBeTruthy());
+    fireEvent.click(findItem('Sign out')!);
+
+    expect(onSignOut).toHaveBeenCalledTimes(1);
+    expect(cache.size).toBe(0);
+    expect(cache.getUi()).toBeNull();
   });
 });

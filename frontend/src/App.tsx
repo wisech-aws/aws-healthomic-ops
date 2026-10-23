@@ -23,6 +23,7 @@ import Header from '@cloudscape-design/components/header';
 import TopNavigation from '@cloudscape-design/components/top-navigation';
 import { Authenticator } from '@aws-amplify/ui-react';
 import FleetView from './fleet/FleetView';
+import { createFleetCache, type FleetCache } from './fleet/fleetCache';
 import RunDetailView from './rundetail/RunDetailView';
 import ParamsDiffView from './params/ParamsDiffView';
 import ReportsView from './reports/ReportsView';
@@ -59,6 +60,12 @@ export interface DashboardProps {
   splitPanelOpen?: boolean;
   /** Called when the user opens/closes the split panel via `AppLayout`. */
   onSplitPanelToggle?: (open: boolean) => void;
+  /**
+   * In-memory fleet cache (rows + UI state) kept across fleet unmount/remount
+   * so returning from a run/compare/reports view is instant. Defaults to one
+   * owned by this dashboard; injectable for tests. Cleared on sign-out.
+   */
+  fleetCache?: FleetCache;
 }
 
 export function Dashboard({
@@ -67,7 +74,13 @@ export function Dashboard({
   splitPanel,
   splitPanelOpen,
   onSplitPanelToggle,
+  fleetCache: fleetCacheProp,
 }: DashboardProps = {}): React.JSX.Element {
+  // Dashboard-scoped (not module-level) so it never outlives the signed-in
+  // session; dropped with the Dashboard and explicitly cleared on sign-out.
+  const [ownFleetCache] = useState(createFleetCache);
+  const fleetCache = fleetCacheProp ?? ownFleetCache;
+
   // QoL #3 — deep-linkable run/task URLs via the native History API (no router).
   // `state` is the view parsed from the location hash; `navigate` updates the
   // hash (push/replace) without reloading. View state below stays plain React
@@ -264,6 +277,8 @@ export function Dashboard({
                   items: [{ id: 'signout', text: 'Sign out' }],
                   onItemClick: ({ detail }: { detail: { id: string } }) => {
                     if (detail.id === 'signout') {
+                      // Never keep one user's fleet data past sign-out.
+                      fleetCache.clear();
                       onSignOut();
                     }
                   },
@@ -313,6 +328,7 @@ export function Dashboard({
               }
             >
               <FleetView
+                cache={fleetCache}
                 onSelectRun={openRun}
                 onCompareRuns={(left, right) => setCompareRunIds([left, right])}
               />
