@@ -137,34 +137,28 @@ function runSubscription<T>(
 
 // --- GraphQL documents -----------------------------------------------------
 
-const LIST_RUNS = /* GraphQL */ `
+/**
+ * Fleet list document. The fleet view is the only `listRuns` consumer, so this
+ * selects ONLY the fields it reads (columns, ordering, staleness, duration,
+ * filters, search, grouping). Heavy detail fields (`parameters`, `tags`,
+ * `outputUri`, run configuration, status detail) are fetched per run via
+ * `GET_RUN` by the detail and compare views. Exported for the selection-set test.
+ */
+export const LIST_RUNS = /* GraphQL */ `
   query ListRuns($limit: Int, $nextToken: String, $start: String, $end: String) {
     listRuns(limit: $limit, nextToken: $nextToken, start: $start, end: $end) {
       items {
         runId
         status
         name
-        createdAt
         startedAt
         stoppedAt
         updatedAt
         workflowId
         workflowName
         workflowVersionName
-        outputUri
-        parameters
         engineVersion
-        storageType
-        storageCapacity
-        cacheId
-        cacheBehavior
-        networkingMode
-        configurationName
-        logLevel
         batchId
-        tags
-        statusMessage
-        failureReason
       }
       nextToken
     }
