@@ -1,7 +1,11 @@
 /**
  * Fleet view (Cloudscape).
  *
- * On mount, queries `listRuns` exactly once (Req 8.1, 10.4) and renders each
+ * On mount, issues exactly one load (Req 8.1, 10.4 — amended for the cache:
+ * a cold mount runs the normal load; a warm mount, whose `cache` holds rows for
+ * the restored window, renders those rows and the restored filters/search/
+ * grouping/sort/page/window synchronously and runs exactly one background
+ * revalidation that merges in) and renders each
  * run's status, workflow name, start time, and duration in a Cloudscape Table,
  * ordered by descending `updatedAt` with ties broken by descending start time
  * (Req 8.4, 8.7). Handles the loading (Req 10.1), error-with-retry
@@ -67,6 +71,10 @@ import type { Subscription, SubscriptionHandlers } from '../api/client';
 import type { Run, RunConnection, RunStatus } from '../api/types';
 import { createReconnectingSubscription } from '../api/subscriptionManager';
 import { mergeRunPage, mergeRunUpdate } from './ordering';
+// FLEET_LOAD_CAP (the hybrid paging cap) lives with the cache, which it also
+// bounds.
+import { FLEET_LOAD_CAP, windowKey } from './fleetCache';
+import type { FleetCache, FleetGroupMode, WindowKey } from './fleetCache';
 import {
   applyFleetControls,
   groupByEngineVersion,
@@ -94,12 +102,17 @@ import CopyId from '../components/CopyId';
  */
 type LoadPhase = 'loading' | 'error' | 'ready';
 
-/** What triggered a fleet load: mount, Refresh/Retry, or a reconnect re-sync. */
-type FleetLoadKind = 'cold' | 'refresh' | 'reconnect';
+/**
+ * What triggered a fleet load: a load with nothing cached (`cold`), a
+ * background revalidation of cached rows (`warm`), Refresh/Retry, or a
+ * reconnect re-sync.
+ */
+type FleetLoadKind = 'cold' | 'warm' | 'refresh' | 'reconnect';
 
 /**
- * Options for one fleet load. `reset` clears the current rows first (a window
- * change: the previous window's rows must not mix into the new one).
+ * Options for one fleet load. `reset` replaces the current rows first with the
+ * new window's cached rows, or none (a window change: the previous window's
+ * rows must not mix into the new one).
  */
 interface LoadOptions {
   readonly kind: FleetLoadKind;
@@ -209,6 +222,13 @@ export interface FleetViewProps {
   readonly now?: number;
   /** Staleness threshold in milliseconds (Req 9.2). Defaults to one hour. */
   readonly staleThresholdMs?: number;
+  /**
+   * In-memory cache that keeps the fleet's rows and UI state across
+   * unmount/remount (stale-while-revalidate). When it holds rows for the
+   * restored window, the view shows them on its first render and revalidates
+   * in the background. Omitted => every mount is a cold load (no caching).
+   */
+  readonly cache?: FleetCache;
 }
 
 /** A Cloudscape status indicator for a run's `Run_Status` (Req 8.7). */
@@ -236,16 +256,6 @@ function StatusCell({
     </SpaceBetween>
   );
 }
-/**
- * Maximum number of runs the fleet loads into memory (hybrid paging cap). The
- * list is fetched by following the `nextToken` cursor page-by-page until this
- * cap is reached, then paged/filtered/sorted/grouped client-side. This bounds
- * memory and network for a large fleet (e.g. 50k+ runs) while keeping the rich
- * client-side controls (status/workflow filter, sort, group, search) working
- * over the loaded set. When the cap is hit, the UI surfaces a "showing first N"
- * notice so the list is never silently presented as complete.
- */
-const FLEET_LOAD_CAP = 1000;
 
 /** Per-request page size used while paging the fleet with `nextToken`. */
 const FLEET_FETCH_PAGE_SIZE = 100;
@@ -295,13 +305,32 @@ export default function FleetView({
   onCompareRuns,
   now,
   staleThresholdMs,
+  cache,
 }: FleetViewProps = {}): React.JSX.Element {
-  const [phase, setPhase] = useState<LoadPhase>('loading');
-  const [runs, setRuns] = useState<Run[]>([]);
+  // Stale-while-revalidate: read the cached UI state and the cached rows for
+  // the restored window ONCE, synchronously, so the very first render already
+  // shows them (no blocking spinner) and the mount load becomes a background
+  // revalidation. Without a cache (or a cached entry) this is a cold mount.
+  const [restored] = useState(() => {
+    const ui = cache?.getUi() ?? null;
+    const key = windowKey(ui?.range ?? null);
+    return { ui, key, entry: cache?.get(key) };
+  });
+  const restoredUi = restored.ui;
+  const restoredEntry = restored.entry;
+
+  const [phase, setPhase] = useState<LoadPhase>(
+    restoredEntry ? 'ready' : 'loading',
+  );
+  const [runs, setRuns] = useState<Run[]>(() =>
+    restoredEntry ? [...restoredEntry.runs] : [],
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   // True when the load hit the FLEET_LOAD_CAP and more runs exist server-side
   // than were loaded, so the UI can honestly say the list is capped.
-  const [loadCapped, setLoadCapped] = useState(false);
+  const [loadCapped, setLoadCapped] = useState(
+    restoredEntry?.loadCapped ?? false,
+  );
   // Background progress of an in-flight load while rows are visible (drives
   // the aria-live "Loading more runs…"/"Updating…" indicator); null when idle.
   const [progress, setProgress] = useState<LoadProgress | null>(null);
@@ -309,26 +338,34 @@ export default function FleetView({
   // already on screen (a later page, or a Refresh/reconnect with rows shown).
   const [partialError, setPartialError] = useState<string | null>(null);
   // Epoch ms of the last load that COMPLETED (drives "Last refreshed").
-  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
+  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(
+    restoredEntry?.lastLoadedAt ?? null,
+  );
   // Multi-status filter: an empty set means "all statuses" (Req 5.1).
   const [statusFilter, setStatusFilter] = useState<ReadonlySet<RunStatus>>(
-    () => new Set(),
+    () => new Set(restoredUi?.statuses ?? []),
   );
   // Workflow filter: null means "all workflows" (Req 5.2).
-  const [workflowFilter, setWorkflowFilter] = useState<string | null>(null);
-  const [sortKey, setSortKey] = useState<FleetSortKey>('recency');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+  const [workflowFilter, setWorkflowFilter] = useState<string | null>(
+    restoredUi?.workflowId ?? null,
+  );
+  const [sortKey, setSortKey] = useState<FleetSortKey>(
+    restoredUi?.sortKey ?? 'recency',
+  );
+  const [sortDirection, setSortDirection] = useState<SortDirection>(
+    restoredUi?.sortDirection ?? 'desc',
+  );
   // Free-form text search over the loaded runs (name/id/workflow/status/etc.).
   // Empty => no search filtering.
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(restoredUi?.searchQuery ?? '');
   // Client-side pagination of the flat (ungrouped) run list.
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(restoredUi?.currentPage ?? 1);
   const PAGE_SIZE = 25;
   // Grouping mode (Req 7.3, 7.4). 'none' => flat ordered table; 'engine' =>
   // one sub-table per engine version; 'batch' => one sub-table per batch id.
   // A single mode keeps the two group-by toggles mutually exclusive.
-  const [groupMode, setGroupMode] = useState<'none' | 'engine' | 'batch'>(
-    'none',
+  const [groupMode, setGroupMode] = useState<FleetGroupMode>(
+    restoredUi?.groupMode ?? 'none',
   );
   // Run ids whose update is still being applied — drives the per-run loading
   // indicator (Req 8.11). A transient state that a caller can set and clear.
@@ -344,7 +381,9 @@ export default function FleetView({
   // its "Last 30 days" placeholder until the operator applies a specific range.
   // A production account with thousands of runs/month narrows the server result
   // by window rather than relying on the client-side FLEET_LOAD_CAP.
-  const [range, setRange] = useState<DateRangePickerProps.Value | null>(null);
+  const [range, setRange] = useState<DateRangePickerProps.Value | null>(
+    restoredUi?.range ?? null,
+  );
 
   // Injected clock makes the default window and tests deterministic (Req 1.5).
   const nowMs = useMemo(() => now ?? Date.now(), [now]);
@@ -360,8 +399,9 @@ export default function FleetView({
   // this is the authoritative, clock-free signal (BUG 2 upper-bound gate).
   const windowEndsAtNow = range == null || range.type === 'relative';
 
-  // Guards the "query exactly once per mount" contract (Req 10.4) against React
-  // 18/19 StrictMode double-invocation of effects in development.
+  // Guards the "one load per mount" contract (Req 10.4: a cold load, or one
+  // background revalidation of cached rows) against React 18/19 StrictMode
+  // double-invocation of effects in development.
   const hasQueried = useRef(false);
 
   // Latest-callback refs so the single subscription effect (below) can call the
@@ -394,30 +434,38 @@ export default function FleetView({
   // Run ids applied by a live update during the current load, so the
   // completion prune (rows the server did not return) never drops them.
   const liveTouchedRef = useRef<Set<string>>(new Set());
-  // Mirror of `runs` so `load` can see whether rows are on screen without
-  // depending on (and being re-created for) every `runs` change.
-  const runsRef = useRef<Run[]>(runs);
+  // The window key the CURRENT `runs` belong to (null => nothing loaded for
+  // any window yet). Set in the same tick as the `setRuns` that makes it true
+  // (a restored cache entry, a window reset, or a load's first page), so the
+  // cache-write effect never files one window's rows under another's key.
+  const dataKeyRef = useRef<WindowKey | null>(
+    restoredEntry ? restored.key : null,
+  );
 
   const load = useCallback(
     async ({ reset = false }: LoadOptions) => {
       const gen = ++loadGenRef.current;
       const isCurrent = () => gen === loadGenRef.current && mountedRef.current;
+      const key = windowKey(range);
       liveTouchedRef.current = new Set();
       setErrorMessage(null);
       setPartialError(null);
       if (reset) {
         // A different window: the previous window's rows must not mix into
         // this one while it loads (merge semantics would otherwise keep them
-        // until the completion prune).
-        runsRef.current = [];
-        setRuns([]);
-        setLoadCapped(false);
-        setLastLoadedAt(null);
+        // until the completion prune). Show the new window's cached rows, if
+        // any, else nothing.
+        const entry = cache?.get(key);
+        dataKeyRef.current = entry ? key : null;
+        setRuns(entry ? [...entry.runs] : []);
+        setLoadCapped(entry?.loadCapped ?? false);
+        setLastLoadedAt(entry?.lastLoadedAt ?? null);
       }
-      // A load that starts with rows on screen keeps them visible and shows a
+      // A load that starts with this window's rows on screen (cached rows, or
+      // a Refresh/reconnect of a loaded list) keeps them visible and shows a
       // non-blocking "Updating…" indicator; otherwise it shows the blocking
       // table spinner until its first page lands.
-      const rowsShownAtStart = runsRef.current.length > 0;
+      const rowsShownAtStart = dataKeyRef.current === key;
       if (rowsShownAtStart) {
         setPhase('ready');
         setProgress({ loaded: 0, mode: 'updating' });
@@ -471,6 +519,7 @@ export default function FleetView({
           const items = connection.items;
           setRuns((current) => mergeRunPage(current, items));
           if (pages === 1) {
+            dataKeyRef.current = key;
             setPhase('ready');
           }
           nextToken = connection.nextToken ?? undefined;
@@ -518,18 +567,21 @@ export default function FleetView({
       // `load` is re-created when the window changes so a new window
       // re-queries the server (see the window-change effect below).
     },
-    [listRuns, range, now, windowEndsAtNow, windowRange],
+    [listRuns, range, now, windowEndsAtNow, windowRange, cache],
   );
 
-  // Initial per-mount query (Req 10.4), guarded against StrictMode's double
-  // invoke. Subsequent window changes are handled by the window-change effect
-  // below (which must NOT be blocked by this one-shot guard).
+  // Initial per-mount query (Req 10.4, amended): exactly ONE load per mount,
+  // guarded against StrictMode's double invoke. A cold mount (no cached rows
+  // for the window) issues the normal blocking load; a warm mount has already
+  // rendered the cached rows and issues exactly one background revalidation.
+  // Subsequent window changes are handled by the window-change effect below
+  // (which must NOT be blocked by this one-shot guard).
   useEffect(() => {
     if (hasQueried.current) {
       return;
     }
     hasQueried.current = true;
-    void load({ kind: 'cold' });
+    void load({ kind: restoredEntry ? 'warm' : 'cold' });
     // Intentionally runs once on mount; `load` is stable except for window
     // changes, which the dedicated effect below drives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -546,7 +598,10 @@ export default function FleetView({
       return;
     }
     setCurrentPage(1);
-    void load({ kind: 'cold', reset: true });
+    // A window with cached rows shows them at once and revalidates (warm);
+    // an uncached window shows the blocking spinner (cold).
+    const cached = cache?.get(windowKey(range)) !== undefined;
+    void load({ kind: cached ? 'warm' : 'cold', reset: true });
     // `load` already closes over windowRange.start/end; keying on them makes the
     // reload fire exactly when the window changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -623,8 +678,42 @@ export default function FleetView({
   useEffect(() => {
     applyRunUpdateRef.current = applyRunUpdate;
     loadRef.current = load;
-    runsRef.current = runs;
   });
+
+  // Write-through to the cache (stale-while-revalidate). These effects only
+  // call into the cache — they never set React state, so they add no renders.
+  // UI state: one record per cache, restored by the next mount.
+  useEffect(() => {
+    cache?.setUi({
+      range,
+      statuses: Array.from(statusFilter),
+      workflowId: workflowFilter,
+      sortKey,
+      sortDirection,
+      searchQuery,
+      groupMode,
+      currentPage,
+    });
+  }, [
+    cache,
+    range,
+    statusFilter,
+    workflowFilter,
+    sortKey,
+    sortDirection,
+    searchQuery,
+    groupMode,
+    currentPage,
+  ]);
+  // Rows: filed under the window they belong to (`dataKeyRef`), including
+  // partial loads and live updates, so a remount shows the latest rows.
+  useEffect(() => {
+    const key = dataKeyRef.current;
+    if (cache == null || key === null) {
+      return;
+    }
+    cache.set(key, { runs, loadCapped, lastLoadedAt });
+  }, [cache, runs, loadCapped, lastLoadedAt]);
 
   // Open the live, reconnecting subscription for the lifetime of the mount
   // (Req 8.5, 8.6, 10.5, 10.6). The subscribe factory is injectable for tests.
@@ -645,7 +734,7 @@ export default function FleetView({
   // `applyRunUpdate`/`load`, so it still sees the current window/`listRuns`.
   useEffect(() => {
     // The manager fires `onReconnect` on its very first connection too; the
-    // initial `load` effect has already fetched once (Req 10.4), so skip that
+    // initial `load` effect has already loaded once (Req 10.4), so skip that
     // first callback and only refetch on subsequent RECONNECTS — matching the
     // run-detail view. On a genuine reconnect we re-sync the full list so
     // updates missed during the disconnect are not lost (the stale-until-
