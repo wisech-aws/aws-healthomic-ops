@@ -4,6 +4,7 @@ import {
   orderRuns,
   compareRuns,
   mergeRunUpdate,
+  mergeRunPage,
   filterRunsByStatus,
 } from './ordering';
 import type { Run, RunStatus } from '../api/types';
@@ -273,6 +274,71 @@ describe('mergeRunUpdate', () => {
         const twice = mergeRunUpdate(once, update);
         expect(twice.map((r) => r.runId)).toEqual(once.map((r) => r.runId));
         expect(twice).toEqual(once);
+      }),
+    );
+  });
+});
+
+describe('mergeRunPage', () => {
+  it('upserts overlapping pages without duplicate runIds', () => {
+    const page1 = [run({ runId: 'a' }), run({ runId: 'b' })];
+    const page2 = [run({ runId: 'b' }), run({ runId: 'c' })];
+    const merged = mergeRunPage(mergeRunPage([], page1), page2);
+    expect(merged.map((r) => r.runId).sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('keeps the existing row when it is newer than the incoming one', () => {
+    const live = run({ runId: 'a', status: 'COMPLETED', updatedAt: '2024-01-02T00:00:00.000Z' });
+    const stale = run({ runId: 'a', status: 'RUNNING', updatedAt: '2024-01-01T00:00:00.000Z' });
+    expect(mergeRunPage([live], [stale])).toEqual([live]);
+  });
+
+  it('replaces the existing row when the incoming one is newer', () => {
+    const old = run({ runId: 'a', status: 'RUNNING', updatedAt: '2024-01-01T00:00:00.000Z' });
+    const fresh = run({ runId: 'a', status: 'COMPLETED', updatedAt: '2024-01-02T00:00:00.000Z' });
+    expect(mergeRunPage([old], [fresh])).toEqual([fresh]);
+  });
+
+  it('lets the incoming row win on an updatedAt tie', () => {
+    const existing = run({ runId: 'a', name: 'before' });
+    const incoming = run({ runId: 'a', name: 'after' });
+    expect(mergeRunPage([existing], [incoming])).toEqual([incoming]);
+  });
+
+  it('does not mutate its inputs and is idempotent', () => {
+    const current = [run({ runId: 'a', updatedAt: '2024-01-01T00:00:00.000Z' })];
+    const page = [run({ runId: 'b', updatedAt: '2024-01-02T00:00:00.000Z' })];
+    const currentCopy = [...current];
+    const pageCopy = [...page];
+    const once = mergeRunPage(current, page);
+    expect(current).toEqual(currentCopy);
+    expect(page).toEqual(pageCopy);
+    expect(mergeRunPage(once, page)).toEqual(once);
+  });
+
+  // Property: the result holds exactly the union of runIds, each once, ordered
+  // per compareRuns.
+  it('returns the unique union of runIds in fleet order', () => {
+    const isoArb = fc
+      .integer({ min: 0, max: 10 })
+      .map((day) => `2024-01-${String(day + 1).padStart(2, '0')}T00:00:00.000Z`);
+    const runArb: fc.Arbitrary<Run> = fc.record({
+      runId: fc.constantFrom('a', 'b', 'c', 'd', 'e', 'f'),
+      updatedAt: isoArb,
+      startedAt: fc.option(isoArb, { nil: undefined }),
+      status: fc.constantFrom<RunStatus>(...RUN_STATUSES),
+    });
+    fc.assert(
+      fc.property(fc.array(runArb), fc.array(runArb), (current, incoming) => {
+        const merged = mergeRunPage(current, incoming);
+        const ids = merged.map((r) => r.runId);
+        expect(new Set(ids).size).toBe(ids.length);
+        expect(new Set(ids)).toEqual(
+          new Set([...current, ...incoming].map((r) => r.runId)),
+        );
+        for (let i = 0; i + 1 < merged.length; i += 1) {
+          expect(compareRuns(merged[i], merged[i + 1])).toBeLessThanOrEqual(0);
+        }
       }),
     );
   });
