@@ -20,6 +20,10 @@
  * next await without touching state. A failure after rows are on screen keeps
  * them and shows a non-blocking, retryable warning instead of the full error.
  *
+ * Load timing: each load is timed with the User Timing API via
+ * `startFleetLoadTimer` (loadTiming.ts) — first rows are marked after the
+ * commit that rendered them — and logs one `[fleet] …` console.info line.
+ *
  * Live updates: a reconnecting `onRunUpdated` subscription feeds every incoming
  * run into {@link mergeRunUpdate}, so a displayed run is updated in place
  * (Req 8.5) and an undisplayed run is inserted in its ordered position
@@ -75,6 +79,11 @@ import { mergeRunPage, mergeRunUpdate } from './ordering';
 // bounds.
 import { FLEET_LOAD_CAP, windowKey } from './fleetCache';
 import type { FleetCache, FleetGroupMode, WindowKey } from './fleetCache';
+// What triggered a fleet load: a load with nothing cached (`cold`), a
+// background revalidation of cached rows (`warm`), Refresh/Retry, or a
+// reconnect re-sync. Also the label of its timing record.
+import { startFleetLoadTimer } from './loadTiming';
+import type { FleetLoadKind, FleetLoadTimer } from './loadTiming';
 import {
   applyFleetControls,
   groupByEngineVersion,
@@ -102,12 +111,6 @@ import CopyId from '../components/CopyId';
  */
 type LoadPhase = 'loading' | 'error' | 'ready';
 
-/**
- * What triggered a fleet load: a load with nothing cached (`cold`), a
- * background revalidation of cached rows (`warm`), Refresh/Retry, or a
- * reconnect re-sync.
- */
-type FleetLoadKind = 'cold' | 'warm' | 'refresh' | 'reconnect';
 
 /**
  * Options for one fleet load. `reset` replaces the current rows first with the
@@ -441,9 +444,37 @@ export default function FleetView({
   const dataKeyRef = useRef<WindowKey | null>(
     restoredEntry ? restored.key : null,
   );
+  // Load timing (User Timing API, see loadTiming.ts). Refs only — the
+  // instrumentation never sets state, so it adds no renders. The first-rows
+  // mark and the completion line are deferred to the post-commit effect below
+  // so they reflect rows actually rendered, not responses received.
+  const timerRef = useRef<FleetLoadTimer | null>(null);
+  const firstRowsPendingRef = useRef<number | null>(null);
+  const completePendingRef = useRef<(() => void) | null>(null);
+  // Page/run counts of the latest load, for its "superseded" record.
+  const previousStatsRef = useRef({ pages: 0, runs: 0 });
+  const flushLoadTiming = useCallback(() => {
+    if (firstRowsPendingRef.current !== null) {
+      if (firstRowsPendingRef.current === loadGenRef.current) {
+        timerRef.current?.markFirstRows();
+      }
+      firstRowsPendingRef.current = null;
+    }
+    const complete = completePendingRef.current;
+    completePendingRef.current = null;
+    complete?.();
+  }, []);
+  // After every commit (no deps by design; it only reads refs).
+  useEffect(() => {
+    flushLoadTiming();
+  });
 
   const load = useCallback(
-    async ({ reset = false }: LoadOptions) => {
+    async ({ kind, reset = false }: LoadOptions) => {
+      // Settle any timing still waiting on a commit, then close the previous
+      // load's timer as superseded (a no-op if it already finished).
+      flushLoadTiming();
+      const previous = timerRef.current;
       const gen = ++loadGenRef.current;
       const isCurrent = () => gen === loadGenRef.current && mountedRef.current;
       const key = windowKey(range);
@@ -466,6 +497,15 @@ export default function FleetView({
       // non-blocking "Updating…" indicator; otherwise it shows the blocking
       // table spinner until its first page lands.
       const rowsShownAtStart = dataKeyRef.current === key;
+      const timer = startFleetLoadTimer(kind, { rowsShownAtStart });
+      timerRef.current = timer;
+      previous?.finish({
+        outcome: 'superseded',
+        pages: previousStatsRef.current.pages,
+        runs: previousStatsRef.current.runs,
+      });
+      const stats = { pages: 0, runs: 0 };
+      previousStatsRef.current = stats;
       if (rowsShownAtStart) {
         setPhase('ready');
         setProgress({ loaded: 0, mode: 'updating' });
@@ -487,6 +527,7 @@ export default function FleetView({
       // and drives the cap and the completion prune).
       const seen = new Set<string>();
       let pages = 0;
+      let firstRowsQueued = false;
       try {
         // Hybrid paging: fetch page-by-page following `nextToken` until the
         // FLEET_LOAD_CAP is reached (or the server has no more pages), then
@@ -508,11 +549,19 @@ export default function FleetView({
             end: bounds.end,
           });
           if (!isCurrent()) {
+            timer.finish({ outcome: 'superseded', pages, runs: seen.size });
             return;
           }
           pages += 1;
           for (const item of connection.items) {
             seen.add(item.runId);
+          }
+          stats.pages = pages;
+          stats.runs = seen.size;
+          if (!rowsShownAtStart && !firstRowsQueued && seen.size > 0) {
+            // Marked by the post-commit effect once these rows render.
+            firstRowsQueued = true;
+            firstRowsPendingRef.current = gen;
           }
           // Functional merge deduped by runId (newer updatedAt wins), so a
           // live update that landed mid-load is never lost to this page.
@@ -546,10 +595,20 @@ export default function FleetView({
         setLoadCapped(capped);
         setProgress(null);
         setLastLoadedAt(Date.now());
+        // Logged after the completion commit renders (post-commit effect).
+        completePendingRef.current = () =>
+          timer.finish({ outcome: 'complete', pages, runs: seen.size, capped });
       } catch (error) {
         if (!isCurrent()) {
+          timer.finish({ outcome: 'superseded', pages, runs: seen.size });
           return;
         }
+        timer.finish({
+          outcome: 'error',
+          pages,
+          runs: seen.size,
+          failedPage: pages + 1,
+        });
         const message =
           error instanceof Error ? error.message : 'Runs could not be loaded.';
         setProgress(null);
@@ -567,7 +626,7 @@ export default function FleetView({
       // `load` is re-created when the window changes so a new window
       // re-queries the server (see the window-change effect below).
     },
-    [listRuns, range, now, windowEndsAtNow, windowRange, cache],
+    [listRuns, range, now, windowEndsAtNow, windowRange, cache, flushLoadTiming],
   );
 
   // Initial per-mount query (Req 10.4, amended): exactly ONE load per mount,
