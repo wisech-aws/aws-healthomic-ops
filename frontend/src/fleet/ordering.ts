@@ -182,6 +182,40 @@ export function mergeRunUpdate(
 }
 
 /**
+ * Merges a page of runs (e.g. one `listRuns` page of a progressive fleet load)
+ * into the current fleet list and returns a newly ordered list.
+ *
+ * Every incoming run is upserted by `runId`, so overlapping pages, a re-fetch
+ * of already-shown rows, or a live update for the same run never produce a
+ * duplicate row. On a `runId` conflict the row with the greater `updatedAt`
+ * wins (ISO-8601 UTC strings compare lexicographically in chronological
+ * order); on a tie the incoming row wins. "Newer wins" is what lets a live
+ * subscription update that arrived while a load was in flight survive a later
+ * page carrying an older snapshot of the same run.
+ *
+ * The result is ordered via {@link orderRuns}. Neither input is mutated, and
+ * the operation is idempotent (merging the same page twice yields the same
+ * list).
+ */
+export function mergeRunPage(
+  current: readonly Run[],
+  incoming: readonly Run[],
+): Run[] {
+  const byId = new Map<string, Run>();
+  for (const existing of current) {
+    byId.set(existing.runId, existing);
+  }
+  for (const next of incoming) {
+    const existing = byId.get(next.runId);
+    if (existing !== undefined && existing.updatedAt > next.updatedAt) {
+      continue;
+    }
+    byId.set(next.runId, next);
+  }
+  return orderRuns(Array.from(byId.values()));
+}
+
+/**
  * Returns only the runs whose `status` equals `status` (Req 8.8; design
  * Property 23). Passing `null` selects runs whose status is absent. The input
  * array is not mutated and relative order is preserved, so callers that pass an

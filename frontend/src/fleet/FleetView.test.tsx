@@ -1339,3 +1339,233 @@ describe('FleetView — workflow version sub-line (display only)', () => {
     expect(within(noVerTable).getAllByRole('columnheader').length).toBe(headerCount);
   });
 });
+
+// ---------------------------------------------------------------------------
+// A — progressive render: first page shows immediately, later pages merge in.
+// ---------------------------------------------------------------------------
+
+/** A promise whose settlement the test controls. */
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
+ * A `listRuns` stub where every call returns a fresh deferred page; the test
+ * resolves `pages[i]` to settle the i-th call.
+ */
+function deferredListRuns() {
+  const pages: Deferred<RunConnection>[] = [];
+  const listRuns = vi.fn(() => {
+    const d = deferred<RunConnection>();
+    pages.push(d);
+    return d.promise;
+  });
+  return { listRuns, pages };
+}
+
+/** Settles a deferred page inside act so the resulting commits flush. */
+async function settle(
+  d: Deferred<RunConnection>,
+  value: RunConnection | Error,
+): Promise<void> {
+  await act(async () => {
+    if (value instanceof Error) {
+      d.reject(value);
+    } else {
+      d.resolve(value);
+    }
+  });
+}
+
+/** `count` runs `${prefix}-0..` with descending June-2024 updatedAt values. */
+function runPage(prefix: string, count: number, day = 10): Run[] {
+  return Array.from({ length: count }, (_, i) =>
+    run({
+      runId: `${prefix}-${i}`,
+      workflowName: `wf-${prefix}-${i}`,
+      updatedAt: new Date(
+        Date.parse(`2024-06-${String(day).padStart(2, '0')}T12:00:00.000Z`) -
+          i * 60_000,
+      ).toISOString(),
+    }),
+  );
+}
+
+describe('FleetView — progressive render (A)', () => {
+  const NOW = Date.parse('2024-06-15T12:00:00.000Z');
+
+  it('renders the first page while later pages are pending, with an aria-live "loading more" status', async () => {
+    const { listRuns, pages } = deferredListRuns();
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />);
+    expect(screen.getByText(/loading runs/i)).toBeInTheDocument();
+
+    await settle(pages[0], { items: runPage('p1', 3), nextToken: 't1' });
+
+    // Page 1 rows are on screen; the blocking table spinner is gone.
+    expect(workflowColumnText()).toEqual(['wf-p1-0', 'wf-p1-1', 'wf-p1-2']);
+    expect(screen.queryByText(/loading runs/i)).not.toBeInTheDocument();
+    const status = screen.getByTestId('fleet-load-progress');
+    expect(status).toHaveAttribute('role', 'status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveTextContent('Loading more runs… (3 loaded)');
+    // The second page was requested with the first page's token.
+    expect(listRuns).toHaveBeenCalledTimes(2);
+    expect(listRuns.mock.calls[1]).toEqual([
+      expect.objectContaining({ nextToken: 't1' }),
+    ]);
+
+    await settle(pages[1], { items: runPage('p2', 2, 9), nextToken: null });
+
+    // Indicator cleared (live region stays mounted, empty) and all rows shown.
+    expect(screen.getByTestId('fleet-load-progress')).toHaveTextContent('');
+    expect(screen.getByText('(5)')).toBeInTheDocument();
+    expect(screen.getByTestId('fleet-last-refreshed')).toBeInTheDocument();
+  });
+
+  it('merges a later page that overlaps the first without duplicate rows', async () => {
+    const { listRuns, pages } = deferredListRuns();
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />);
+    const first = runPage('x', 3);
+    await settle(pages[0], { items: first, nextToken: 't1' });
+    // Page 2 repeats x-2 (e.g. a row that shifted across a page boundary).
+    await settle(pages[1], {
+      items: [first[2], ...runPage('y', 2, 9)],
+      nextToken: null,
+    });
+
+    expect(screen.getByText('(5)')).toBeInTheDocument();
+    expect(workflowColumnText()).toEqual([
+      'wf-x-0',
+      'wf-x-1',
+      'wf-x-2',
+      'wf-y-0',
+      'wf-y-1',
+    ]);
+  });
+
+  it('keeps a live update that arrives mid-load when the next page lands', async () => {
+    const { listRuns, pages } = deferredListRuns();
+    const { subscribe, emit } = makeSubscribe();
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} now={NOW} />);
+    const first = [
+      run({ runId: 'a', status: 'RUNNING', workflowName: 'wf-a', updatedAt: '2024-06-10T00:00:00.000Z' }),
+    ];
+    await settle(pages[0], { items: first, nextToken: 't1' });
+
+    // While page 2 is pending: a brand-new run, and a newer state of 'a'.
+    emit(run({ runId: 'live', workflowName: 'wf-live', updatedAt: '2024-06-14T00:00:00.000Z' }));
+    emit(run({ runId: 'a', status: 'COMPLETED', workflowName: 'wf-a', updatedAt: '2024-06-12T00:00:00.000Z' }));
+
+    // Page 2 carries an OLDER snapshot of 'a' and does not include 'live'.
+    await settle(pages[1], {
+      items: [
+        run({ runId: 'a', status: 'RUNNING', workflowName: 'wf-a', updatedAt: '2024-06-10T00:00:00.000Z' }),
+        run({ runId: 'b', workflowName: 'wf-b', updatedAt: '2024-06-01T00:00:00.000Z' }),
+      ],
+      nextToken: null,
+    });
+
+    expect(workflowColumnText()).toEqual(['wf-live', 'wf-a', 'wf-b']);
+    expect(screen.getByLabelText(/status COMPLETED/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/status RUNNING/i)).not.toBeInTheDocument();
+  });
+
+  it('cancels a stale load: a superseded load never applies its results', async () => {
+    const { listRuns, pages } = deferredListRuns();
+    const { container } = render(
+      <FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />,
+    );
+    await settle(pages[0], { items: runPage('old', 2), nextToken: 't1' });
+    expect(listRuns).toHaveBeenCalledTimes(2);
+
+    // A newer load (window change) starts while the old load's page 2 is
+    // still in flight.
+    const picker = wrapperForTestId(container, 'fleet-date-range').findDateRangePicker()!;
+    picker.openDropdown();
+    picker.findDropdown()!.findRelativeRangeRadioGroup()!.findInputByValue('prev-7')!.click();
+    picker.findDropdown()!.findApplyButton()!.click();
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(3));
+
+    await settle(pages[2], { items: runPage('new', 2, 14), nextToken: null });
+    expect(workflowColumnText()).toEqual(['wf-new-0', 'wf-new-1']);
+
+    // The stale loop's page lands AFTER the newer load completed: ignored,
+    // and it does not go on to fetch another page.
+    await settle(pages[1], { items: runPage('stale', 2, 13), nextToken: 't2' });
+    expect(workflowColumnText()).toEqual(['wf-new-0', 'wf-new-1']);
+    expect(screen.queryByText(/wf-old|wf-stale/)).not.toBeInTheDocument();
+    expect(listRuns).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps rows and shows a retryable notice when a later page fails', async () => {
+    const { listRuns, pages } = deferredListRuns();
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />);
+    await settle(pages[0], { items: runPage('p1', 2), nextToken: 't1' });
+    await settle(pages[1], new Error('page 2 timed out'));
+
+    // Rows kept, no blocking error Alert, a non-blocking warning instead.
+    expect(workflowColumnText()).toEqual(['wf-p1-0', 'wf-p1-1']);
+    expect(screen.queryByText('Runs could not be loaded')).not.toBeInTheDocument();
+    const notice = screen.getByTestId('fleet-partial-load-notice');
+    expect(notice).toHaveTextContent(/page 2 timed out/);
+    expect(screen.getByTestId('fleet-load-progress')).toHaveTextContent('');
+
+    // Retrying issues a new load and clears the notice.
+    fireEvent.click(within(notice).getByRole('button', { name: 'Retry loading' }));
+    expect(listRuns).toHaveBeenCalledTimes(3);
+    expect(screen.queryByTestId('fleet-partial-load-notice')).not.toBeInTheDocument();
+    expect(screen.getByTestId('fleet-load-progress')).toHaveTextContent('Updating…');
+    await settle(pages[2], { items: runPage('p1', 3), nextToken: null });
+    expect(screen.getByText('(3)')).toBeInTheDocument();
+  });
+
+  it('keeps rows (no blank table) when a Refresh fails while rows are shown', async () => {
+    const { listRuns, pages } = deferredListRuns();
+    render(<FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />);
+    await settle(pages[0], { items: runPage('p1', 2), nextToken: null });
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh runs/i }));
+    // Rows stay visible while the refresh runs (no blocking spinner).
+    expect(workflowColumnText()).toEqual(['wf-p1-0', 'wf-p1-1']);
+    expect(screen.queryByText(/loading runs/i)).not.toBeInTheDocument();
+    await settle(pages[1], new Error('network down'));
+
+    expect(workflowColumnText()).toEqual(['wf-p1-0', 'wf-p1-1']);
+    expect(screen.getByTestId('fleet-partial-load-notice')).toHaveTextContent(
+      /network down/,
+    );
+  });
+
+  it('keeps the current table page while later pages arrive', async () => {
+    const { listRuns, pages } = deferredListRuns();
+    const { container } = render(
+      <FleetView listRuns={listRuns} subscribe={noopSubscribe} now={NOW} />,
+    );
+    await settle(pages[0], { items: runPage('p1', 30, 12), nextToken: 't1' });
+
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    await waitFor(() =>
+      expect(screen.getAllByRole('row').slice(1)).toHaveLength(5),
+    );
+
+    // Page 2 of the server lands with 30 more (older) runs.
+    await settle(pages[1], { items: runPage('p2', 30, 5), nextToken: null });
+
+    const pagination = createWrapper(container).findPagination()!;
+    expect(pagination.findCurrentPage().getElement()).toHaveTextContent('2');
+    expect(screen.getByText('(60)')).toBeInTheDocument();
+    expect(screen.getAllByRole('row').slice(1)).toHaveLength(25);
+  });
+});

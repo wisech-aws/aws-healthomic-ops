@@ -8,6 +8,14 @@
  * (Req 8.2, 10.2), and empty (Req 8.3, 10.3) states through the Table's built-in
  * `loading` and `empty` slots and a Cloudscape Alert.
  *
+ * Progressive render: the load follows `nextToken` page-by-page and merges
+ * each page into state as it arrives ({@link mergeRunPage}, deduped by runId,
+ * newer `updatedAt` wins), so the first page's rows show immediately while the
+ * rest load behind an aria-live "Loading more runs… (N loaded)" status. Every
+ * load takes a generation number; a superseded or unmounted load stops at its
+ * next await without touching state. A failure after rows are on screen keeps
+ * them and shows a non-blocking, retryable warning instead of the full error.
+ *
  * Live updates: a reconnecting `onRunUpdated` subscription feeds every incoming
  * run into {@link mergeRunUpdate}, so a displayed run is updated in place
  * (Req 8.5) and an undisplayed run is inserted in its ordered position
@@ -58,7 +66,7 @@ import { listRuns as defaultListRuns, onRunUpdated } from '../api/client';
 import type { Subscription, SubscriptionHandlers } from '../api/client';
 import type { Run, RunConnection, RunStatus } from '../api/types';
 import { createReconnectingSubscription } from '../api/subscriptionManager';
-import { mergeRunUpdate } from './ordering';
+import { mergeRunPage, mergeRunUpdate } from './ordering';
 import {
   applyFleetControls,
   groupByEngineVersion,
@@ -78,8 +86,35 @@ import { formatStartTime, runDuration } from './duration';
 import { resolveRange } from '../reports/dateRange';
 import CopyId from '../components/CopyId';
 
-/** Loading/error/ready phases of the initial `listRuns` query (Req 10.1–10.3). */
+/**
+ * Loading/error/ready phases of the fleet query (Req 10.1–10.3). `loading` is
+ * the BLOCKING state (table spinner, nothing to show yet); a progressive load
+ * leaves it as soon as its first page lands, and a load that starts with rows
+ * already on screen never enters it.
+ */
 type LoadPhase = 'loading' | 'error' | 'ready';
+
+/** What triggered a fleet load: mount, Refresh/Retry, or a reconnect re-sync. */
+type FleetLoadKind = 'cold' | 'refresh' | 'reconnect';
+
+/**
+ * Options for one fleet load. `reset` clears the current rows first (a window
+ * change: the previous window's rows must not mix into the new one).
+ */
+interface LoadOptions {
+  readonly kind: FleetLoadKind;
+  readonly reset?: boolean;
+}
+
+/**
+ * Background progress of an in-flight load once rows are visible. `more` =>
+ * the first page is shown and later pages are still arriving; `updating` =>
+ * a load started with rows already on screen (Refresh/reconnect).
+ */
+interface LoadProgress {
+  readonly loaded: number;
+  readonly mode: 'more' | 'updating';
+}
 
 /** All selectable run statuses, used to populate the status-filter control. */
 const RUN_STATUSES: readonly RunStatus[] = [
@@ -267,6 +302,14 @@ export default function FleetView({
   // True when the load hit the FLEET_LOAD_CAP and more runs exist server-side
   // than were loaded, so the UI can honestly say the list is capped.
   const [loadCapped, setLoadCapped] = useState(false);
+  // Background progress of an in-flight load while rows are visible (drives
+  // the aria-live "Loading more runs…"/"Updating…" indicator); null when idle.
+  const [progress, setProgress] = useState<LoadProgress | null>(null);
+  // Non-blocking, retryable notice for a load that failed after rows were
+  // already on screen (a later page, or a Refresh/reconnect with rows shown).
+  const [partialError, setPartialError] = useState<string | null>(null);
+  // Epoch ms of the last load that COMPLETED (drives "Last refreshed").
+  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
   // Multi-status filter: an empty set means "all statuses" (Req 5.1).
   const [statusFilter, setStatusFilter] = useState<ReadonlySet<RunStatus>>(
     () => new Set(),
@@ -329,64 +372,154 @@ export default function FleetView({
   // across renders so it is not reset by a re-render (which would make every
   // first connect look "initial" and break genuine reconnect-refetch, Req 10.6).
   const applyRunUpdateRef = useRef<(updatedRun: Run) => void>(() => {});
-  const loadRef = useRef<() => void | Promise<void>>(() => {});
+  const loadRef = useRef<(opts: LoadOptions) => void | Promise<void>>(
+    () => {},
+  );
   const seenFirstConnectRef = useRef(false);
 
-  const load = useCallback(async () => {
-    setPhase('loading');
-    setErrorMessage(null);
-    // Resolve the window at CALL time for an open-to-now window (default
-    // last-30-days or a relative range). `windowRange` is memoized on the
-    // mount-time clock, so reusing it would send `end = mount instant` on every
-    // later Refresh/Retry/reconnect refetch, excluding runs updated after mount
-    // server-side and then dropping them when `setRuns(collected)` replaces the
-    // list. An absolute range keeps its fixed, explicit bounds. The injected
-    // `now` (tests) still pins the clock.
-    const bounds = windowEndsAtNow
-      ? resolveRange(range, now ?? Date.now())
-      : windowRange;
-    try {
-      // Hybrid paging: fetch page-by-page following `nextToken` until the
-      // FLEET_LOAD_CAP is reached (or the server has no more pages), then page
-      // client-side. This never loads an unbounded number of runs while still
-      // giving the client-side filter/sort/group/search the full loaded set.
-      const collected: Run[] = [];
-      let nextToken: string | undefined;
-      let capped = false;
-      do {
-        const remaining = FLEET_LOAD_CAP - collected.length;
-        const limit = Math.min(FLEET_FETCH_PAGE_SIZE, remaining);
-        // Push the active window into every page fetch so the SERVER returns
-        // only runs whose `updatedAt` is in [start, end]; the FLEET_LOAD_CAP
-        // then bounds a very dense window rather than the whole fleet.
-        const connection = await listRuns({
-          limit,
-          nextToken,
-          start: bounds.start,
-          end: bounds.end,
-        });
-        collected.push(...connection.items);
-        nextToken = connection.nextToken ?? undefined;
-        if (collected.length >= FLEET_LOAD_CAP) {
-          // Hit the cap: there may be more runs server-side than we loaded.
-          capped = nextToken !== undefined;
-          break;
-        }
-      } while (nextToken !== undefined);
+  // Cancellation: every load takes a new generation; a load whose generation
+  // is no longer current (a newer Refresh/reconnect/window change started) or
+  // whose component unmounted stops at its next await without touching state,
+  // so a stale loop can never overwrite newer data. A ref flag (not a
+  // generation bump) tracks unmount so StrictMode's mount→unmount→mount does
+  // not cancel the one-shot initial load that `hasQueried` will not re-issue.
+  const loadGenRef = useRef(0);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  // Run ids applied by a live update during the current load, so the
+  // completion prune (rows the server did not return) never drops them.
+  const liveTouchedRef = useRef<Set<string>>(new Set());
+  // Mirror of `runs` so `load` can see whether rows are on screen without
+  // depending on (and being re-created for) every `runs` change.
+  const runsRef = useRef<Run[]>(runs);
 
-      setRuns(collected);
-      setLoadCapped(capped);
-      setPhase('ready');
-    } catch (error) {
-      // Retain previously loaded content; only swap in the error state (Req 10.2).
-      setErrorMessage(
-        error instanceof Error ? error.message : 'Runs could not be loaded.',
-      );
-      setPhase('error');
-    }
-    // `load` is re-created when the window changes so a new window re-queries
-    // the server (see the window-change effect below).
-  }, [listRuns, range, now, windowEndsAtNow, windowRange]);
+  const load = useCallback(
+    async ({ reset = false }: LoadOptions) => {
+      const gen = ++loadGenRef.current;
+      const isCurrent = () => gen === loadGenRef.current && mountedRef.current;
+      liveTouchedRef.current = new Set();
+      setErrorMessage(null);
+      setPartialError(null);
+      if (reset) {
+        // A different window: the previous window's rows must not mix into
+        // this one while it loads (merge semantics would otherwise keep them
+        // until the completion prune).
+        runsRef.current = [];
+        setRuns([]);
+        setLoadCapped(false);
+        setLastLoadedAt(null);
+      }
+      // A load that starts with rows on screen keeps them visible and shows a
+      // non-blocking "Updating…" indicator; otherwise it shows the blocking
+      // table spinner until its first page lands.
+      const rowsShownAtStart = runsRef.current.length > 0;
+      if (rowsShownAtStart) {
+        setPhase('ready');
+        setProgress({ loaded: 0, mode: 'updating' });
+      } else {
+        setPhase('loading');
+        setProgress(null);
+      }
+      // Resolve the window at CALL time for an open-to-now window (default
+      // last-30-days or a relative range). `windowRange` is memoized on the
+      // mount-time clock, so reusing it would send `end = mount instant` on
+      // every later Refresh/Retry/reconnect refetch, excluding runs updated
+      // after mount server-side and then pruning them at completion. An
+      // absolute range keeps its fixed, explicit bounds. The injected `now`
+      // (tests) still pins the clock.
+      const bounds = windowEndsAtNow
+        ? resolveRange(range, now ?? Date.now())
+        : windowRange;
+      // Run ids the server returned in THIS load (dedupes overlapping pages
+      // and drives the cap and the completion prune).
+      const seen = new Set<string>();
+      let pages = 0;
+      try {
+        // Hybrid paging: fetch page-by-page following `nextToken` until the
+        // FLEET_LOAD_CAP is reached (or the server has no more pages), then
+        // page client-side. Each page is merged into state as it arrives
+        // (progressive render) instead of after the whole loop.
+        let nextToken: string | undefined;
+        let capped = false;
+        do {
+          const remaining = FLEET_LOAD_CAP - seen.size;
+          const limit = Math.min(FLEET_FETCH_PAGE_SIZE, remaining);
+          // Push the active window into every page fetch so the SERVER
+          // returns only runs whose `updatedAt` is in [start, end]; the
+          // FLEET_LOAD_CAP then bounds a very dense window rather than the
+          // whole fleet.
+          const connection = await listRuns({
+            limit,
+            nextToken,
+            start: bounds.start,
+            end: bounds.end,
+          });
+          if (!isCurrent()) {
+            return;
+          }
+          pages += 1;
+          for (const item of connection.items) {
+            seen.add(item.runId);
+          }
+          // Functional merge deduped by runId (newer updatedAt wins), so a
+          // live update that landed mid-load is never lost to this page.
+          const items = connection.items;
+          setRuns((current) => mergeRunPage(current, items));
+          if (pages === 1) {
+            setPhase('ready');
+          }
+          nextToken = connection.nextToken ?? undefined;
+          if (seen.size >= FLEET_LOAD_CAP) {
+            // Hit the cap: there may be more runs server-side than we loaded.
+            capped = nextToken !== undefined;
+            break;
+          }
+          if (nextToken !== undefined) {
+            setProgress({
+              loaded: seen.size,
+              mode: rowsShownAtStart ? 'updating' : 'more',
+            });
+          }
+        } while (nextToken !== undefined);
+
+        // The completed server result is authoritative for the window: drop
+        // rows it no longer returned (left the window / beyond the cap),
+        // except runs a live update touched during this load.
+        const touched = liveTouchedRef.current;
+        setRuns((current) =>
+          current.filter((r) => seen.has(r.runId) || touched.has(r.runId)),
+        );
+        setLoadCapped(capped);
+        setProgress(null);
+        setLastLoadedAt(Date.now());
+      } catch (error) {
+        if (!isCurrent()) {
+          return;
+        }
+        const message =
+          error instanceof Error ? error.message : 'Runs could not be loaded.';
+        setProgress(null);
+        if (pages === 0 && !rowsShownAtStart) {
+          // Nothing on screen: today's blocking error state (Req 8.2, 10.2).
+          setErrorMessage(message);
+          setPhase('error');
+        } else {
+          // Rows are already shown: keep them and surface a non-blocking,
+          // retryable notice instead of blanking the table (Req 10.2).
+          setPartialError(message);
+          setPhase('ready');
+        }
+      }
+      // `load` is re-created when the window changes so a new window
+      // re-queries the server (see the window-change effect below).
+    },
+    [listRuns, range, now, windowEndsAtNow, windowRange],
+  );
 
   // Initial per-mount query (Req 10.4), guarded against StrictMode's double
   // invoke. Subsequent window changes are handled by the window-change effect
@@ -396,7 +529,7 @@ export default function FleetView({
       return;
     }
     hasQueried.current = true;
-    void load();
+    void load({ kind: 'cold' });
     // Intentionally runs once on mount; `load` is stable except for window
     // changes, which the dedicated effect below drives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -413,7 +546,7 @@ export default function FleetView({
       return;
     }
     setCurrentPage(1);
-    void load();
+    void load({ kind: 'cold', reset: true });
     // `load` already closes over windowRange.start/end; keying on them makes the
     // reload fire exactly when the window changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -443,6 +576,8 @@ export default function FleetView({
         updatedRun.updatedAt >= windowRange.start &&
         (windowEndsAtNow || updatedRun.updatedAt <= windowRange.end);
       if (inWindow) {
+        // Remember the run so an in-flight load's completion prune keeps it.
+        liveTouchedRef.current.add(updatedRun.runId);
         setRuns((current) => mergeRunUpdate(current, updatedRun));
       }
       // Always clear any pending indicator for the run, even when the update is
@@ -488,6 +623,7 @@ export default function FleetView({
   useEffect(() => {
     applyRunUpdateRef.current = applyRunUpdate;
     loadRef.current = load;
+    runsRef.current = runs;
   });
 
   // Open the live, reconnecting subscription for the lifetime of the mount
@@ -523,7 +659,7 @@ export default function FleetView({
           seenFirstConnectRef.current = true;
           return;
         }
-        void loadRef.current();
+        void loadRef.current({ kind: 'reconnect' });
       },
     });
     return () => managed.stop();
@@ -536,7 +672,7 @@ export default function FleetView({
   // Retry re-issues the query on demand (Req 8.2). Allowed because it is a
   // user-initiated action, not the automatic per-mount query.
   const handleRetry = useCallback(() => {
-    void load();
+    void load({ kind: 'refresh' });
   }, [load]);
 
   const hasStatusFilter = statusFilter.size > 0;
@@ -808,6 +944,21 @@ export default function FleetView({
     </Alert>
   ) : null;
 
+  // Non-blocking notice for a load that failed after rows were already shown:
+  // the rows stay and the operator can retry without losing the table.
+  const partialLoadNotice =
+    partialError != null ? (
+      <Alert
+        type="warning"
+        header="Some runs could not be loaded"
+        action={<Button onClick={handleRetry}>Retry loading</Button>}
+        data-testid="fleet-partial-load-notice"
+      >
+        Showing {runs.length.toLocaleString()} runs loaded so far.{' '}
+        {partialError}
+      </Alert>
+    ) : null;
+
   // Column definitions shared by the flat table and every grouped sub-table.
   const columnDefinitions: TableProps.ColumnDefinition<Run>[] = [
     {
@@ -921,10 +1072,48 @@ export default function FleetView({
     </Box>
   );
 
+  // Background-load status. The live region stays mounted (empty when idle) so
+  // screen readers announce each change; it is a polite status, not an alert.
+  const progressText =
+    progress == null
+      ? null
+      : progress.mode === 'more'
+        ? `Loading more runs… (${progress.loaded.toLocaleString()} loaded)`
+        : progress.loaded > 0
+          ? `Updating… (${progress.loaded.toLocaleString()} loaded)`
+          : 'Updating…';
+  // Phrasing content only: Cloudscape renders the Header description in a <p>.
+  const loadStatus = (
+    <span>
+      <span
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="fleet-load-progress"
+      >
+        {progressText != null && (
+          <StatusIndicator type="loading">{progressText}</StatusIndicator>
+        )}
+      </span>
+      {lastLoadedAt != null && (
+        <Box
+          variant="span"
+          color="text-body-secondary"
+          fontSize="body-s"
+          margin={{ left: progressText != null ? 's' : 'n' }}
+          data-testid="fleet-last-refreshed"
+        >
+          Last refreshed {new Date(lastLoadedAt).toLocaleTimeString()}
+        </Box>
+      )}
+    </span>
+  );
+
   const header = (
     <Header
       variant="h2"
       counter={`(${displayedRuns.length})`}
+      description={loadStatus}
       actions={
         <SpaceBetween direction="horizontal" size="xs">
           {onCompareRuns != null && (
@@ -939,7 +1128,7 @@ export default function FleetView({
           <Button
             iconName="refresh"
             ariaLabel="Refresh runs"
-            loading={phase === 'loading'}
+            loading={phase === 'loading' || progress !== null}
             onClick={handleRetry}
           >
             Refresh
@@ -991,6 +1180,7 @@ export default function FleetView({
         {header}
         {searchAndFilter}
         {cappedNotice}
+        {partialLoadNotice}
         {groups.length === 0 ? (
           <Table<Run>
             variant="borderless"
@@ -1036,9 +1226,10 @@ export default function FleetView({
       trackBy="runId"
       header={header}
       filter={
-        cappedNotice ? (
+        cappedNotice || partialLoadNotice ? (
           <SpaceBetween size="xs">
             {cappedNotice}
+            {partialLoadNotice}
             {searchAndFilter}
           </SpaceBetween>
         ) : (
