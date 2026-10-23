@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   render,
   screen,
@@ -1152,6 +1152,98 @@ describe('FleetView — server-side time window (updatedAt, default last 30 days
       }),
     );
     expect(screen.queryByText('wf-later')).not.toBeInTheDocument();
+  });
+});
+
+// R3 regression: the open-to-now window's upper bound must be resolved at each
+// load() call, not frozen at mount. Pre-fix, Refresh and the reconnect refetch
+// re-sent `end = mount instant`, so the (server-faithful) stub excluded runs
+// updated after mount and `setRuns(collected)` dropped them from the list.
+describe('FleetView — window end is fresh on every load (open-to-now)', () => {
+  const T = Date.parse('2026-10-23T12:00:00.000Z');
+  const ONE_HOUR = 3_600_000;
+
+  // Fake ONLY Date so the clock is controllable while the reconnect backoff
+  // (setTimeout) still runs in real time.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(T);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A listRuns stub that honors [start, end] like the resolver's BETWEEN. */
+  function serverFaithfulListRuns(store: Run[]) {
+    return vi.fn(async (variables?: { start?: string; end?: string }) =>
+      connection(
+        store.filter(
+          (r) =>
+            (variables?.start === undefined || r.updatedAt >= variables.start) &&
+            (variables?.end === undefined || r.updatedAt <= variables.end),
+        ),
+      ),
+    );
+  }
+
+  it('Refresh sends the current time as end and keeps a run updated after mount', async () => {
+    const store: Run[] = [
+      run({ runId: 'old', workflowName: 'wf-old', updatedAt: new Date(T - ONE_HOUR).toISOString() }),
+    ];
+    const listRuns = serverFaithfulListRuns(store);
+    const { subscribe, emit } = makeSubscribe();
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} />);
+    await screen.findByRole('table');
+    await waitFor(() => expect(workflowColumnText()).toEqual(['wf-old']));
+    expect(listRuns.mock.calls[0][0]).toMatchObject(resolveRange(null, T));
+
+    // Time passes; a run is updated after mount (server + live event).
+    const later = T + ONE_HOUR;
+    vi.setSystemTime(later);
+    const fresh = run({
+      runId: 'fresh',
+      workflowName: 'wf-fresh',
+      updatedAt: new Date(T + 30 * 60_000).toISOString(),
+    });
+    store.push(fresh);
+    emit(fresh);
+    await waitFor(() => expect(workflowColumnText()).toEqual(['wf-fresh', 'wf-old']));
+
+    fireEvent.click(screen.getByRole('button', { name: /refresh runs/i }));
+
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2));
+    expect(listRuns.mock.calls[1][0]).toMatchObject(resolveRange(null, later));
+    // The run updated after mount survives the Refresh replacement.
+    await waitFor(() => expect(workflowColumnText()).toEqual(['wf-fresh', 'wf-old']));
+  });
+
+  it('a reconnect refetch sends the current time as end', async () => {
+    let handlers: SubscriptionHandlers<Run> | undefined;
+    const subscribe: SubscribeRuns = (h) => {
+      handlers = h;
+      return { unsubscribe: () => {} };
+    };
+    const store: Run[] = [];
+    const listRuns = serverFaithfulListRuns(store);
+    render(<FleetView listRuns={listRuns} subscribe={subscribe} />);
+    await waitFor(() =>
+      expect(screen.getByText(/no runs are available/i)).toBeInTheDocument(),
+    );
+    expect(listRuns).toHaveBeenCalledTimes(1);
+
+    const later = T + 2 * ONE_HOUR;
+    vi.setSystemTime(later);
+    store.push(
+      run({ runId: 'missed', workflowName: 'wf-missed', updatedAt: new Date(T + ONE_HOUR).toISOString() }),
+    );
+    // Drop -> backoff -> reconnect -> refetch.
+    act(() => {
+      handlers?.error?.(new Error('socket dropped'));
+    });
+    await waitFor(() => expect(listRuns).toHaveBeenCalledTimes(2), { timeout: 4000 });
+    expect(listRuns.mock.calls[1][0]).toMatchObject(resolveRange(null, later));
+    // The run updated during the disconnect (after mount) is now shown.
+    await waitFor(() => expect(workflowColumnText()).toEqual(['wf-missed']));
   });
 });
 
