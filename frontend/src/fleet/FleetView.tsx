@@ -305,7 +305,10 @@ export default function FleetView({
 
   // Injected clock makes the default window and tests deterministic (Req 1.5).
   const nowMs = useMemo(() => now ?? Date.now(), [now]);
-  // Concrete ISO window bounds pushed into every `listRuns` page fetch.
+  // Concrete ISO window bounds as of this render's clock. Drives the live-update
+  // window gate and the window-change effect; `load()` re-resolves open-to-now
+  // windows at call time instead (see `load`), so only an absolute range's
+  // bounds are sent from here verbatim.
   const windowRange = useMemo(() => resolveRange(range, nowMs), [range, nowMs]);
   // Discriminates an OPEN-TO-NOW window (default last-30-days or a relative
   // range, whose `end` is `resolveRange`'s `now`) from an ABSOLUTE past-bounded
@@ -332,6 +335,16 @@ export default function FleetView({
   const load = useCallback(async () => {
     setPhase('loading');
     setErrorMessage(null);
+    // Resolve the window at CALL time for an open-to-now window (default
+    // last-30-days or a relative range). `windowRange` is memoized on the
+    // mount-time clock, so reusing it would send `end = mount instant` on every
+    // later Refresh/Retry/reconnect refetch, excluding runs updated after mount
+    // server-side and then dropping them when `setRuns(collected)` replaces the
+    // list. An absolute range keeps its fixed, explicit bounds. The injected
+    // `now` (tests) still pins the clock.
+    const bounds = windowEndsAtNow
+      ? resolveRange(range, now ?? Date.now())
+      : windowRange;
     try {
       // Hybrid paging: fetch page-by-page following `nextToken` until the
       // FLEET_LOAD_CAP is reached (or the server has no more pages), then page
@@ -349,8 +362,8 @@ export default function FleetView({
         const connection = await listRuns({
           limit,
           nextToken,
-          start: windowRange.start,
-          end: windowRange.end,
+          start: bounds.start,
+          end: bounds.end,
         });
         collected.push(...connection.items);
         nextToken = connection.nextToken ?? undefined;
@@ -371,9 +384,9 @@ export default function FleetView({
       );
       setPhase('error');
     }
-    // `load` re-runs when the window bounds change so a new window re-queries
+    // `load` is re-created when the window changes so a new window re-queries
     // the server (see the window-change effect below).
-  }, [listRuns, windowRange.start, windowRange.end]);
+  }, [listRuns, range, now, windowEndsAtNow, windowRange]);
 
   // Initial per-mount query (Req 10.4), guarded against StrictMode's double
   // invoke. Subsequent window changes are handled by the window-change effect
