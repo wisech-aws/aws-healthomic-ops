@@ -423,3 +423,58 @@ describe('IngestStack Kinesis ingest path (toggle-able: off/present/active)', ()
     expect(actions.has('*')).toBe(false);
   });
 });
+
+describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kinesisIngestMode=active)', () => {
+  function ingestTemplate(context: Record<string, string>): Template {
+    const app = new App({ context });
+    Tags.of(app).add('project', 'healthomics-workflow-dashboard');
+    const dataStack = new DataStack(app, 'HealthOmicsData');
+    const apiStack = new ApiStack(app, 'HealthOmicsApi', { dataStack });
+    apiStack.addStackDependency(dataStack);
+    const ingestStack = new IngestStack(app, 'HealthOmicsIngest', { dataStack, apiStack });
+    ingestStack.addStackDependency(dataStack);
+    ingestStack.addStackDependency(apiStack);
+    return Template.fromStack(ingestStack);
+  }
+
+  type FnResource = {
+    Properties: { MemorySize?: number; Environment?: { Variables?: Record<string, unknown> } };
+  };
+  function fn(t: Template, logicalPrefix: string): FnResource {
+    const fns = t.findResources('AWS::Lambda::Function');
+    const match = Object.entries(fns).filter(([id]) => id.startsWith(logicalPrefix));
+    expect(match).toHaveLength(1);
+    return match[0][1] as FnResource;
+  }
+
+  it('defaults to shadow on both ingest functions and gives the Kinesis consumer 256 MB', () => {
+    const t = ingestTemplate({ kinesisIngestMode: 'active' });
+    // The live Kinesis path is still provisioned (no plan to remove it).
+    t.resourceCountIs('AWS::Kinesis::Stream', 1);
+    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
+    const consumer = fn(t, 'KinesisIngestConsumer');
+    const direct = fn(t, 'IngestFunction');
+    expect(consumer.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
+    expect(direct.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
+    expect(consumer.Properties.MemorySize).toBe(256);
+    // Existing consumer env is unchanged.
+    expect(consumer.Properties.Environment?.Variables?.OMICS_TPS).toBe('2');
+  });
+
+  it('honors -c eventEnrichmentMode=event on both functions', () => {
+    const t = ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'event' });
+    expect(fn(t, 'KinesisIngestConsumer').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
+    expect(fn(t, 'IngestFunction').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
+  });
+
+  it('honors -c eventEnrichmentMode=api (rollback)', () => {
+    const t = ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'api' });
+    expect(fn(t, 'KinesisIngestConsumer').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('api');
+  });
+
+  it('rejects an invalid eventEnrichmentMode at synth', () => {
+    expect(() => ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'bogus' })).toThrow(
+      /Invalid context eventEnrichmentMode/,
+    );
+  });
+});

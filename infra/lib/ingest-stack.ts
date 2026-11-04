@@ -51,6 +51,51 @@ const KINESIS_CONSUMER_ENTRY = path.join(
  */
 type KinesisIngestMode = 'off' | 'present' | 'active';
 
+/**
+ * How the ingest handler enriches events with HealthOmics read APIs, passed to
+ * both ingest functions as `EVENT_ENRICHMENT_MODE` (see ingest/src/handler.ts
+ * `EnrichmentMode`). Selected with CDK context `-c eventEnrichmentMode=...`:
+ *   - 'event'  : use the fields the task/run events carry; GetRunTask only for
+ *                FAILED/CANCELLED tasks (or a terminal event missing fields),
+ *                GetRun only at PENDING/terminal (or when the run lacks GetRun
+ *                data). ~3 HealthOmics calls per run.
+ *   - 'shadow' : as 'event', plus GetRunTask on every terminal task event to
+ *                compare with the event values (EMF metric
+ *                HealthOmicsIngest/EnrichmentShadowMismatch) and write the API
+ *                values. DEFAULT, for the first deploy; flip to 'event' after a
+ *                validated run.
+ *   - 'api'    : the legacy behavior (rollback): GetRun on every run event,
+ *                GetRunTask on every terminal task event.
+ *
+ * The live stack runs the Kinesis path, so always pass both flags, e.g.
+ *   cdk deploy -c kinesisIngestMode=active -c eventEnrichmentMode=event
+ *   cdk deploy -c kinesisIngestMode=active -c eventEnrichmentMode=api   # rollback
+ * An invalid value fails synth.
+ */
+export type EventEnrichmentMode = 'event' | 'shadow' | 'api';
+
+export const EVENT_ENRICHMENT_MODES: readonly EventEnrichmentMode[] = ['event', 'shadow', 'api'];
+
+/** Default `eventEnrichmentMode` when the context value is absent. */
+export const DEFAULT_EVENT_ENRICHMENT_MODE: EventEnrichmentMode = 'shadow';
+
+/** Validate the `eventEnrichmentMode` context value; throws at synth if invalid. */
+function resolveEventEnrichmentMode(value: unknown): EventEnrichmentMode {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_EVENT_ENRICHMENT_MODE;
+  }
+  if (
+    typeof value === 'string' &&
+    (EVENT_ENRICHMENT_MODES as readonly string[]).includes(value)
+  ) {
+    return value as EventEnrichmentMode;
+  }
+  throw new Error(
+    `Invalid context eventEnrichmentMode="${String(value)}"; ` +
+      `expected one of ${EVENT_ENRICHMENT_MODES.join(', ')}`,
+  );
+}
+
 /** Absolute path to the reconciler (deferred re-sweep) Lambda entry. */
 const RECONCILER_ENTRY = path.join(
   __dirname,
@@ -142,6 +187,11 @@ export class IngestStack extends Stack {
   constructor(scope: Construct, id: string, props: IngestStackProps) {
     super(scope, id, props);
 
+    // Enrichment policy for both ingest functions (`-c eventEnrichmentMode=...`).
+    const eventEnrichmentMode = resolveEventEnrichmentMode(
+      this.node.tryGetContext('eventEnrichmentMode'),
+    );
+
     // SQS dead-letter queue for EventBridge deliveries that still fail after the
     // configured retry attempts (Req 1.7).
     this.deadLetterQueue = new Queue(this, 'IngestDlq', {
@@ -167,17 +217,19 @@ export class IngestStack extends Stack {
       depsLockFilePath: INGEST_DEPS_LOCK_FILE,
       timeout: Duration.seconds(60),
       // CONCURRENCY / ENRICHMENT-TPS SPLIT (only enrichment-required events are
-      // rate-limited). Non-enriching task events (PENDING/STARTING/STOPPING) and
-      // non-enriching run events do NOT call any HealthOmics read API — they are
-      // a cheap DynamoDB write + AppSync publish — so they must NOT be starved by
-      // the enrichment rate limit. Only RUNNING + terminal task events (and run
-      // events needing GetRun) invoke the per-instance `omicsRateLimiter`.
+      // rate-limited). Non-enriching events do NOT call any HealthOmics read API
+      // — they are a cheap DynamoDB write + AppSync publish — so they must NOT
+      // be starved by the enrichment rate limit. Which events enrich depends on
+      // EVENT_ENRICHMENT_MODE: in 'event' mode only FAILED/CANCELLED task events
+      // and PENDING/terminal run events call HealthOmics; in 'shadow' every
+      // terminal task event also calls GetRunTask; in 'api' (legacy) every
+      // terminal task event and every run event does.
       //
       // The enrichment budget is enforced as reservedConcurrency × OMICS_TPS ≈
       // the HealthOmics ~10 TPS run-read bucket (400 × 0.025 = 10), while the
       // HIGH reserved concurrency (400) lets the cheap, non-enriching majority
-      // (PENDING/STARTING — DynamoDB write + publish, NO API call) drain fast.
-      // KEY PROPERTY: because ONLY RUNNING + terminal events call the rate
+      // (DynamoDB write + publish, NO API call) drain fast.
+      // KEY PROPERTY: because ONLY enriching events call the rate
       // limiter, raising concurrency to relieve the invocation-throughput
       // backlog does NOT increase HealthOmics API pressure — the TPS stays
       // bounded by the product, which we hold at 10 by lowering OMICS_TPS as we
@@ -198,6 +250,8 @@ export class IngestStack extends Stack {
         // unchanged. (Raise to 0.05 if/when the run-read quota is increased to
         // 20 TPS.)
         OMICS_TPS: '0.025',
+        // HealthOmics enrichment policy (event | shadow | api).
+        EVENT_ENRICHMENT_MODE: eventEnrichmentMode,
       },
       bundling: {
         format: OutputFormat.ESM,
@@ -389,7 +443,7 @@ export class IngestStack extends Stack {
     const kinesisMode =
       (this.node.tryGetContext('kinesisIngestMode') as KinesisIngestMode) ?? 'off';
     if (kinesisMode !== 'off') {
-      this.buildKinesisIngestPath(props, rule, kinesisMode);
+      this.buildKinesisIngestPath(props, rule, kinesisMode, eventEnrichmentMode);
     }
 
     // The direct EventBridge -> Lambda target is used unless the Kinesis path is
@@ -505,13 +559,14 @@ export class IngestStack extends Stack {
    * Consumer scaling: Kinesis consumer concurrency = shards × parallelization
    * factor. Ordering correctness remains at the DynamoDB monotonic + status
    * guards (per-shard order reduces reordering but is not relied upon). The
-   * terminal-only enrichment governor (per-instance limiter) keeps GetRunTask
-   * within the ~10 TPS HealthOmics bucket regardless of shard fan-out.
+   * per-instance enrichment limiter keeps HealthOmics reads within the ~10 TPS
+   * bucket regardless of shard fan-out.
    */
   private buildKinesisIngestPath(
     props: IngestStackProps,
     rule: Rule,
     mode: KinesisIngestMode,
+    eventEnrichmentMode: EventEnrichmentMode,
   ): void {
     // On-demand Kinesis stream: auto-scales shards with throughput (no capacity
     // planning), bills per-hour + per-payload (does NOT scale to zero — the
@@ -538,12 +593,17 @@ export class IngestStack extends Stack {
       projectRoot: INGEST_PROJECT_ROOT,
       depsLockFilePath: INGEST_DEPS_LOCK_FILE,
       timeout: Duration.seconds(60),
+      // 256 MB: at 128 MB the consumer hit its memory ceiling (128/128) while
+      // downloading/unzipping/parsing a workflow definition bundle.
+      memorySize: 256,
       environment: {
         TABLE_NAME: props.dataStack.table.tableName,
         APPSYNC_ENDPOINT: props.apiStack.api.graphqlUrl,
         // Per-instance HealthOmics read pace governor (enrichment TPS); keeps
-        // terminal GetRunTask within the ~10 TPS bucket regardless of shards.
+        // enrichment calls within the ~10 TPS bucket regardless of shards.
         OMICS_TPS: '2',
+        // HealthOmics enrichment policy (event | shadow | api).
+        EVENT_ENRICHMENT_MODE: eventEnrichmentMode,
       },
       bundling: {
         format: OutputFormat.ESM,
