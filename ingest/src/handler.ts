@@ -6,12 +6,16 @@
  * → "Processing pipeline", steps 1–5, and "Failure isolation"):
  *
  *   1. Classify + map      — `detectKind` / `mapRunEvent` / `mapTaskEvent`
- *   2. Enrich on demand     — `enrichRun` / `enrichTasks` (event-triggered only)
+ *   2. Enrich on demand     — `enrichRun` / `enrichTask`, event-triggered and,
+ *                             per `EVENT_ENRICHMENT_MODE`, only when the event
+ *                             cannot supply the fields (see EnrichmentMode)
  *   3. Resolve static graph — cache-gated by the version-qualified key
  *                             (`workflowId` + `workflowVersionName`), 30s budget,
  *                             reuse cache, record failure preserving prior state
  *   4. Persist              — `upsertRun` / `upsertTask` (monotonic guard)
- *   5. Publish              — `publishRunUpdate` / `publishTaskUpdate`
+ *   5. Publish              — `publishRunUpdate` / `publishTaskUpdate`; in
+ *                             event/shadow mode the merged stored item is
+ *                             published and a stale write publishes nothing
  *
  * Failure isolation (design.md; Req 4.1, 4.2, 6.2, 7.1): enrichment, graph
  * resolution, and publish are handled independently so a downstream failure
@@ -180,6 +184,39 @@ export interface IngestPublisher {
   publishTaskUpdate(task: TaskRecord): Promise<{ outcome: string }>;
 }
 
+/**
+ * How task/run events are enriched with HealthOmics read APIs
+ * (`EVENT_ENRICHMENT_MODE`):
+ *   - `event`  (default) — use the fields the events carry; call GetRunTask
+ *     only for FAILED/CANCELLED tasks or a terminal event missing fields, and
+ *     GetRun only at PENDING, at terminal, or when the run lacks GetRun data.
+ *   - `shadow` — as `event`, but ALSO call GetRunTask on every terminal task
+ *     event, log/EMF any field mismatch, and write the API values.
+ *   - `api`    — the legacy behavior (rollback): GetRun on every run event,
+ *     GetRunTask on every terminal task event.
+ */
+export type EnrichmentMode = 'event' | 'shadow' | 'api';
+
+export const ENRICHMENT_MODES: readonly EnrichmentMode[] = ['event', 'shadow', 'api'];
+
+/**
+ * Parse `EVENT_ENRICHMENT_MODE`. Absent/empty means `event`; an unrecognized
+ * value logs one warning and falls back to `event`.
+ */
+export function parseEnrichmentMode(value: string | undefined): EnrichmentMode {
+  if (value === undefined || value.trim() === '') {
+    return 'event';
+  }
+  const normalized = value.trim().toLowerCase();
+  if ((ENRICHMENT_MODES as readonly string[]).includes(normalized)) {
+    return normalized as EnrichmentMode;
+  }
+  console.warn(
+    `handler: unrecognized EVENT_ENRICHMENT_MODE "${value}"; using "event"`,
+  );
+  return 'event';
+}
+
 /** The collaborators the pipeline is built from; all are injectable for tests. */
 export interface HandlerDependencies {
   repository: IngestRepository;
@@ -189,6 +226,8 @@ export interface HandlerDependencies {
   graphBudgetMs?: number;
   /** Clock (epoch ms) for the graph-failure retry window; defaults to Date.now. */
   now?: () => number;
+  /** Enrichment policy; defaults to `event` (see {@link EnrichmentMode}). */
+  enrichmentMode?: EnrichmentMode;
   /**
    * Optional measured-utilization sweep for the terminal-state Run_Summary
    * rollup. When absent, the summary is still written with utilization flagged
@@ -428,6 +467,26 @@ function isTerminalRunStatus(status: RunRecord['status'] | undefined): boolean {
   );
 }
 
+/**
+ * Map a persisted run item (the `ALL_NEW` attributes of an upsert) back to a
+ * {@link RunRecord} for publishing. Key/index attributes are dropped; the
+ * publisher's `toRunInput` additionally selects only GraphQL fields (so
+ * `rawGetRun` is never published). Falls back to `fallback` for the required
+ * identifiers when the item lacks them.
+ */
+function runItemToRecord(item: Record<string, unknown>, fallback: RunRecord): RunRecord {
+  const rest: Record<string, unknown> = { ...item };
+  for (const key of ['PK', 'SK', 'GSI1PK', 'GSI1SK', 'entityType']) {
+    delete rest[key];
+  }
+  const record = rest as unknown as RunRecord;
+  return {
+    ...record,
+    runId: typeof record.runId === 'string' ? record.runId : fallback.runId,
+    updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : fallback.updatedAt,
+  };
+}
+
 /** Map a persisted {@link TaskItem} back to a {@link TaskRecord} for computation. */
 function taskItemToRecord(item: TaskItem): TaskRecord {
   return {
@@ -543,41 +602,202 @@ async function maybePersistRunSummary(
   }
 }
 
+/** HealthOmics read-API calls made while processing one event. */
+interface ApiCallCounts {
+  GetRun: number;
+  GetRunTask: number;
+  GetWorkflow: number;
+}
+
+/**
+ * Per-event processing context: the active enrichment mode, the call counters
+ * behind the counting enricher, and the write/publish outcomes reported in the
+ * one structured `ingest_event` log line.
+ */
+interface EventContext {
+  mode: EnrichmentMode;
+  apiCalls: ApiCallCounts;
+  status?: string;
+  runId?: string;
+  taskId?: string;
+  write?: string;
+  publish?: string;
+}
+
+/** Wrap an enricher so every HealthOmics read made for this event is counted. */
+function countingEnricher(inner: IngestEnricher, calls: ApiCallCounts): IngestEnricher {
+  return {
+    enrichRun: (runId) => {
+      calls.GetRun += 1;
+      return inner.enrichRun(runId);
+    },
+    enrichTask: (runId, taskId) => {
+      calls.GetRunTask += 1;
+      return inner.enrichTask(runId, taskId);
+    },
+    getWorkflowDefinition: (workflowId) => {
+      calls.GetWorkflow += 1;
+      return inner.getWorkflowDefinition(workflowId);
+    },
+  };
+}
+
+/** Narrow an `upsert*` result (typed `unknown` on the interface). */
+function readUpsertResult(result: unknown): {
+  outcome?: string;
+  item?: Record<string, unknown>;
+} {
+  if (result === null || typeof result !== 'object') {
+    return {};
+  }
+  const r = result as { outcome?: unknown; item?: unknown };
+  return {
+    outcome: typeof r.outcome === 'string' ? r.outcome : undefined,
+    item:
+      r.item !== null && typeof r.item === 'object'
+        ? (r.item as Record<string, unknown>)
+        : undefined,
+  };
+}
+
+/** Keep only the listed keys of a record (used to reproduce legacy mapping in `api` mode). */
+function pickKeys<T extends object>(record: T, keys: readonly (keyof T)[]): T {
+  const out = {} as T;
+  for (const key of keys) {
+    if (record[key] !== undefined) {
+      out[key] = record[key];
+    }
+  }
+  return out;
+}
+
+/**
+ * The run fields the legacy (pre-event-driven) mapper extracted. `api` mode
+ * trims the mapped record to these so its enrichment decisions and writes are
+ * exactly today's (rollback).
+ */
+const LEGACY_RUN_EVENT_KEYS = [
+  'runId',
+  'status',
+  'name',
+  'workflowId',
+  'workflowName',
+] as const satisfies readonly (keyof RunRecord)[];
+
+/**
+ * The task record the legacy mapper produced: identifiers + status, plus
+ * `name` ONLY from a `detail.name` field (it never read `taskName`, so real
+ * events yielded no name). Used by `api` mode to reproduce today's behavior.
+ */
+function legacyTaskRecord(
+  mapped: Partial<TaskRecord>,
+  event: EventBridgeEvent<string, unknown>,
+): Partial<TaskRecord> {
+  const out = pickKeys(mapped, ['runId', 'taskId', 'status']);
+  const detail = event.detail;
+  const legacyName =
+    detail !== null && typeof detail === 'object'
+      ? (detail as Record<string, unknown>).name
+      : undefined;
+  if (typeof legacyName === 'string' && legacyName.trim() !== '') {
+    out.name = legacyName;
+  }
+  return out;
+}
+
+/**
+ * Whether a run event (event/shadow mode) should call GetRun. GetRun is the
+ * only source of parameters, configuration, tags, engine version, role,
+ * storage, networking mode, ms-precision timestamps and status messages, so it
+ * is called:
+ *   - at PENDING (configuration + exact createdAt),
+ *   - at a terminal status (exact stoppedAt + statusMessage/failureReason),
+ *   - and as a FALLBACK at any other status when the stored run does not yet
+ *     hold GetRun data (`rawGetRun` absent: the PENDING call failed or the
+ *     PENDING event was missed / not yet processed).
+ * A status-less event is enriched defensively.
+ */
+async function runNeedsGetRun(
+  deps: HandlerDependencies,
+  mapped: Partial<RunRecord> & { runId: string },
+): Promise<boolean> {
+  const status = mapped.status;
+  if (status === undefined || status === RunStatus.PENDING || isTerminalRunStatus(status)) {
+    return true;
+  }
+  if (typeof deps.repository.getRunEnrichmentMarker !== 'function') {
+    return true;
+  }
+  const marker = await deps.repository.getRunEnrichmentMarker(mapped.runId);
+  return marker === null || !marker.hasGetRun;
+}
+
 /**
  * Process a run status-change event (design steps 1–5 for a run).
+ *
+ * `api` mode reproduces the legacy behavior exactly: GetRun on every event and
+ * the event-built record is published even when the write was stale.
+ * `event`/`shadow` mode calls GetRun only when {@link runNeedsGetRun} says so,
+ * derives createdAt (PENDING) / startedAt (RUNNING) from the event time when
+ * unset, and publishes the MERGED stored item (so a fleet row never loses
+ * fields a sparse event does not carry). A stale (preserved) write publishes
+ * nothing, so a late event can never regress the dashboard.
  */
 async function processRunEvent(
   deps: HandlerDependencies,
   event: EventBridgeEvent<string, unknown>,
   updatedAt: string,
+  ctx: EventContext,
 ): Promise<void> {
   // Step 1: map event fields.
-  const mapped = mapRunEvent(event);
-  if (mapped.runId === undefined) {
+  const fullMapped = mapRunEvent(event);
+  ctx.status = fullMapped.status;
+  ctx.runId = fullMapped.runId;
+  if (fullMapped.runId === undefined) {
     // Without a runId there is no key to persist against; log and ignore
     // (mapRunEvent has already logged the full event).
     console.warn('handler: run event has no runId; ignoring');
+    ctx.write = 'skipped-no-id';
     return;
   }
+  const runId = fullMapped.runId;
+  const legacy = ctx.mode === 'api';
+  const mapped = legacy ? pickKeys(fullMapped, LEGACY_RUN_EVENT_KEYS) : fullMapped;
 
-  // Step 2: enrich on demand (event-triggered) when render fields are missing;
-  // merge with the event winning on conflict (Req 2.4).
+  // Step 2: enrich on demand (event-triggered); merge with the event winning on
+  // conflict (Req 2.4).
   let record: Partial<RunRecord> = mapped;
-  if (runNeedsEnrichment(mapped)) {
-    const enriched = await deps.enricher.enrichRun(mapped.runId);
+  const needsGetRun = legacy
+    ? runNeedsEnrichment(mapped)
+    : await runNeedsGetRun(deps, { ...mapped, runId });
+  if (needsGetRun) {
+    const enriched = await deps.enricher.enrichRun(runId);
     record = mergeRecords<RunRecord>(mapped, enriched);
+  }
+
+  if (!legacy) {
+    // Event-derived timestamps when GetRun did not supply them: PENDING
+    // event.time ~ creationTime (1 s precision), RUNNING event.time equals
+    // GetRun startTime. A later GetRun (terminal) overwrites with ms values.
+    if (record.status === RunStatus.PENDING && record.createdAt === undefined) {
+      record.createdAt = updatedAt;
+    }
+    if (record.status === RunStatus.RUNNING && record.startedAt === undefined) {
+      record.startedAt = updatedAt;
+    }
   }
 
   // Assemble the full record: runId (validated above) + updatedAt (Req 3.3).
   const run: RunRecord = {
     ...record,
-    runId: mapped.runId,
+    runId,
     updatedAt,
   };
 
   // Step 4: persist FIRST so downstream failures cannot discard state
   // (Req 4.1, 4.2). A persistence failure throws to the DLQ path (Req 3.10).
-  await deps.repository.upsertRun(run);
+  const upsert = readUpsertResult(await deps.repository.upsertRun(run));
+  ctx.write = upsert.outcome ?? 'written';
 
   // Step 3: resolve/cache the static graph for this run's workflow version.
   // Best-effort and after persist: a graph failure never discards the persisted
@@ -593,65 +813,183 @@ async function processRunEvent(
 
   // Step 5: publish. Never throws; log a non-published outcome and move on so a
   // publish failure does not discard the persisted run (Req 4.8, 4.9).
-  const result = await deps.publisher.publishRunUpdate(run);
-  if (result.outcome !== 'published') {
-    console.error(
-      `handler: publishRunUpdate for run ${run.runId} returned "${result.outcome}"; ` +
-        `persisted data retained`,
-    );
+  let published: RunRecord = run;
+  if (!legacy && upsert.outcome === 'preserved') {
+    ctx.publish = 'skipped-stale';
+  } else {
+    if (!legacy && upsert.item !== undefined) {
+      published = runItemToRecord(upsert.item, run);
+    }
+    const result = await deps.publisher.publishRunUpdate(published);
+    ctx.publish = result.outcome;
+    if (result.outcome !== 'published') {
+      console.error(
+        `handler: publishRunUpdate for run ${run.runId} returned "${result.outcome}"; ` +
+          `persisted data retained`,
+      );
+    }
   }
 
   // Step 6 (workflow-performance-reports Req 1.1): when the run is terminal,
   // compute and persist its performance rollup. Best-effort and failure-isolated
   // — it never disturbs the run/task state or publish above (Req 1.6).
-  await maybePersistRunSummary(deps, run);
+  await maybePersistRunSummary(deps, published);
+}
+
+/**
+ * The task fields compared (and, in shadow mode, written from the API) on
+ * terminal task events.
+ */
+const SHADOW_FIELDS = [
+  'name',
+  'cpus',
+  'memory',
+  'instanceType',
+  'createdAt',
+  'startedAt',
+  'stoppedAt',
+] as const satisfies readonly (keyof TaskRecord)[];
+
+const SHADOW_TIMESTAMP_FIELDS: ReadonlySet<string> = new Set([
+  'createdAt',
+  'startedAt',
+  'stoppedAt',
+]);
+
+/**
+ * Shadow mode: compare the event-derived task fields with GetRunTask and emit
+ * one EMF line (metric `EnrichmentShadowMismatch`, dimension `field`) per
+ * mismatching field. A field absent on either side is skipped; timestamps
+ * compare by instant. Returns the number of mismatches.
+ */
+function reportShadowMismatches(
+  runId: string,
+  taskId: string,
+  fromEvent: Partial<TaskRecord>,
+  fromApi: Partial<TaskRecord>,
+): number {
+  let mismatches = 0;
+  for (const field of SHADOW_FIELDS) {
+    const eventValue = fromEvent[field];
+    const apiValue = fromApi[field];
+    if (eventValue === undefined || apiValue === undefined) {
+      continue;
+    }
+    const equal = SHADOW_TIMESTAMP_FIELDS.has(field)
+      ? Date.parse(String(eventValue)) === Date.parse(String(apiValue))
+      : eventValue === apiValue;
+    if (equal) {
+      continue;
+    }
+    mismatches += 1;
+    console.log(
+      JSON.stringify({
+        _aws: {
+          Timestamp: Date.now(),
+          CloudWatchMetrics: [
+            {
+              Namespace: 'HealthOmicsIngest',
+              Dimensions: [['field']],
+              Metrics: [{ Name: 'EnrichmentShadowMismatch', Unit: 'Count' }],
+            },
+          ],
+        },
+        msg: 'enrichment_shadow_mismatch',
+        field,
+        EnrichmentShadowMismatch: 1,
+        runId,
+        taskId,
+        eventValue,
+        apiValue,
+      }),
+    );
+  }
+  return mismatches;
+}
+
+/**
+ * Whether a task event (event/shadow mode) needs GetRunTask. Task events carry
+ * name, cpus, memory, creationTime at every status, plus instanceType/startTime
+ * from RUNNING and stopTime at COMPLETED, so GetRunTask is called ONLY when:
+ *   - the status is FAILED or CANCELLED (statusMessage/failureReason are not in
+ *     events; the failed/cancelled event shape is also unverified),
+ *   - a terminal event lacks name/startedAt/stoppedAt (older schema or drift),
+ *   - shadow mode on any terminal event (to validate the event values),
+ *   - or the status is absent/unrecognized (defensive, as before).
+ */
+function taskNeedsApi(mode: EnrichmentMode, task: Partial<TaskRecord>): boolean {
+  const status = task.status;
+  if (status === undefined) {
+    return true;
+  }
+  if (status === TaskStatus.FAILED || status === TaskStatus.CANCELLED) {
+    return true;
+  }
+  if (!isTerminalTaskStatus(status)) {
+    return false;
+  }
+  if (mode === 'shadow') {
+    return true;
+  }
+  return (
+    task.name === undefined ||
+    task.startedAt === undefined ||
+    task.stoppedAt === undefined
+  );
 }
 
 /**
  * Process a task status-change event (design steps 1–5 for a task).
  *
- * The task event carries a single task; when enrichment is needed we fetch the
- * run's tasks and merge the matching one (by taskId) into the event fields, the
- * event winning on conflict (Req 2.4).
+ * In `event`/`shadow` mode every task event writes the fields it carries and
+ * publishes the MERGED stored task, so the dashboard updates at every status
+ * with cumulative name/cpus/memory/instanceType/timing; a stale write
+ * (preserved by the monotonic guard, e.g. RUNNING after COMPLETED) publishes
+ * nothing. `api` mode reproduces the legacy behavior exactly.
  */
 async function processTaskEvent(
   deps: HandlerDependencies,
   event: EventBridgeEvent<string, unknown>,
   updatedAt: string,
+  ctx: EventContext,
 ): Promise<void> {
   // Step 1: map event fields.
-  const mapped = mapTaskEvent(event);
-  if (mapped.runId === undefined || mapped.taskId === undefined) {
+  const fullMapped = mapTaskEvent(event);
+  ctx.status = fullMapped.status;
+  ctx.runId = fullMapped.runId;
+  ctx.taskId = fullMapped.taskId;
+  if (fullMapped.runId === undefined || fullMapped.taskId === undefined) {
     // Without both identifiers there is no key to persist against; log + ignore
     // (mapTaskEvent has already logged the full event).
     console.warn('handler: task event missing runId/taskId; ignoring');
+    ctx.write = 'skipped-no-id';
     return;
   }
+  const runId = fullMapped.runId;
+  const taskId = fullMapped.taskId;
+  const legacy = ctx.mode === 'api';
+  const mapped = legacy ? legacyTaskRecord(fullMapped, event) : fullMapped;
 
-  // Step 2: enrich on demand — but ONLY for the status transitions that
-  // actually carry new metadata a bare status update cannot supply. A task's
-  // lifecycle is PENDING -> STARTING -> RUNNING -> (STOPPING) -> terminal, and
-  // GetRunTask only ever adds:
-  //   - at RUNNING: name, cpus, memory, instanceType, createdAt, startedAt
-  //     (the task has now been scheduled/started, so these first exist);
-  //   - at a terminal status (COMPLETED/FAILED/CANCELLED): stoppedAt +
-  //     failureReason (plus a backstop for a missed RUNNING enrichment).
-  // PENDING, STARTING and STOPPING add nothing beyond `status` (no new timing
-  // or metadata), so they are persisted as a cheap status-only DynamoDB update
-  // with NO GetRunTask call. This cuts per-task API calls from ~one-per-event
-  // (5+) down to ~2 (RUNNING + terminal), removing the enrichment amplification
-  // that dominated the HealthOmics call volume for a batch.
-  //
-  // A safety net covers the (rare) case where a very fast task never emits a
-  // standalone RUNNING event: the terminal event still enriches, so timing/name
-  // is captured. And if an event unexpectedly arrives already missing its
-  // status (should not happen for a well-formed task event) we still enrich so
-  // we never persist a status-less task.
+  // Step 2: enrich only when the event cannot supply what the record needs
+  // (see taskNeedsApi / taskEventNeedsEnrichment for the per-mode policy).
   let record: Partial<TaskRecord> = mapped;
   const terminal = isTerminalTaskStatus(mapped.status);
-  if (taskEventNeedsEnrichment(mapped)) {
-    const enriched = await deps.enricher.enrichTask(mapped.runId, mapped.taskId);
+  const needsApi = legacy ? taskEventNeedsEnrichment(mapped) : taskNeedsApi(ctx.mode, mapped);
+  if (needsApi) {
+    const enriched = await deps.enricher.enrichTask(runId, taskId);
     record = mergeRecords<TaskRecord>(mapped, enriched);
+
+    if (ctx.mode === 'shadow' && terminal) {
+      // Validate the event values against GetRunTask, then write the API
+      // values for the compared fields so nothing user-visible at terminal
+      // depends on not-yet-validated event data.
+      reportShadowMismatches(runId, taskId, mapped, enriched);
+      for (const field of SHADOW_FIELDS) {
+        if (enriched[field] !== undefined) {
+          (record as Record<string, unknown>)[field] = enriched[field];
+        }
+      }
+    }
 
     // Authoritative-terminal override: normally the EVENT's status wins over the
     // enrichment read (the event is the freshest signal — see mergeRecords).
@@ -683,27 +1021,20 @@ async function processTaskEvent(
     // empty rows in the task timeline. When a terminal task still has no
     // `startedAt` after enrichment, the enrichment call was throttled/failed —
     // THROW so EventBridge retries (and ultimately DLQs) this event rather than
-    // committing an unenriched record. The global 10 TPS rate limiter means the
-    // retry is very likely to succeed once the burst subsides. A non-terminal
-    // task (e.g. PENDING) legitimately has no timing yet, so it is unaffected.
+    // committing an unenriched record. A non-terminal task (e.g. PENDING)
+    // legitimately has no timing yet, so it is unaffected.
     if (recordTerminal && record.startedAt === undefined) {
       throw new Error(
-        `enrichment incomplete for terminal task ${mapped.runId}/${mapped.taskId} ` +
+        `enrichment incomplete for terminal task ${runId}/${taskId} ` +
           `(no startedAt after GetRunTask); throwing so the event is retried/DLQ'd ` +
           `rather than persisting a bare task`,
       );
     }
   }
 
-  // Non-enriching RUNNING event: set an APPROXIMATE startedAt from the event
-  // time so the live DAG shows a start time immediately (the task node renders
-  // as "running since ~now" without paying a GetRunTask). This is deliberately
-  // approximate — `updatedAt` is when the RUNNING state-change event was emitted
-  // (1-second resolution), not the task's authoritative container start time.
-  // The terminal enrichment later OVERWRITES it with the true `startTime` from
-  // GetRunTask, so completed-task durations and reports remain authoritative.
-  // Only set it when enrichment did NOT run and no startedAt is present, so we
-  // never clobber an authoritative value.
+  // FALLBACK ONLY: a RUNNING event without a startTime (older event schema)
+  // gets an APPROXIMATE startedAt from the event time so the live DAG shows a
+  // start time. Current events carry the exact startTime, which is used as-is.
   if (mapped.status === TaskStatus.RUNNING && record.startedAt === undefined) {
     record.startedAt = updatedAt;
   }
@@ -711,16 +1042,26 @@ async function processTaskEvent(
   // Assemble the full record: identifiers (validated above) + updatedAt.
   const task: TaskRecord = {
     ...record,
-    runId: mapped.runId,
-    taskId: mapped.taskId,
+    runId,
+    taskId,
     updatedAt,
   };
 
   // Step 4: persist FIRST (Req 4.1, 4.2).
-  await deps.repository.upsertTask(task);
+  const upsert = readUpsertResult(await deps.repository.upsertTask(task));
+  ctx.write = upsert.outcome ?? 'written';
 
   // Step 5: publish; never throws — log a non-published outcome (Req 4.8, 4.9).
-  const result = await deps.publisher.publishTaskUpdate(task);
+  if (!legacy && upsert.outcome === 'preserved') {
+    ctx.publish = 'skipped-stale';
+    return;
+  }
+  const published =
+    !legacy && upsert.item !== undefined
+      ? taskItemToRecord(upsert.item as unknown as TaskItem)
+      : task;
+  const result = await deps.publisher.publishTaskUpdate(published);
+  ctx.publish = result.outcome;
   if (result.outcome !== 'published') {
     console.error(
       `handler: publishTaskUpdate for task ${task.runId}/${task.taskId} returned ` +
@@ -731,8 +1072,6 @@ async function processTaskEvent(
 
 /**
  * Whether a task status is terminal (the task has finished, one way or another).
- * Terminal events must always be enriched so final timing/name are captured
- * even if an earlier event's enrichment failed.
  */
 function isTerminalTaskStatus(status: TaskRecord['status'] | undefined): boolean {
   return (
@@ -743,30 +1082,12 @@ function isTerminalTaskStatus(status: TaskRecord['status'] | undefined): boolean
 }
 
 /**
- * Whether a task status-change event should trigger a GetRunTask enrichment.
+ * LEGACY (`api` mode only) task enrichment policy, kept verbatim for rollback.
  *
- * Enrichment is the sole source of `name`, `cpus`, `memory`, `instanceType`,
- * `createdAt`, `startedAt`, `stoppedAt`, and `failureReason` (the event itself
- * carries only `status` + identifiers — verified against the real event
- * payloads). To minimize load on the shared ~10 TPS HealthOmics run-read quota
- * (the ingest throughput ceiling at scale), we enrich at ONLY ONE point in a
- * task's lifecycle:
- *
- *   - terminal (COMPLETED/FAILED/CANCELLED) — the single authoritative read.
- *     GetRunTask returns the final name, cpus, memory, instanceType, createdAt,
- *     startTime AND stopTime + failureReason, so one call captures everything.
- *
- * PENDING / STARTING / RUNNING are persisted as cheap status-only updates with
- * NO API call. RUNNING additionally sets an APPROXIMATE `startedAt` from the
- * event time (see processTaskEvent) so the live DAG shows a start time; the
- * terminal enrichment later overwrites it with the authoritative `startTime`.
- * This halves per-task enrichment vs. enriching on both RUNNING and terminal.
- *
- * Live-view tradeoff (accepted): a RUNNING task shows correct status/DAG color
- * and an approximate start time, but its name and resource sizes appear only
- * once it reaches terminal (when the one enrichment runs). A task that finishes
- * without ever emitting a standalone RUNNING event is fully captured by the
- * terminal enrichment regardless.
+ * It predates the enriched task events: it assumed the event carried only
+ * `status` + identifiers, so it called GetRunTask on EVERY terminal event (one
+ * call per task) and approximated a RUNNING task's `startedAt` from the event
+ * time. In `event`/`shadow` mode {@link taskNeedsApi} is used instead.
  *
  * As a safety net, an event that somehow lacks a recognized status is enriched
  * too, so a status-less task is never persisted bare.
@@ -786,30 +1107,71 @@ function taskEventNeedsEnrichment(task: Partial<TaskRecord>): boolean {
  * allowed to propagate so EventBridge retries and ultimately routes to the DLQ
  * (Req 1.7, 3.10), while enrichment/graph/publish failures are isolated so they
  * never discard already-persisted state (Req 4.1, 4.2, 6.2, 7.1).
+ *
+ * Emits exactly ONE structured `ingest_event` log line per event (type, status,
+ * ids, mode, HealthOmics calls made, write and publish outcome) and never logs
+ * the event payload.
  */
 export function createHandler(deps: HandlerDependencies): IngestHandler {
+  const mode = deps.enrichmentMode ?? 'event';
   return async function ingestHandler(
     event: EventBridgeEvent<string, unknown>,
   ): Promise<void> {
     const kind = detectKind(event);
 
-    // Unknown events are logged and ignored (design step 1; Req 1.5).
+    // Unknown events are logged concisely (no payload) and ignored.
     if (kind === 'UNKNOWN') {
       console.log(
-        'handler: ignoring event with unrecognized detail-type',
-        JSON.stringify(event),
+        JSON.stringify({
+          msg: 'ingest_event',
+          type: 'UNKNOWN',
+          detailType: event['detail-type'],
+          source: event.source,
+          id: event.id,
+          mode,
+        }),
       );
       return;
     }
 
+    const ctx: EventContext = {
+      mode,
+      apiCalls: { GetRun: 0, GetRunTask: 0, GetWorkflow: 0 },
+    };
+    const eventDeps: HandlerDependencies = {
+      ...deps,
+      enricher: countingEnricher(deps.enricher, ctx.apiCalls),
+    };
+
     // Normalize the event timestamp for `updatedAt` (Req 3.3).
     const updatedAt = resolveUpdatedAt(event.time);
 
-    if (kind === 'RUN') {
-      await processRunEvent(deps, event, updatedAt);
-      return;
+    let error: string | undefined;
+    try {
+      if (kind === 'RUN') {
+        await processRunEvent(eventDeps, event, updatedAt, ctx);
+      } else {
+        await processTaskEvent(eventDeps, event, updatedAt, ctx);
+      }
+    } catch (err) {
+      error = errorMessage(err);
+      throw err;
+    } finally {
+      console.log(
+        JSON.stringify({
+          msg: 'ingest_event',
+          type: kind,
+          status: ctx.status,
+          runId: ctx.runId,
+          taskId: ctx.taskId,
+          mode,
+          apiCalls: ctx.apiCalls,
+          write: ctx.write ?? (error !== undefined ? 'error' : 'none'),
+          publish: ctx.publish ?? 'none',
+          ...(error !== undefined ? { error } : {}),
+        }),
+      );
     }
-    await processTaskEvent(deps, event, updatedAt);
   };
 }
 
@@ -946,7 +1308,16 @@ function buildDefaultHandler(): IngestHandler {
     };
   }
 
-  return createHandler({ repository, enricher, publisher, summarizer, scheduleReconcile });
+  const enrichmentMode = parseEnrichmentMode(process.env.EVENT_ENRICHMENT_MODE);
+
+  return createHandler({
+    repository,
+    enricher,
+    publisher,
+    summarizer,
+    scheduleReconcile,
+    enrichmentMode,
+  });
 }
 
 /**

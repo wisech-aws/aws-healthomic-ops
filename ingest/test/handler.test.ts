@@ -4,6 +4,7 @@ import type { EventBridgeEvent } from 'aws-lambda';
 import {
   createHandler,
   GRAPH_FAILURE_RETRY_WINDOW_MS,
+  parseEnrichmentMode,
   type HandlerDependencies,
   type IngestRepository,
   type IngestEnricher,
@@ -12,6 +13,9 @@ import {
 import type { RunRecord, TaskRecord } from '../src/domain/records.js';
 import { RunStatus, TaskStatus } from '../src/domain/status.js';
 import type { StaticGraph, WorkflowDefinition } from '../src/parser/types.js';
+import { DynamoRepository } from '../src/repository.js';
+import { InMemoryDocClient } from './helpers/inMemoryDocClient.js';
+import { runEvents, taskLifecycle, type OmicsEvent } from './fixtures/events.js';
 
 /**
  * Handler unit tests (task 8.2 / 8.5). They exercise the wired pipeline —
@@ -191,7 +195,13 @@ describe('ingest handler pipeline', () => {
         return { runId, taskId, cpus: 4, memory: 8 };
       },
     });
-    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher,
+      publisher,
+      // Legacy behavior, kept as the `api` rollback mode.
+      enrichmentMode: 'api',
+    };
 
     const detail = {
       runId: 'run-1',
@@ -237,7 +247,13 @@ describe('ingest handler pipeline', () => {
         };
       },
     });
-    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher,
+      publisher,
+      // Legacy behavior, kept as the `api` rollback mode.
+      enrichmentMode: 'api',
+    };
 
     // A COMPLETED task event: even though the event carries status/name, the
     // handler must still enrich to capture the final startedAt/stoppedAt.
@@ -266,7 +282,13 @@ describe('ingest handler pipeline', () => {
     const enricher = makeEnricher({
       enrichTask: async (runId) => ({ runId }),
     });
-    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher,
+      publisher,
+      // Legacy behavior, kept as the `api` rollback mode.
+      enrichmentMode: 'api',
+    };
 
     const detail = {
       runId: 'run-1',
@@ -291,7 +313,13 @@ describe('ingest handler pipeline', () => {
     // A RUNNING task legitimately may have no startedAt yet; enrichment returns
     // just {runId}. This must persist best-effort (status only), not throw.
     const enricher = makeEnricher({ enrichTask: async (runId) => ({ runId }) });
-    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher,
+      publisher,
+      // Legacy behavior, kept as the `api` rollback mode.
+      enrichmentMode: 'api',
+    };
 
     const detail = {
       runId: 'run-1',
@@ -349,7 +377,13 @@ describe('ingest handler pipeline', () => {
         return { runId, taskId, name: 'align', cpus: 4, memory: 8 };
       },
     });
-    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher,
+      publisher,
+      // Legacy behavior, kept as the `api` rollback mode.
+      enrichmentMode: 'api',
+    };
 
     const detail = {
       runId: 'run-1',
@@ -422,7 +456,13 @@ describe('ingest handler pipeline', () => {
         };
       },
     });
-    const deps: HandlerDependencies = { repository: repo, enricher, publisher };
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher,
+      publisher,
+      // Legacy behavior, kept as the `api` rollback mode.
+      enrichmentMode: 'api',
+    };
     const arn = 'arn:aws:omics:us-east-1:123456789012:run/run-1/task/5252525';
 
     // 1) RUNNING (no enrich) — approximate startedAt from event time.
@@ -667,5 +707,585 @@ describe('static-graph failure cache (F1)', () => {
     const { deps, getWorkflowDefinition } = depsWithEntry(null);
     await createHandler(deps)(runEvent(fullRunDetail()));
     expect(getWorkflowDefinition).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event-driven enrichment (EVENT_ENRICHMENT_MODE), using real captured events
+// from run 8508632 (test/fixtures/run-8508632-subset.jsonl).
+// ---------------------------------------------------------------------------
+
+/** Task 9303953 (FQ_LINT WT_REP2): PENDING, STARTING, RUNNING, COMPLETED. */
+const LIFECYCLE_TASK = '9303953';
+const TASK_NAME = 'NFCORE_RNASEQ:RNASEQ:FASTQ_QC_TRIM_FILTER_SETSTRANDEDNESS:FQ_LINT (WT_REP2)';
+const TASK_CREATED = '2026-11-03T22:41:30.523Z';
+const TASK_STARTED = '2026-11-03T22:52:31.275Z';
+const TASK_STOPPED = '2026-11-03T22:52:51.913Z';
+
+function withDetail(event: OmicsEvent, patch: Record<string, unknown>, drop: string[] = []): OmicsEvent {
+  const detail: Record<string, unknown> = { ...event.detail, ...patch };
+  for (const key of drop) delete detail[key];
+  return { ...event, detail };
+}
+
+/** Parse every JSON console.log line with the given `msg`. */
+function jsonLogs(spy: ReturnType<typeof vi.spyOn>, msg: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const call of spy.mock.calls) {
+    const first = call[0];
+    if (typeof first !== 'string' || !first.startsWith('{')) continue;
+    const parsed = JSON.parse(first) as Record<string, unknown>;
+    if (parsed.msg === msg) out.push(parsed);
+  }
+  return out;
+}
+
+describe('event-driven task enrichment', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  it('event mode: a full COMPLETED lifecycle makes ZERO HealthOmics calls and publishes every event with its fields', async () => {
+    const { repo, tasks } = makeRepository();
+    const { publisher, publishedTasks } = makePublisher();
+    const enrichTask = vi.fn(async () => ({}));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichTask }),
+      publisher,
+      enrichmentMode: 'event',
+    };
+    const handler = createHandler(deps);
+    for (const event of taskLifecycle(LIFECYCLE_TASK)) {
+      await handler(event);
+    }
+
+    expect(enrichTask).not.toHaveBeenCalled();
+    expect(tasks).toHaveLength(4);
+    expect(publishedTasks.map((t) => t.status)).toEqual([
+      TaskStatus.PENDING,
+      TaskStatus.STARTING,
+      TaskStatus.RUNNING,
+      TaskStatus.COMPLETED,
+    ]);
+    for (const published of publishedTasks) {
+      expect(published).toMatchObject({
+        runId: '8508632',
+        taskId: LIFECYCLE_TASK,
+        name: TASK_NAME,
+        cpus: 2,
+        memory: 12,
+        createdAt: TASK_CREATED,
+      });
+    }
+    const [pending, , running, completed] = publishedTasks;
+    expect(pending.instanceType).toBeUndefined();
+    expect(pending.startedAt).toBeUndefined();
+    // RUNNING uses the event's exact startTime, not the (whole-second) event.time.
+    expect(running).toMatchObject({ instanceType: 'omics.r.large', startedAt: TASK_STARTED });
+    expect(running.startedAt).not.toBe('2026-11-03T22:52:31.000Z');
+    expect(completed).toMatchObject({
+      instanceType: 'omics.r.large',
+      startedAt: TASK_STARTED,
+      stoppedAt: TASK_STOPPED,
+    });
+  });
+
+  it('defaults to event mode when enrichmentMode is not set', async () => {
+    const { repo } = makeRepository();
+    const enrichTask = vi.fn(async () => ({}));
+    const handler = createHandler({
+      repository: repo,
+      enricher: makeEnricher({ enrichTask }),
+      publisher: makePublisher().publisher,
+    });
+    for (const event of taskLifecycle(LIFECYCLE_TASK)) {
+      await handler(event);
+    }
+    expect(enrichTask).not.toHaveBeenCalled();
+  });
+
+  it('a FAILED task event makes exactly one GetRunTask and persists statusMessage/failureReason', async () => {
+    const { repo, tasks } = makeRepository();
+    const { publisher, publishedTasks } = makePublisher();
+    const enrichTask = vi.fn(async (runId: string, taskId: string) => ({
+      runId,
+      taskId,
+      status: TaskStatus.FAILED,
+      startedAt: TASK_STARTED,
+      stoppedAt: TASK_STOPPED,
+      statusMessage: 'Task failed: exit code 1',
+      failureReason: 'RUN_TASK_FAILED',
+    }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichTask }),
+      publisher,
+      enrichmentMode: 'event',
+    };
+    const completed = taskLifecycle(LIFECYCLE_TASK)[3];
+    await createHandler(deps)(withDetail(completed, { status: 'FAILED' }));
+
+    expect(enrichTask).toHaveBeenCalledOnce();
+    expect(tasks[0]).toMatchObject({
+      status: TaskStatus.FAILED,
+      name: TASK_NAME,
+      statusMessage: 'Task failed: exit code 1',
+      failureReason: 'RUN_TASK_FAILED',
+      stoppedAt: TASK_STOPPED,
+    });
+    expect(publishedTasks[0].failureReason).toBe('RUN_TASK_FAILED');
+  });
+
+  it('a terminal event missing startTime/stopTime falls back to one GetRunTask', async () => {
+    const { repo, tasks } = makeRepository();
+    const enrichTask = vi.fn(async (runId: string, taskId: string) => ({
+      runId,
+      taskId,
+      startedAt: TASK_STARTED,
+      stoppedAt: TASK_STOPPED,
+    }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichTask }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'event',
+    };
+    const completed = taskLifecycle(LIFECYCLE_TASK)[3];
+    await createHandler(deps)(withDetail(completed, {}, ['startTime', 'stopTime']));
+
+    expect(enrichTask).toHaveBeenCalledOnce();
+    expect(tasks[0]).toMatchObject({ startedAt: TASK_STARTED, stoppedAt: TASK_STOPPED });
+  });
+
+  it('a terminal event missing taskName falls back to one GetRunTask', async () => {
+    const { repo, tasks } = makeRepository();
+    const enrichTask = vi.fn(async (runId: string, taskId: string) => ({ runId, taskId, name: 'from-api' }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichTask }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'event',
+    };
+    const completed = taskLifecycle(LIFECYCLE_TASK)[3];
+    await createHandler(deps)(withDetail(completed, {}, ['taskName']));
+    expect(enrichTask).toHaveBeenCalledOnce();
+    expect(tasks[0].name).toBe('from-api');
+  });
+
+  it('still throws when the fallback GetRunTask also lacks startedAt (bare terminal)', async () => {
+    const { repo, tasks } = makeRepository();
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichTask: async (runId) => ({ runId }) }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'event',
+    };
+    const completed = taskLifecycle(LIFECYCLE_TASK)[3];
+    await expect(
+      createHandler(deps)(withDetail(completed, {}, ['startTime', 'stopTime'])),
+    ).rejects.toThrow(/enrichment incomplete for terminal task/);
+    expect(tasks).toHaveLength(0);
+  });
+
+  it('api mode reproduces the legacy pattern: GetRunTask at COMPLETED only, approximate RUNNING startedAt, no name', async () => {
+    const { repo, tasks } = makeRepository();
+    const { publisher, publishedTasks } = makePublisher();
+    const enrichTask = vi.fn(async (runId: string, taskId: string) => ({
+      runId,
+      taskId,
+      name: TASK_NAME,
+      startedAt: TASK_STARTED,
+      stoppedAt: TASK_STOPPED,
+      cpus: 2,
+      memory: 12,
+    }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichTask }),
+      publisher,
+      enrichmentMode: 'api',
+    };
+    const handler = createHandler(deps);
+    for (const event of taskLifecycle(LIFECYCLE_TASK)) {
+      await handler(event);
+    }
+
+    expect(enrichTask).toHaveBeenCalledOnce();
+    const running = tasks[2];
+    expect(running.status).toBe(TaskStatus.RUNNING);
+    expect(running.startedAt).toBe('2026-11-03T22:52:31.000Z'); // event.time
+    expect(running.name).toBeUndefined();
+    expect(running.cpus).toBeUndefined();
+    expect(tasks[0]).toEqual({
+      runId: '8508632',
+      taskId: LIFECYCLE_TASK,
+      status: TaskStatus.PENDING,
+      updatedAt: '2026-11-03T22:41:30.000Z',
+    });
+    expect(tasks[3]).toMatchObject({ name: TASK_NAME, startedAt: TASK_STARTED, cpus: 2 });
+    expect(publishedTasks).toHaveLength(4);
+  });
+
+  it('shadow mode calls GetRunTask on terminal, emits an EMF mismatch line per field, and writes the API value', async () => {
+    const { repo, tasks } = makeRepository();
+    const enrichTask = vi.fn(async (runId: string, taskId: string) => ({
+      runId,
+      taskId,
+      status: TaskStatus.COMPLETED,
+      name: TASK_NAME,
+      cpus: 4, // differs from the event's "2"
+      memory: 12,
+      instanceType: 'omics.r.large',
+      createdAt: TASK_CREATED,
+      startedAt: TASK_STARTED,
+      stoppedAt: TASK_STOPPED,
+    }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichTask }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'shadow',
+    };
+    const handler = createHandler(deps);
+    for (const event of taskLifecycle(LIFECYCLE_TASK)) {
+      await handler(event);
+    }
+
+    expect(enrichTask).toHaveBeenCalledOnce(); // terminal only
+    const mismatches = jsonLogs(logSpy, 'enrichment_shadow_mismatch');
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]).toMatchObject({
+      field: 'cpus',
+      eventValue: 2,
+      apiValue: 4,
+      EnrichmentShadowMismatch: 1,
+      runId: '8508632',
+      taskId: LIFECYCLE_TASK,
+    });
+    expect(mismatches[0]._aws).toMatchObject({
+      CloudWatchMetrics: [
+        {
+          Namespace: 'HealthOmicsIngest',
+          Dimensions: [['field']],
+          Metrics: [{ Name: 'EnrichmentShadowMismatch', Unit: 'Count' }],
+        },
+      ],
+    });
+    expect(tasks[3].cpus).toBe(4); // API value written
+    // Non-terminal shadow events use event values (no call).
+    expect(tasks[0].cpus).toBe(2);
+  });
+
+  it('shadow mode emits no mismatch line when the API agrees with the event', async () => {
+    const { repo } = makeRepository();
+    const completed = taskLifecycle(LIFECYCLE_TASK)[3];
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({
+        enrichTask: async (runId, taskId) => ({
+          runId,
+          taskId,
+          name: TASK_NAME,
+          cpus: 2,
+          memory: 12,
+          instanceType: 'omics.r.large',
+          createdAt: TASK_CREATED,
+          startedAt: TASK_STARTED,
+          stoppedAt: TASK_STOPPED,
+        }),
+      }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'shadow',
+    };
+    await createHandler(deps)(completed);
+    expect(jsonLogs(logSpy, 'enrichment_shadow_mismatch')).toHaveLength(0);
+  });
+
+  it('logs exactly one concise ingest_event line per event with the API calls made, never the payload', async () => {
+    const { repo } = makeRepository();
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({
+        enrichTask: async (runId, taskId) => ({ runId, taskId, startedAt: TASK_STARTED }),
+      }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'event',
+    };
+    const handler = createHandler(deps);
+    const events = taskLifecycle(LIFECYCLE_TASK);
+    for (const event of events) {
+      await handler(event);
+    }
+    await handler(withDetail(events[3], { status: 'FAILED' }));
+
+    const lines = jsonLogs(logSpy, 'ingest_event');
+    expect(lines).toHaveLength(5);
+    expect(lines.map((l) => l.status)).toEqual(['PENDING', 'STARTING', 'RUNNING', 'COMPLETED', 'FAILED']);
+    for (const line of lines.slice(0, 4)) {
+      expect(line).toMatchObject({
+        type: 'TASK',
+        runId: '8508632',
+        taskId: LIFECYCLE_TASK,
+        mode: 'event',
+        apiCalls: { GetRun: 0, GetRunTask: 0, GetWorkflow: 0 },
+        write: 'written',
+        publish: 'published',
+      });
+    }
+    expect(lines[4].apiCalls).toEqual({ GetRun: 0, GetRunTask: 1, GetWorkflow: 0 });
+    for (const call of logSpy.mock.calls) {
+      expect(call.map(String).join(' ')).not.toContain('"detail"');
+    }
+  });
+
+  it('logs an unknown event concisely without its payload', async () => {
+    const { repo } = makeRepository();
+    const handler = createHandler({
+      repository: repo,
+      enricher: makeEnricher(),
+      publisher: makePublisher().publisher,
+    });
+    await handler({ ...runEvents()[0], 'detail-type': 'Something Else' });
+    const lines = jsonLogs(logSpy, 'ingest_event');
+    expect(lines).toEqual([
+      expect.objectContaining({ type: 'UNKNOWN', detailType: 'Something Else', source: 'aws.omics' }),
+    ]);
+    for (const call of logSpy.mock.calls) {
+      expect(call.map(String).join(' ')).not.toContain('"detail"');
+    }
+  });
+});
+
+describe('event-driven run enrichment', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  const GETRUN = {
+    createdAt: '2026-11-03T22:29:28.006Z',
+    parameters: '{"input":"s3://bucket/samplesheet.csv"}',
+    roleArn: 'arn:aws:iam::123456789012:role/omics',
+    networkingMode: 'VPC',
+    rawGetRun: '{"id":"8508632"}',
+  };
+
+  /** A repository fake whose marker reflects whether rawGetRun was written. */
+  function markerRepository(initialMarker: { hasGetRun: boolean } | null = null) {
+    let marker = initialMarker;
+    const base = makeRepository({
+      upsertRun: async (run) => {
+        base.runs.push(run);
+        if (run.rawGetRun !== undefined) marker = { hasGetRun: true };
+        else if (marker === null) marker = { hasGetRun: false };
+        return { outcome: 'written' };
+      },
+      getRunEnrichmentMarker: async () => marker,
+    });
+    return base;
+  }
+
+  it('calls GetRun only at PENDING and terminal (2 calls for 5 events) and derives startedAt from the RUNNING event time', async () => {
+    const { repo, runs } = markerRepository();
+    const { publisher, publishedRuns } = makePublisher();
+    const enrichRun = vi.fn(async () => ({ ...GETRUN }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichRun }),
+      publisher,
+      enrichmentMode: 'event',
+    };
+    const handler = createHandler(deps);
+    for (const event of runEvents()) {
+      await handler(event);
+    }
+
+    expect(enrichRun).toHaveBeenCalledTimes(2);
+    expect(runs.map((r) => r.status)).toEqual([
+      RunStatus.PENDING,
+      RunStatus.STARTING,
+      RunStatus.RUNNING,
+      RunStatus.STOPPING,
+      RunStatus.COMPLETED,
+    ]);
+    expect(runs[0]).toMatchObject({ createdAt: GETRUN.createdAt, workflowVersionName: 'v2-wave-fix' });
+    expect(runs[1].rawGetRun).toBeUndefined(); // STARTING used event data only
+    expect(runs[2].startedAt).toBe('2026-11-03T22:40:02.000Z');
+    expect(runs[2].outputUri).toContain('/8508632');
+    expect(publishedRuns).toHaveLength(5);
+  });
+
+  it('uses the PENDING event time as createdAt when GetRun returned nothing', async () => {
+    const { repo, runs } = markerRepository();
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichRun: async () => ({}) }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'event',
+    };
+    await createHandler(deps)(runEvents()[0]);
+    expect(runs[0].createdAt).toBe('2026-11-03T22:29:28.000Z');
+  });
+
+  it('falls back to GetRun on STARTING when the stored run lacks rawGetRun', async () => {
+    const { repo } = markerRepository({ hasGetRun: false });
+    const enrichRun = vi.fn(async () => ({ ...GETRUN }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichRun }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'event',
+    };
+    await createHandler(deps)(runEvents()[1]);
+    expect(enrichRun).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to GetRun on RUNNING when there is no stored run (missed PENDING)', async () => {
+    const { repo } = markerRepository(null);
+    const enrichRun = vi.fn(async () => ({ ...GETRUN }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichRun }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'event',
+    };
+    await createHandler(deps)(runEvents()[2]);
+    expect(enrichRun).toHaveBeenCalledOnce();
+  });
+
+  it('api mode calls GetRun on every run event', async () => {
+    const { repo } = markerRepository();
+    const enrichRun = vi.fn(async () => ({ ...GETRUN }));
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ enrichRun }),
+      publisher: makePublisher().publisher,
+      enrichmentMode: 'api',
+    };
+    const handler = createHandler(deps);
+    for (const event of runEvents()) {
+      await handler(event);
+    }
+    expect(enrichRun).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe('out-of-order delivery with the real repository guard', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  function realRepo() {
+    const db = new InMemoryDocClient();
+    const repository = new DynamoRepository(db.asDocClient(), 'test-table');
+    return { db, repository };
+  }
+
+  it('task COMPLETED then a late RUNNING: stays COMPLETED with all fields, and the stale RUNNING is not published', async () => {
+    const { db, repository } = realRepo();
+    const { publisher, publishedTasks } = makePublisher();
+    const enrichTask = vi.fn(async () => ({}));
+    const handler = createHandler({
+      repository,
+      enricher: makeEnricher({ enrichTask }),
+      publisher,
+      enrichmentMode: 'event',
+    });
+    const [, , running, completed] = taskLifecycle(LIFECYCLE_TASK);
+    await handler(completed);
+    await handler(running);
+
+    const stored = db.store.get(`RUN#8508632|TASK#${LIFECYCLE_TASK}`);
+    expect(stored).toMatchObject({
+      status: 'COMPLETED',
+      name: TASK_NAME,
+      instanceType: 'omics.r.large',
+      startedAt: TASK_STARTED,
+      stoppedAt: TASK_STOPPED,
+      cpus: 2,
+      memory: 12,
+    });
+    expect(enrichTask).not.toHaveBeenCalled();
+    expect(publishedTasks.map((t) => t.status)).toEqual([TaskStatus.COMPLETED]);
+  });
+
+  it('publishes the merged stored task (cumulative fields) after a sparse event', async () => {
+    const { repository } = realRepo();
+    const { publisher, publishedTasks } = makePublisher();
+    const handler = createHandler({
+      repository,
+      enricher: makeEnricher(),
+      publisher,
+      enrichmentMode: 'event',
+    });
+    const [, , running, completed] = taskLifecycle(LIFECYCLE_TASK);
+    await handler(running);
+    // A sparse STOPPING-like event (older schema) carrying only identity+status.
+    await handler(
+      withDetail(completed, { status: 'STOPPING' }, [
+        'taskName', 'cpus', 'memory', 'instanceType', 'creationTime', 'startTime', 'stopTime',
+      ]),
+    );
+    expect(publishedTasks[1]).toMatchObject({
+      status: TaskStatus.STOPPING,
+      name: TASK_NAME,
+      cpus: 2,
+      instanceType: 'omics.r.large',
+      startedAt: TASK_STARTED,
+    });
+  });
+
+  it('run PENDING arriving after RUNNING: status stays RUNNING, earlier config unchanged, no publish', async () => {
+    const { db, repository } = realRepo();
+    const { publisher, publishedRuns } = makePublisher();
+    let call = 0;
+    const enrichRun = vi.fn(async () => {
+      call += 1;
+      return call === 1
+        ? { parameters: '{"v":"first"}', rawGetRun: '{"n":1}', createdAt: '2026-11-03T22:29:28.006Z' }
+        : { parameters: '{"v":"second"}', rawGetRun: '{"n":2}' };
+    });
+    const handler = createHandler({
+      repository,
+      enricher: makeEnricher({ enrichRun }),
+      publisher,
+      enrichmentMode: 'event',
+    });
+    const [pending, , running] = runEvents();
+    await handler(running); // no stored run -> fallback GetRun
+    await handler(pending); // late
+
+    const stored = db.store.get('RUN#8508632|RUN#8508632');
+    expect(stored).toMatchObject({
+      status: 'RUNNING',
+      parameters: '{"v":"first"}',
+      rawGetRun: '{"n":1}',
+      startedAt: '2026-11-03T22:40:02.000Z',
+    });
+    expect(publishedRuns.map((r) => r.status)).toEqual([RunStatus.RUNNING]);
+    // The published run is the merged stored item and carries the GetRun data.
+    expect(publishedRuns[0].parameters).toBe('{"v":"first"}');
+  });
+});
+
+describe('parseEnrichmentMode', () => {
+  it('defaults to event and accepts the three modes', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(parseEnrichmentMode(undefined)).toBe('event');
+    expect(parseEnrichmentMode('')).toBe('event');
+    expect(parseEnrichmentMode('shadow')).toBe('shadow');
+    expect(parseEnrichmentMode('API')).toBe('api');
+    expect(parseEnrichmentMode('event')).toBe('event');
+    expect(parseEnrichmentMode('bogus')).toBe('event');
   });
 });
