@@ -11,6 +11,7 @@ import type { Edge, Node } from 'reactflow';
 import RunDetailView from './RunDetailView';
 import type { Run, Task } from '../api/types';
 import type { Subscription, SubscriptionHandlers } from '../api/client';
+import type { ApiConnectionEvent } from '../api/connectionEvents';
 import type { StaticGraph } from '../taskview/types';
 import { SplitPanelSlotContext } from '../splitPanelSlot';
 import type { SplitPanelSlot } from '../splitPanelSlot';
@@ -74,6 +75,9 @@ vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>();
   return {
     ...actual,
+    // The view opens its own onRunUpdated subscription; keep it a no-op here so
+    // tests never touch a real AppSync socket (tests that need it inject one).
+    onRunUpdated: vi.fn(() => ({ unsubscribe: () => {} })),
     getRunLogs: vi.fn().mockResolvedValue({
       logStreamName: 'run/run-1/task/task-live',
       events: [{ timestamp: 1704067200000, message: 'task log line' }],
@@ -1504,7 +1508,7 @@ describe('RunDetailView', () => {
     });
   });
 
-  it('resolves a stale TASK selection (taskId no longer in the list) to the run-level context rather than erroring (Req 4.7)', async () => {
+  it('keeps a selected task that a reconnect refetch omits, so its selection stays open (merge, not replace)', async () => {
     vi.useFakeTimers();
     try {
       // Capture the subscription's error handler so we can force a drop; the
@@ -1520,7 +1524,8 @@ describe('RunDetailView', () => {
 
       const kept = makeTask({ taskId: 'kept', name: 'kept-task', status: 'FAILED' });
       const gone = makeTask({ taskId: 'gone', name: 'gone-task', status: 'RUNNING' });
-      // First load returns both tasks; the reconnect refetch drops 'gone'.
+      // First load returns both tasks; the reconnect refetch omits 'gone'
+      // (e.g. an eventually consistent read).
       const listTasksForRun = vi
         .fn()
         .mockResolvedValueOnce([kept, gone])
@@ -1550,14 +1555,12 @@ describe('RunDetailView', () => {
       await act(async () => {
         await vi.runOnlyPendingTimersAsync();
       });
+      await vi.waitFor(() => expect(listTasksForRun).toHaveBeenCalledTimes(2));
 
-      // The now-stale TASK selection resolves to the run-level context: the
-      // task detail is gone and the derived resource summary is shown instead —
-      // no error, no empty task-detail panel (Req 4.7).
-      await vi.waitFor(() =>
-        expect(screen.queryByText(/logs — task gone-task/i)).not.toBeInTheDocument(),
-      );
-      expect(screen.getByTestId('resource-summary')).toBeInTheDocument();
+      // The refetch is merged into state, so 'gone' is kept: its node and the
+      // open task selection survive, with no error.
+      expect(screen.getByTestId('node-gone')).toBeInTheDocument();
+      expect(screen.getByText(/logs — task gone-task/i)).toBeInTheDocument();
       expect(screen.getByTestId('failed-tasks-list')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -1765,5 +1768,267 @@ describe('RunDetailView', () => {
     expect(screen.queryByText(/logs — task/i)).not.toBeInTheDocument();
     // No fabricated task selection was ever reported to the shell.
     expect(onTaskSelectionChange).not.toHaveBeenCalledWith('does-not-exist');
+  });
+});
+
+describe('RunDetailView live-update resync', () => {
+  /** A fake Hub connection stream the test can drive. */
+  function fakeConnection() {
+    let listener: ((event: ApiConnectionEvent) => void) | undefined;
+    const listen = vi.fn((l: (event: ApiConnectionEvent) => void) => {
+      listener = l;
+      return () => {
+        listener = undefined;
+      };
+    });
+    return {
+      listen,
+      emit: (event: ApiConnectionEvent) => act(() => listener?.(event)),
+      isListening: () => listener !== undefined,
+    };
+  }
+
+  /** Lets pending promise chains and zero-delay timers settle. */
+  async function settle(): Promise<void> {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  it('opens onTaskUpdated exactly once after the initial load resolves', async () => {
+    const subscribe = vi.fn(() => ({ unsubscribe: () => {} }));
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={vi.fn().mockResolvedValue(makeRun({ workflowId: 'wf-1' }))}
+        listTasksForRun={vi.fn().mockResolvedValue([makeTask()])}
+        getStaticGraph={vi.fn().mockResolvedValue(null)}
+        getRunMetrics={vi
+          .fn()
+          .mockResolvedValue({ runId: 'run-1', window: null, series: [] })}
+        getRunCostEstimate={vi.fn().mockResolvedValue({
+          runId: 'run-1',
+          lineItems: [],
+          total: null,
+          currency: null,
+          effectiveDate: null,
+          partial: false,
+        })}
+        onTaskUpdated={subscribe}
+        listenApiConnection={fakeConnection().listen}
+      />,
+    );
+    await screen.findByLabelText('progress');
+    await settle();
+    expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-syncs tasks once on Hub Connected after ConnectionDisrupted and merges the result', async () => {
+    const conn = fakeConnection();
+    const a = makeTask({ taskId: 'a', name: 'align', status: 'RUNNING' });
+    const b = makeTask({ taskId: 'b', name: 'sort', status: 'RUNNING' });
+    const listTasksForRun = vi
+      .fn()
+      .mockResolvedValueOnce([a])
+      .mockResolvedValueOnce([
+        { ...a, status: 'COMPLETED', updatedAt: '2024-01-01T00:05:00.000Z' },
+        b,
+      ]);
+    const getRun = vi.fn().mockResolvedValue(makeRun());
+    const getRunMetrics = vi.fn().mockResolvedValue({
+      runId: 'run-1',
+      window: null,
+      series: [],
+    });
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={getRun}
+        listTasksForRun={listTasksForRun}
+        getRunMetrics={getRunMetrics}
+        onTaskUpdated={noopSubscribe()}
+        listenApiConnection={conn.listen}
+        resyncDebounceMs={0}
+      />,
+    );
+    await screen.findByTestId('node-a');
+    expect(listTasksForRun).toHaveBeenCalledTimes(1);
+
+    conn.emit({ kind: 'state', state: 'ConnectionDisrupted' });
+    conn.emit({ kind: 'state', state: 'Connected' });
+    await waitFor(() => expect(listTasksForRun).toHaveBeenCalledTimes(2));
+    await screen.findByTestId('node-b');
+    expect(screen.getByTestId('node-a')).toHaveAttribute(
+      'data-status',
+      'COMPLETED',
+    );
+    expect(screen.getByTestId('progress-count')).toHaveTextContent('1 / 2');
+    await settle();
+    expect(listTasksForRun).toHaveBeenCalledTimes(2);
+    // Tasks-only: no extra run, metrics, or other fetches.
+    expect(getRun).toHaveBeenCalledTimes(1);
+    expect(getRunMetrics).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not re-sync on a plain Connected without a prior disrupted state', async () => {
+    const conn = fakeConnection();
+    const listTasksForRun = vi.fn().mockResolvedValue([makeTask()]);
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={vi.fn().mockResolvedValue(makeRun())}
+        listTasksForRun={listTasksForRun}
+        onTaskUpdated={noopSubscribe()}
+        listenApiConnection={conn.listen}
+        resyncDebounceMs={0}
+      />,
+    );
+    await screen.findByLabelText('progress');
+    conn.emit({ kind: 'state', state: 'Connected' });
+    await settle();
+    expect(listTasksForRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-syncs once when the task subscription is acknowledged', async () => {
+    const conn = fakeConnection();
+    const listTasksForRun = vi.fn().mockResolvedValue([makeTask()]);
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={vi.fn().mockResolvedValue(makeRun())}
+        listTasksForRun={listTasksForRun}
+        onTaskUpdated={noopSubscribe()}
+        listenApiConnection={conn.listen}
+        resyncDebounceMs={0}
+      />,
+    );
+    await screen.findByLabelText('progress');
+    // An ack for some other subscription (e.g. onRunUpdated) is ignored.
+    conn.emit({ kind: 'subscriptionAck', variables: undefined });
+    conn.emit({ kind: 'subscriptionAck', variables: { runId: 'run-1' } });
+    await waitFor(() => expect(listTasksForRun).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(listTasksForRun).toHaveBeenCalledTimes(2);
+  });
+
+  it('coalesces a burst of triggers into one in-flight plus one trailing query', async () => {
+    const conn = fakeConnection();
+    let release: (() => void) | undefined;
+    const listTasksForRun = vi
+      .fn()
+      .mockResolvedValueOnce([makeTask()])
+      .mockImplementationOnce(
+        () =>
+          new Promise<Task[]>((resolve) => {
+            release = () => resolve([]);
+          }),
+      )
+      .mockResolvedValue([]);
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={vi.fn().mockResolvedValue(makeRun())}
+        listTasksForRun={listTasksForRun}
+        onTaskUpdated={noopSubscribe()}
+        listenApiConnection={conn.listen}
+        resyncDebounceMs={0}
+      />,
+    );
+    await screen.findByLabelText('progress');
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await waitFor(() => expect(listTasksForRun).toHaveBeenCalledTimes(2));
+    // While that query is in flight, a burst of triggers queues one trailing run.
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    conn.emit({ kind: 'subscriptionAck', variables: { runId: 'run-1' } });
+    await settle();
+    expect(listTasksForRun).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      release?.();
+    });
+    await waitFor(() => expect(listTasksForRun).toHaveBeenCalledTimes(3));
+    await settle();
+    expect(listTasksForRun).toHaveBeenCalledTimes(3);
+  });
+
+  it('applies run updates for this run and re-syncs tasks exactly once on terminal', async () => {
+    let emitRun: ((run: Run) => void) | undefined;
+    const onRunUpdated = vi.fn((handlers: SubscriptionHandlers<Run>) => {
+      emitRun = handlers.next;
+      return { unsubscribe: () => {} };
+    });
+    const listTasksForRun = vi.fn().mockResolvedValue([makeTask()]);
+    render(
+      <RunDetailView
+        runId="run-1"
+        getRun={vi.fn().mockResolvedValue(makeRun({ status: 'RUNNING' }))}
+        listTasksForRun={listTasksForRun}
+        onTaskUpdated={noopSubscribe()}
+        onRunUpdated={onRunUpdated}
+        listenApiConnection={fakeConnection().listen}
+        resyncDebounceMs={0}
+      />,
+    );
+    await screen.findByLabelText('progress');
+    expect(screen.getByTestId('run-status')).toHaveTextContent('RUNNING');
+
+    // Another run's update is ignored.
+    act(() => {
+      emitRun?.(
+        makeRun({
+          runId: 'other',
+          status: 'COMPLETED',
+          updatedAt: '2024-01-01T01:00:00.000Z',
+        }),
+      );
+    });
+    await settle();
+    expect(listTasksForRun).toHaveBeenCalledTimes(1);
+
+    const done = makeRun({
+      status: 'COMPLETED',
+      stoppedAt: '2024-01-01T01:00:00.000Z',
+      updatedAt: '2024-01-01T01:00:00.000Z',
+    });
+    act(() => {
+      emitRun?.(done);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('run-status')).toHaveTextContent('COMPLETED'),
+    );
+    await waitFor(() => expect(listTasksForRun).toHaveBeenCalledTimes(2));
+    // A duplicate terminal message does not re-sync again.
+    act(() => {
+      emitRun?.({ ...done, updatedAt: '2024-01-01T01:00:01.000Z' });
+    });
+    await settle();
+    expect(listTasksForRun).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes its connection, visibility, and online listeners on unmount', async () => {
+    const conn = fakeConnection();
+    const listTasksForRun = vi.fn().mockResolvedValue([makeTask()]);
+    const { unmount } = render(
+      <RunDetailView
+        runId="run-1"
+        getRun={vi.fn().mockResolvedValue(makeRun())}
+        listTasksForRun={listTasksForRun}
+        onTaskUpdated={noopSubscribe()}
+        listenApiConnection={conn.listen}
+        resyncDebounceMs={0}
+      />,
+    );
+    await screen.findByLabelText('progress');
+    expect(conn.isListening()).toBe(true);
+    unmount();
+    expect(conn.isListening()).toBe(false);
+    window.dispatchEvent(new Event('online'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(listTasksForRun).toHaveBeenCalledTimes(1);
   });
 });

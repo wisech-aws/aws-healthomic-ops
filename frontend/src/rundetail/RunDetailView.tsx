@@ -23,7 +23,10 @@
  * It subscribes to `onTaskUpdated(runId)` through the reconnecting subscription
  * manager and applies each task update into the task list in place, which
  * recomputes the affected node's color/status without a page reload
- * (Req 9.7, 9.8).
+ * (Req 9.7, 9.8). Updates and snapshots are merged monotonically
+ * ({@link mergeTasks}), and tasks are re-synced (one `listTasksForRun` query)
+ * after a silent Amplify reconnect, on subscription ack, on tab focus/online,
+ * and once when an `onRunUpdated` message reports the run terminal.
  *
  * STATIC GRAPH: on open the view fetches the run's `StaticGraph` once via
  * `getStaticGraph(run.workflowId, run.workflowVersionName ?? 'DEFAULT')`
@@ -81,8 +84,13 @@ import {
   getRunMetrics as defaultGetRunMetrics,
   getStaticGraph as defaultGetStaticGraph,
   listTasksForRun as defaultListTasksForRun,
+  onRunUpdated as defaultOnRunUpdated,
   onTaskUpdated as defaultOnTaskUpdated,
 } from '../api/client';
+import {
+  listenApiConnection as defaultListenApiConnection,
+  type ListenApiConnection,
+} from '../api/connectionEvents';
 import type { Subscription, SubscriptionHandlers } from '../api/client';
 import type {
   ErrorExcerpt,
@@ -94,6 +102,8 @@ import type {
   TaskStatus,
 } from '../api/types';
 import { createReconnectingSubscription } from '../api/subscriptionManager';
+import { applyTaskUpdate, mergeTasks } from './mergeTasks';
+import { createCoalescedRunner } from './coalescedRunner';
 import { useSplitPanelSlot } from '../splitPanelSlot';
 import { selectLayer } from '../taskview/selectLayer';
 import { buildTrueDagOverlay } from '../taskview/trueDag';
@@ -128,6 +138,54 @@ import { slowestTaskId, topLongest } from '../metrics/taskRanking';
 import type { RankedTask } from '../metrics/taskRanking';
 import { segmentsForAll } from '../metrics/taskSegments';
 import type { TaskSegments } from '../metrics/taskSegments';
+
+/** Run statuses after which no further task updates are expected. */
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'DELETED',
+]);
+
+/**
+ * Amplify connection states that, when followed by `Connected`, mean the
+ * realtime socket was (re)established and messages may have been missed.
+ */
+const RECONNECT_FROM_STATES: ReadonlySet<string> = new Set([
+  'ConnectionDisrupted',
+  'ConnectedPendingKeepAlive',
+  'Connecting',
+]);
+
+/** Default debounce before a tasks-only re-sync runs (coalesces bursts). */
+const DEFAULT_RESYNC_DEBOUNCE_MS = 250;
+
+/**
+ * Applies a run subscription update onto the current run. Only defined fields
+ * overwrite, a stale update (older `updatedAt`) is ignored, and a terminal
+ * status never regresses. Before the run has loaded the update is ignored
+ * (`load` fetches the current run anyway).
+ */
+function applyRunUpdate(prev: Run | null, update: Run): Run | null {
+  if (prev == null) {
+    return prev;
+  }
+  const prevAt = Date.parse(prev.updatedAt);
+  const updateAt = Date.parse(update.updatedAt);
+  if (!Number.isNaN(prevAt) && !Number.isNaN(updateAt) && updateAt < prevAt) {
+    return prev;
+  }
+  if (
+    TERMINAL_RUN_STATUSES.has(prev.status ?? '') &&
+    !TERMINAL_RUN_STATUSES.has(update.status ?? '')
+  ) {
+    return prev;
+  }
+  const defined = Object.fromEntries(
+    Object.entries(update).filter(([, value]) => value !== undefined),
+  );
+  return { ...prev, ...defined } as Run;
+}
 
 /** Loading/error/ready phases of the initial queries (Req 10.1–10.3). */
 type LoadPhase = 'loading' | 'error' | 'ready';
@@ -215,6 +273,23 @@ export interface RunDetailViewProps {
     runId: string,
     handlers: SubscriptionHandlers<Task>,
   ) => Subscription;
+  /**
+   * Subscribes to run updates (all runs; the view filters to `runId`). Keeps
+   * the status badge and elapsed time live and triggers one final tasks
+   * re-sync when the run reaches a terminal status. Injectable for tests.
+   */
+  readonly onRunUpdated?: (handlers: SubscriptionHandlers<Run>) => Subscription;
+  /**
+   * Listens to Amplify realtime connection events (Hub `api` channel) so the
+   * view can re-sync tasks after a silent reconnect. Injectable for tests.
+   */
+  readonly listenApiConnection?: ListenApiConnection;
+  /**
+   * Debounce in ms before a tasks-only re-sync runs, so a burst of triggers
+   * (reconnect + subscription ack + tab focus) costs one query. Injectable
+   * for tests.
+   */
+  readonly resyncDebounceMs?: number;
   /**
    * Fetches measured utilization metrics for the run. Injectable for tests;
    * defaults to the real client. A thrown rejection is caught and surfaced as
@@ -429,19 +504,6 @@ function RunOrientationStrip({
   );
 }
 
-/** Merge an updated task into the list by `taskId`, appending if new. */
-function applyTaskUpdate(tasks: Task[], updated: Task): Task[] {
-  let found = false;
-  const next = tasks.map((task) => {
-    if (task.taskId === updated.taskId) {
-      found = true;
-      return updated;
-    }
-    return task;
-  });
-  return found ? next : [...next, updated];
-}
-
 export default function RunDetailView({
   runId,
   staticGraph: staticGraphProp = null,
@@ -452,6 +514,9 @@ export default function RunDetailView({
   listTasksForRun = defaultListTasksForRun,
   getStaticGraph = defaultGetStaticGraph,
   onTaskUpdated = defaultOnTaskUpdated,
+  onRunUpdated = defaultOnRunUpdated,
+  listenApiConnection = defaultListenApiConnection,
+  resyncDebounceMs = DEFAULT_RESYNC_DEBOUNCE_MS,
   getRunMetrics = defaultGetRunMetrics,
   getRunCostEstimate = defaultGetRunCostEstimate,
   getErrorExcerpt = defaultGetErrorExcerpt,
@@ -614,7 +679,9 @@ export default function RunDetailView({
         listTasksForRun(runId),
       ]);
       setRun(loadedRun);
-      setTasks(loadedTasks);
+      // Merge rather than replace, so subscription updates applied while the
+      // query was in flight (or a re-sync that landed first) aren't lost.
+      setTasks((prev) => mergeTasks(prev, loadedTasks));
       setPhase('ready');
 
       // Fetch the static graph once the run is known so we have its workflow id
@@ -693,17 +760,57 @@ export default function RunDetailView({
     void load();
   }, [load]);
 
-  // Subscribe to task updates for the run and apply each into the task list in
-  // place (Req 9.7, 9.8). The reconnecting manager keeps the stream live across
-  // transient drops; on a genuine reconnect the view is refetched through
-  // `load` so we resync current data (Req 10.6) without a page reload.
+  // The latest `load`, held in a ref so the subscription effect below does not
+  // depend on `load`'s identity. `load` changes whenever `run` changes (via
+  // `loadMetrics`), and depending on it tore down and re-opened the
+  // subscription after every load, losing messages in the gap.
+  const loadRef = useRef(load);
   useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
+
+  // Same reasoning for the injected data/subscribe functions: the live-update
+  // effect is keyed on `runId` only, so there is exactly one subscription per
+  // run.
+  const listTasksRef = useRef(listTasksForRun);
+  const onTaskUpdatedRef = useRef(onTaskUpdated);
+  const onRunUpdatedRef = useRef(onRunUpdated);
+  const listenApiConnectionRef = useRef(listenApiConnection);
+  useEffect(() => {
+    listTasksRef.current = listTasksForRun;
+    onTaskUpdatedRef.current = onTaskUpdated;
+    onRunUpdatedRef.current = onRunUpdated;
+    listenApiConnectionRef.current = listenApiConnection;
+  }, [listTasksForRun, onTaskUpdated, onRunUpdated, listenApiConnection]);
+
+  // Live updates (Req 9.7, 9.8, 10.6). One task subscription and one run
+  // subscription per `runId`, plus tasks-only re-syncs that close the gaps
+  // the subscription alone leaves:
+  //  - Amplify v6 reconnects silently (no observer `error`), so the manager's
+  //    `onReconnect` never fires for a socket loss. Re-sync when the Hub
+  //    reports `Connected` after a disrupted/pending/connecting state.
+  //  - Re-sync once the task subscription is acknowledged, closing the race
+  //    between the initial `listTasksForRun` and the subscription start.
+  //  - Re-sync when the tab becomes visible or the browser comes back online.
+  //  - Re-sync once when the run reaches a terminal status.
+  // Each re-sync is one `listTasksForRun` query (DynamoDB only), merged into
+  // state; it never re-fetches metrics, cost, or the graph. Overlapping
+  // triggers coalesce to at most one in-flight query plus one trailing one.
+  useEffect(() => {
+    let active = true;
+    const resync = createCoalescedRunner(async () => {
+      const snapshot = await listTasksRef.current(runId);
+      if (active) {
+        setTasks((prev) => mergeTasks(prev, snapshot));
+      }
+    }, resyncDebounceMs);
+
     // The manager fires `onReconnect` on its very first connection too; the
     // initial `load` effect has already fetched once (Req 10.4), so skip that
     // first callback and only refetch on subsequent reconnects.
     let seenFirstConnect = false;
-    const managed = createReconnectingSubscription<Task>({
-      subscribe: (handlers) => onTaskUpdated(runId, handlers),
+    const taskSub = createReconnectingSubscription<Task>({
+      subscribe: (handlers) => onTaskUpdatedRef.current(runId, handlers),
       onNext: (task) => {
         if (task.runId !== runId) {
           return;
@@ -715,11 +822,66 @@ export default function RunDetailView({
           seenFirstConnect = true;
           return;
         }
-        void load();
+        void loadRef.current();
       },
     });
-    return () => managed.stop();
-  }, [runId, onTaskUpdated, load]);
+
+    let terminalResyncDone = false;
+    const runSub = createReconnectingSubscription<Run>({
+      subscribe: (handlers) => onRunUpdatedRef.current(handlers),
+      onNext: (update) => {
+        if (update.runId !== runId) {
+          return;
+        }
+        setRun((prev) => applyRunUpdate(prev, update));
+        if (
+          !terminalResyncDone &&
+          TERMINAL_RUN_STATUSES.has(update.status ?? '')
+        ) {
+          terminalResyncDone = true;
+          resync.trigger();
+        }
+      },
+    });
+
+    let lastState: string | null = null;
+    const stopListening = listenApiConnectionRef.current((event) => {
+      if (event.kind === 'subscriptionAck') {
+        if (event.variables?.runId === runId) {
+          resync.trigger();
+        }
+        return;
+      }
+      const previous = lastState;
+      lastState = event.state;
+      if (
+        event.state === 'Connected' &&
+        previous != null &&
+        RECONNECT_FROM_STATES.has(previous)
+      ) {
+        resync.trigger();
+      }
+    });
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        resync.trigger();
+      }
+    };
+    const onOnline = () => resync.trigger();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('online', onOnline);
+
+    return () => {
+      active = false;
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('online', onOnline);
+      stopListening();
+      runSub.stop();
+      taskSub.stop();
+      resync.stop();
+    };
+  }, [runId, resyncDebounceMs]);
 
   // Retry re-issues the queries on demand (Req 9.2). Allowed because it is a
   // user-initiated action, not the automatic per-mount query.
