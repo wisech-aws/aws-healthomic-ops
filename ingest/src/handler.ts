@@ -71,6 +71,16 @@ import './parser/cwl.js';
 export const GRAPH_RESOLUTION_BUDGET_MS = 30_000;
 
 /**
+ * How long a recorded static-graph FAILURE for a workflow+version key counts as
+ * cached (1 hour). Within this window a failure-only marker short-circuits
+ * graph resolution, so a definition that cannot be fetched or parsed is not
+ * re-fetched (GetWorkflow + download + unzip + parse) on every run event of
+ * every run using that version. After the window one retry is attempted; a
+ * repeat failure refreshes the marker's `updatedAt` and starts a new window.
+ */
+export const GRAPH_FAILURE_RETRY_WINDOW_MS = 60 * 60 * 1000;
+
+/**
  * The repository surface the handler depends on. A narrow interface (rather than
  * the concrete `DynamoRepository`) keeps the handler testable with a fake that
  * needs no DynamoDB client (Req 13.1).
@@ -177,6 +187,8 @@ export interface HandlerDependencies {
   publisher: IngestPublisher;
   /** Budget for graph resolution; overridable in tests. Defaults to 30s. */
   graphBudgetMs?: number;
+  /** Clock (epoch ms) for the graph-failure retry window; defaults to Date.now. */
+  now?: () => number;
   /**
    * Optional measured-utilization sweep for the terminal-state Run_Summary
    * rollup. When absent, the summary is still written with utilization flagged
@@ -258,13 +270,38 @@ async function resolveStaticGraph(
   const budgetMs = deps.graphBudgetMs ?? GRAPH_RESOLUTION_BUDGET_MS;
 
   try {
-    // Reuse the cache: if a graph is already stored, never re-fetch (Req 6.9, 6.13).
-    const cached = await deps.repository.getStaticGraph(
-      workflowId,
-      workflowVersionName,
-    );
-    if (cached !== null) {
-      return;
+    // Reuse the cache: if a graph is already stored, never re-fetch (Req 6.9,
+    // 6.13). A RECENT failure-only marker also counts as cached so a broken
+    // definition is not re-fetched/re-parsed on every run event
+    // (GRAPH_FAILURE_RETRY_WINDOW_MS).
+    if (typeof deps.repository.getGraphCacheEntry === 'function') {
+      const entry = await deps.repository.getGraphCacheEntry(
+        workflowId,
+        workflowVersionName,
+      );
+      if (entry !== null) {
+        if (entry.graph !== null) {
+          return;
+        }
+        const failedAt =
+          entry.updatedAt !== undefined ? Date.parse(entry.updatedAt) : Number.NaN;
+        const now = (deps.now ?? Date.now)();
+        if (
+          entry.failureReason !== undefined &&
+          !Number.isNaN(failedAt) &&
+          now - failedAt < GRAPH_FAILURE_RETRY_WINDOW_MS
+        ) {
+          return;
+        }
+      }
+    } else {
+      const cached = await deps.repository.getStaticGraph(
+        workflowId,
+        workflowVersionName,
+      );
+      if (cached !== null) {
+        return;
+      }
     }
 
     // First sighting with no cached graph: fetch + parse within the 30s budget.

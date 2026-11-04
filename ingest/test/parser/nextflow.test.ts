@@ -312,3 +312,61 @@ describe('nextflow parser registration and dispatch', () => {
     }
   });
 });
+
+/**
+ * Regression: aliases are scoped per workflow body. nf-core rnaseq v2-wave-fix
+ * failed with "graph contains a cycle" because `align_star` emits
+ * `index = BAM_SORT_STATS_SAMTOOLS.out.index` and that alias leaked into
+ * `fastq_align_hisat2`, whose `HISAT2_ALIGN(reads, index, ...)` then produced a
+ * false BAM_SORT_STATS_SAMTOOLS -> HISAT2_ALIGN edge.
+ */
+describe('Nextflow parser - per-workflow alias scope', () => {
+  beforeEach(() => {
+    clearParsers();
+    registerParser(nextflowParser);
+  });
+
+  const TWO_SUBWORKFLOWS = `
+process ALIGN {
+  input:
+    path reads
+    path index
+  output:
+    path 'out.bam', emit: bam
+  script:
+  "true"
+}
+
+process SORT {
+  input:
+    path bam
+  output:
+    path 'out.bai', emit: index
+  script:
+  "true"
+}
+
+workflow ALIGN_STAR {
+  take:
+    bam
+  main:
+    SORT(bam)
+  emit:
+    index = SORT.out.index
+}
+
+workflow ALIGN_HISAT2 {
+  take:
+    reads
+    index
+  main:
+    ALIGN(reads, index)
+    SORT(ALIGN.out.bam)
+}
+`;
+
+  it('does not leak an emit alias from one subworkflow into another', () => {
+    const graph = parseDefinition(makeDef(TWO_SUBWORKFLOWS));
+    expect(sortEdges(graph)).toEqual([{ from: 'ALIGN', to: 'SORT' }]);
+  });
+});

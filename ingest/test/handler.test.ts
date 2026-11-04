@@ -3,6 +3,7 @@ import type { EventBridgeEvent } from 'aws-lambda';
 
 import {
   createHandler,
+  GRAPH_FAILURE_RETRY_WINDOW_MS,
   type HandlerDependencies,
   type IngestRepository,
   type IngestEnricher,
@@ -598,5 +599,73 @@ describe('ingest handler pipeline', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0].runId).toBe('run-1');
     expect(publishRunUpdate).toHaveBeenCalledOnce();
+  });
+});
+
+describe('static-graph failure cache (F1)', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  const NOW = Date.parse('2026-11-03T23:00:00.000Z');
+
+  function depsWithEntry(entry: Awaited<ReturnType<NonNullable<IngestRepository['getGraphCacheEntry']>>>) {
+    const { repo, graphFailures } = makeRepository({
+      getGraphCacheEntry: async () => entry,
+    });
+    const getWorkflowDefinition = vi.fn(
+      async (): Promise<WorkflowDefinition | null> => null,
+    );
+    const deps: HandlerDependencies = {
+      repository: repo,
+      enricher: makeEnricher({ getWorkflowDefinition }),
+      publisher: makePublisher().publisher,
+      now: () => NOW,
+    };
+    return { deps, getWorkflowDefinition, graphFailures };
+  }
+
+  it('is a one-hour window', () => {
+    expect(GRAPH_FAILURE_RETRY_WINDOW_MS).toBe(3_600_000);
+  });
+
+  it('treats a failure marker recorded 10 minutes ago as cached (no GetWorkflow)', async () => {
+    const { deps, getWorkflowDefinition, graphFailures } = depsWithEntry({
+      graph: null,
+      failureReason: 'parse failed: graph contains a cycle',
+      updatedAt: new Date(NOW - 10 * 60_000).toISOString(),
+    });
+    await createHandler(deps)(runEvent(fullRunDetail()));
+    expect(getWorkflowDefinition).not.toHaveBeenCalled();
+    expect(graphFailures).toHaveLength(0);
+  });
+
+  it('retries once the failure marker is older than the window (2 hours)', async () => {
+    const { deps, getWorkflowDefinition, graphFailures } = depsWithEntry({
+      graph: null,
+      failureReason: 'parse failed: graph contains a cycle',
+      updatedAt: new Date(NOW - 2 * 3_600_000).toISOString(),
+    });
+    await createHandler(deps)(runEvent(fullRunDetail()));
+    expect(getWorkflowDefinition).toHaveBeenCalledOnce();
+    expect(graphFailures).toHaveLength(1);
+  });
+
+  it('treats a stored graph that also carries a failure reason as cached', async () => {
+    const { deps, getWorkflowDefinition } = depsWithEntry({
+      graph: { workflowId: 'wf-1', nodes: [{ id: 'a', name: 'a' }], edges: [], fidelity: 'exact' },
+      failureReason: 'older failure',
+      updatedAt: new Date(NOW - 5 * 3_600_000).toISOString(),
+    });
+    await createHandler(deps)(runEvent(fullRunDetail()));
+    expect(getWorkflowDefinition).not.toHaveBeenCalled();
+  });
+
+  it('fetches when there is no cache entry at all', async () => {
+    const { deps, getWorkflowDefinition } = depsWithEntry(null);
+    await createHandler(deps)(runEvent(fullRunDetail()));
+    expect(getWorkflowDefinition).toHaveBeenCalledOnce();
   });
 });

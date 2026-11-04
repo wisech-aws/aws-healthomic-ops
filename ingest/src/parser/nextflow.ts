@@ -353,6 +353,14 @@ function parseNamedWorkflows(source: string): ProcessDecl[] {
  * dependency on a specific producing node. These start as the node names
  * themselves and grow as local variables are bound to producer outputs
  * (`ch = FOO.out`).
+ *
+ * Aliases are SCOPED PER WORKFLOW BODY: the map is reset to the node names at
+ * the start of each body. A local or emit name bound in one subworkflow (e.g.
+ * nf-core rnaseq's `align_star` emitting `index = BAM_SORT_STATS_SAMTOOLS.out.index`)
+ * must not leak into another body that uses the same name for its own input
+ * (`fastq_align_hisat2`'s `HISAT2_ALIGN(reads, index, ...)`); a shared map
+ * created a false BAM_SORT_STATS_SAMTOOLS→HISAT2_ALIGN edge and a "graph
+ * contains a cycle" parse failure.
  */
 function parseEdges(source: string, nodes: ProcessDecl[]): GraphEdge[] {
   const nodeNames = new Set(nodes.map((n) => n.name));
@@ -366,9 +374,12 @@ function parseEdges(source: string, nodes: ProcessDecl[]): GraphEdge[] {
   // output (`ch = NODE.out`) are added to this map as they are encountered
   // during the scan below.
   const aliasToProducer = new Map<string, string>();
-  for (const node of nodes) {
-    aliasToProducer.set(node.name, node.name);
-  }
+  const resetAliases = (): void => {
+    aliasToProducer.clear();
+    for (const node of nodes) {
+      aliasToProducer.set(node.name, node.name);
+    }
+  };
 
   const edgeKeys = new Set<string>();
   const edges: GraphEdge[] = [];
@@ -389,6 +400,8 @@ function parseEdges(source: string, nodes: ProcessDecl[]): GraphEdge[] {
   };
 
   for (const body of collectWorkflowBodies(source)) {
+    // Aliases are local to one workflow body (see doc comment).
+    resetAliases();
     // Process each statement (split on newlines and semicolons). Order matters
     // so that a variable bound earlier can be referenced later.
     const statements = body.split(/[\n;]+/);
