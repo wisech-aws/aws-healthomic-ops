@@ -15,7 +15,7 @@ scripts/deploy.sh --frontend-only          # build SPA, deploy only HealthOmicsF
 scripts/deploy.sh --stack HealthOmicsApi   # build, deploy one named stack
 scripts/deploy.sh --skip-build             # deploy without rebuilding (use with care)
 scripts/deploy.sh --region us-west-2       # override region (default: $AWS_REGION or us-east-1)
-scripts/deploy.sh --kinesis-mode off       # select the ingest path (default: active)
+scripts/deploy.sh --kinesis-mode active    # opt in to the Kinesis ingest buffer (default: off)
 scripts/deploy.sh --help
 ```
 
@@ -23,13 +23,13 @@ scripts/deploy.sh --help
 path. The script always passes it to CDK as `-c kinesisIngestMode=<mode>`,
 including `off`:
 
-- `active` (default): EventBridge targets the Kinesis stream, and the Kinesis
-  consumer Lambda is the live ingest path. The on-demand stream has a fixed
-  charge of about $29/month in us-east-1.
+- `off` (default): direct EventBridge → Lambda only, with no Kinesis resources.
 - `present`: also provision the Kinesis stream and consumer, but EventBridge
   still targets the direct ingest Lambda, so the Kinesis path sits idle (the
   stream charge still applies).
-- `off`: direct EventBridge → Lambda only, with no Kinesis resources.
+- `active` (opt-in): EventBridge targets the Kinesis stream, and the Kinesis
+  consumer Lambda is the live ingest path. The on-demand stream has a fixed
+  charge of about $29/month in us-east-1.
 
 Toggle between modes with a single redeploy. The script does not set
 `eventEnrichmentMode`, so it deploys the CDK default (`event`).

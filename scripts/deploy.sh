@@ -41,16 +41,17 @@
 #   scripts/deploy.sh --stack HealthOmicsApi # build, deploy one named stack
 #   scripts/deploy.sh --skip-build           # deploy without rebuilding (use with care)
 #   scripts/deploy.sh --region us-west-2     # override region (default: $AWS_REGION or us-east-1)
-#   scripts/deploy.sh --kinesis-mode off     # select the ingest path (default: active)
+#   scripts/deploy.sh --kinesis-mode active  # opt in to the Kinesis ingest buffer (default: off)
 #   scripts/deploy.sh --help
 #
 # --kinesis-mode <off|present|active> selects the HealthOmicsIngest ingest path
 # (always passed through to CDK as `-c kinesisIngestMode=<mode>`):
-#   active  (default) EventBridge targets the Kinesis stream and the Kinesis
-#           consumer Lambda is the live ingest path (~$29/mo stream charge).
+#   off     (default) direct EventBridge -> Lambda only (no Kinesis resources).
 #   present also provision the Kinesis stream + consumer, but EventBridge still
-#           targets the direct ingest Lambda (the Kinesis path sits idle).
-#   off     direct EventBridge -> Lambda only (no Kinesis resources).
+#           targets the direct ingest Lambda (the Kinesis path sits idle;
+#           ~$29/mo stream charge).
+#   active  EventBridge targets the Kinesis stream and the Kinesis consumer
+#           Lambda is the live ingest path (~$29/mo stream charge).
 #   Toggle between modes with a single redeploy; the event enrichment mode
 #   is not set here and uses the CDK default (event).
 #
@@ -75,7 +76,7 @@ STACK="--all"
 FRONTEND_ONLY=0
 DO_BUILD=1
 REGION="${AWS_REGION:-us-east-1}"
-KINESIS_MODE="active"
+KINESIS_MODE="off"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -178,7 +179,7 @@ echo ""
 echo "Stacks and what each needs:"
 echo "  HealthOmicsData     DynamoDB single table (the data store)."
 echo "  HealthOmicsApi      AppSync GraphQL API + Cognito user pool (sign-in)."
-echo "  HealthOmicsIngest   EventBridge rule, Kinesis stream, ingest Lambdas. MUST be in the"
+echo "  HealthOmicsIngest   EventBridge rule + ingest Lambda (+ Kinesis stream if enabled). MUST be in the"
 echo "                      SAME region as your HealthOmics runs so events arrive."
 echo "  HealthOmicsFrontend S3 + CloudFront hosting for the SPA (needs frontend/dist)."
 echo ""

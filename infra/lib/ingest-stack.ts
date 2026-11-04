@@ -33,15 +33,15 @@ const KINESIS_CONSUMER_ENTRY = path.join(
  * Toggle for the alternative Kinesis Data Streams ingest path
  * Set via CDK context
  * `-c kinesisIngestMode=<mode>`:
- *   - 'off'    : only the direct EventBridge -> Lambda path exists (no Kinesis
- *                resources, no idle Kinesis charge).
+ *   - 'off' (default): only the direct EventBridge -> Lambda path exists (no
+ *                Kinesis resources, no idle Kinesis charge).
  *   - 'present': ALSO provision the Kinesis stream + batch-consumer + event-
  *                source mapping, but EventBridge still targets the ingest Lambda
  *                directly (the Kinesis path sits idle — deploy/validate the
  *                resources without changing live ingestion).
- *   - 'active' (default): EventBridge targets the Kinesis stream (PartitionKey =
- *                runId) instead of the Lambda (the batch-consumer becomes the
- *                live ingest path). Roll back to 'present'/'off' with a single
+ *   - 'active' : EventBridge targets the Kinesis stream (PartitionKey = runId)
+ *                instead of the Lambda (the batch-consumer becomes the live
+ *                ingest path). Roll back to 'present'/'off' with a single
  *                re-deploy — neither path is deleted on the toggle.
  *
  * Kinesis was chosen over SQS FIFO because EventBridge -> Kinesis supports a
@@ -53,7 +53,7 @@ const KINESIS_CONSUMER_ENTRY = path.join(
 type KinesisIngestMode = 'off' | 'present' | 'active';
 
 /** Default `kinesisIngestMode` when the context value is absent. */
-export const DEFAULT_KINESIS_INGEST_MODE: KinesisIngestMode = 'active';
+export const DEFAULT_KINESIS_INGEST_MODE: KinesisIngestMode = 'off';
 
 /**
  * How the ingest handler enriches events with HealthOmics read APIs, passed to
@@ -71,10 +71,10 @@ export const DEFAULT_KINESIS_INGEST_MODE: KinesisIngestMode = 'active';
  *   - 'api'    : the legacy behavior (rollback): GetRun on every run event,
  *                GetRunTask on every terminal task event.
  *
- * Both flags have defaults (kinesisIngestMode=active, eventEnrichmentMode=event),
+ * Both flags have defaults (kinesisIngestMode=off, eventEnrichmentMode=event),
  * so a plain `cdk deploy` uses them. Override either, e.g.
  *   cdk deploy -c eventEnrichmentMode=api      # rollback
- *   cdk deploy -c kinesisIngestMode=off        # direct path, no Kinesis stream
+ *   cdk deploy -c kinesisIngestMode=active     # opt in to the Kinesis buffer
  * An invalid value fails synth.
  */
 export type EventEnrichmentMode = 'event' | 'shadow' | 'api';
@@ -438,7 +438,7 @@ export class IngestStack extends Stack {
     });
 
     // --- Alternative Kinesis Data Streams ingest path (toggle-able, additive) -
-    // Read the mode from CDK context; default 'active'. When 'present'/'active' we
+    // Read the mode from CDK context; default 'off'. When 'present'/'active' we
     // provision the Kinesis stream + batch-consumer Lambda + event-source
     // mapping ALONGSIDE the direct path. The EventBridge target is the Lambda
     // UNLESS mode is 'active', in which case it is the Kinesis stream (with a
