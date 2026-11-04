@@ -391,7 +391,7 @@ function ErrorExcerptBlock({
  * Zone 1 — the always-visible orientation strip (Req 1.1–1.3).
  *
  * A compact header zone rendered unconditionally at the top of the ready-state
- * body, above the master-detail working area and the analysis grid. It gives an
+ * body, above the list-detail working area and the analysis grid. It gives an
  * operator constant orientation regardless of the current selection or which
  * analysis sections are expanded:
  *
@@ -1504,7 +1504,7 @@ export default function RunDetailView({
             plus the Option-B engine error excerpt as soon as the run is known
             to have failed, so the operator sees WHY without digging through the
             AWS CLI or CloudWatch logs. Rendered here — directly under the
-            orientation strip and ABOVE the master-detail working area — so a
+            orientation strip and ABOVE the list-detail working area — so a
             failed run is never hidden by the current selection (Req 2.3). Shown
             ONLY when the run status is FAILED and a message was captured; never
             rendered for a non-FAILED run and never fabricated (Req 2.4). */}
@@ -1566,7 +1566,7 @@ export default function RunDetailView({
             SplitPanel fly-out are wired in a later task; for now a selection
             renders the detail inline below the DAG so every element stays
             reachable (no content removed, Req 6.4). */}
-        <div data-testid="dag-master" aria-label="task DAG">
+        <div data-testid="dag-primary" aria-label="task DAG">
           <SpaceBetween size="s">
             {/* Consolidated DAG toolbar (Req 3.3): node search + match badge,
                 the failed/cancelled quick-filter + count badge, and the

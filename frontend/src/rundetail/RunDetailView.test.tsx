@@ -426,8 +426,8 @@ describe('RunDetailView', () => {
     // closed (Req 2.1): there is no detail panel and no reserved blank detail
     // region beside the full-width DAG (Req 1.5) — only the run-level context
     // band below it.
-    const dagMaster = await screen.findByTestId('dag-master');
-    expect(dagMaster).toBeInTheDocument();
+    const dagPrimary = await screen.findByTestId('dag-primary');
+    expect(dagPrimary).toBeInTheDocument();
     expect(screen.queryByTestId('detail-panel')).not.toBeInTheDocument();
     expect(screen.getByTestId('run-level-context')).toBeInTheDocument();
 
@@ -450,8 +450,8 @@ describe('RunDetailView', () => {
 
     // The DAG stays rendered and interactive while the fly-out is open
     // (Req 2.5), and the detail never renders inside the DAG region itself.
-    expect(screen.getByTestId('dag-master')).toBeInTheDocument();
-    expect(dagMaster).not.toContainElement(
+    expect(screen.getByTestId('dag-primary')).toBeInTheDocument();
+    expect(dagPrimary).not.toContainElement(
       screen.getByText(/logs — task align/i),
     );
 

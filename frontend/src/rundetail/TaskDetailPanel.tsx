@@ -1,5 +1,5 @@
 /**
- * Selection-driven detail panel for the Run Detail master-detail layout
+ * Selection-driven detail panel for the Run Detail list-detail layout
  * (design §Components and Interfaces; Req 4.3–4.6, 8.4).
  *
  * This is a PRESENTATIONAL component extracted out of {@link RunDetailView} so
@@ -349,7 +349,7 @@ export interface TaskDetailPanelProps {
 }
 
 /**
- * Selection-driven detail panel (the "detail" of the master-detail layout).
+ * Selection-driven detail panel (the "detail" of the list-detail layout).
  * See the module doc for the full contract. Renders nothing when `selection`
  * is `null`.
  */

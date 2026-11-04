@@ -60,3 +60,6 @@ params-*.json
 # Kiro specs / AI agent prompt docs (not part of the open-source project)
 .kiro/
 *Coding Agent Prompt*.md
+# Raw EventBridge event captures and local feedback notes (not source)
+events-*.jsonl
+docs/healthomics-eventbridge-feedback.md
