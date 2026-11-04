@@ -17,8 +17,10 @@
  * This Lambda runs ONCE per terminal run, a few minutes later (scheduled by the
  * ingest completion hook via a one-shot EventBridge Scheduler), by which point
  * both have settled. It:
- *   1. re-enriches the run + ALL its tasks from the HealthOmics read APIs
- *      (authoritative), correcting any stored task whose status/timing drifted;
+ *   1. re-enriches the run (GetRun) + ALL its tasks from the HealthOmics read
+ *      APIs (authoritative), correcting any stored task whose status/timing
+ *      drifted. Tasks come from ListRunTasks pages (100 per page); GetRunTask
+ *      is called only for FAILED/CANCELLED tasks (see `enrichTasks`);
  *   2. re-sweeps CloudWatch for the (now-available) utilization series;
  *   3. recomputes and re-upserts the Run_Summary with a freshly-bumped
  *      `updatedAt` so it wins the monotonic guard, and refreshes the

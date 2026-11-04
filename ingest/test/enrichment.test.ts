@@ -266,64 +266,90 @@ describe('enrichRun', () => {
 });
 
 describe('enrichTasks', () => {
-  it('lists tasks and enriches each via GetRunTask', async () => {
+  it('uses ListRunTasks items directly and calls GetRunTask only for FAILED/CANCELLED tasks', async () => {
+    const listInputs: unknown[] = [];
     const { client, invoked } = makeClient({
-      ListRunTasksCommand: () => ({
-        items: [
-          { taskId: 't1', name: 'align', status: 'RUNNING' },
-          { taskId: 't2', name: 'sort', status: 'PENDING' },
-        ],
-      }),
+      ListRunTasksCommand: (input) => {
+        listInputs.push(input);
+        return {
+          items: [
+            {
+              taskId: 't1',
+              name: 'align',
+              status: 'COMPLETED',
+              cpus: 4,
+              memory: 8,
+              instanceType: 'omics.c.xlarge',
+              creationTime: new Date('2024-01-01T00:00:00.000Z'),
+              startTime: new Date('2024-01-01T00:01:00.000Z'),
+              stopTime: new Date('2024-01-01T00:09:00.000Z'),
+            },
+            { taskId: 't2', name: 'sort', status: 'FAILED', cpus: 2, memory: 4 },
+            { taskId: 't3', name: 'index', status: 'CANCELLED' },
+          ],
+        };
+      },
       GetRunTaskCommand: (input) => {
         const taskId = (input as { taskId: string }).taskId;
         return {
           taskId,
-          name: taskId === 't1' ? 'align' : 'sort',
-          status: taskId === 't1' ? 'COMPLETED' : 'RUNNING',
-          cpus: 4,
-          memory: 8,
-          creationTime: new Date('2024-01-01T00:00:00.000Z'),
+          name: taskId === 't2' ? 'sort' : 'index',
+          status: taskId === 't2' ? 'FAILED' : 'CANCELLED',
+          statusMessage: `${taskId} failed`,
+          failureReason: 'RUN_TASK_FAILED',
         };
       },
     });
 
     const records = await enrichTasks(client, 'run-1', fastOptions);
-    expect(records).toHaveLength(2);
-    expect(records[0]).toMatchObject({
+    expect(records).toHaveLength(3);
+    expect(records[0]).toEqual({
       runId: 'run-1',
       taskId: 't1',
       name: 'align',
       status: TaskStatus.COMPLETED,
       cpus: 4,
       memory: 8,
+      instanceType: 'omics.c.xlarge',
       createdAt: '2024-01-01T00:00:00.000Z',
+      startedAt: '2024-01-01T00:01:00.000Z',
+      stoppedAt: '2024-01-01T00:09:00.000Z',
     });
-    // ListRunTasks once, GetRunTask per task.
+    expect(records[1]).toMatchObject({ taskId: 't2', statusMessage: 't2 failed', failureReason: 'RUN_TASK_FAILED' });
+    expect(records[2]).toMatchObject({ taskId: 't3', status: TaskStatus.CANCELLED, statusMessage: 't3 failed' });
+    // One ListRunTasks page; GetRunTask only for the FAILED and CANCELLED tasks.
     expect(invoked.filter((n) => n === 'ListRunTasksCommand')).toHaveLength(1);
     expect(invoked.filter((n) => n === 'GetRunTaskCommand')).toHaveLength(2);
+    expect(listInputs[0]).toMatchObject({ id: 'run-1', maxResults: 100 });
   });
 
-  it('follows the ListRunTasks pagination token', async () => {
+  it('follows the ListRunTasks pagination token with 100-item pages', async () => {
     let call = 0;
+    const listInputs: unknown[] = [];
     const { client, invoked } = makeClient({
-      ListRunTasksCommand: () => {
+      ListRunTasksCommand: (input) => {
+        listInputs.push(input);
         call += 1;
         return call === 1
-          ? { items: [{ taskId: 't1', name: 'a' }], nextToken: 'next' }
-          : { items: [{ taskId: 't2', name: 'b' }] };
+          ? { items: [{ taskId: 't1', name: 'a', status: 'COMPLETED' }], nextToken: 'next' }
+          : { items: [{ taskId: 't2', name: 'b', status: 'RUNNING' }] };
       },
-      GetRunTaskCommand: (input) => ({ taskId: (input as { taskId: string }).taskId }),
     });
 
     const records = await enrichTasks(client, 'run-1', fastOptions);
     expect(records.map((r) => r.taskId)).toEqual(['t1', 't2']);
     expect(invoked.filter((n) => n === 'ListRunTasksCommand')).toHaveLength(2);
+    expect(invoked.filter((n) => n === 'GetRunTaskCommand')).toHaveLength(0);
+    expect(listInputs).toEqual([
+      { id: 'run-1', startingToken: undefined, maxResults: 100 },
+      { id: 'run-1', startingToken: 'next', maxResults: 100 },
+    ]);
   });
 
-  it('falls back to ListRunTasks fields when GetRunTask fails', async () => {
+  it('falls back to ListRunTasks fields when GetRunTask fails for a FAILED task', async () => {
     const { client } = makeClient({
       ListRunTasksCommand: () => ({
-        items: [{ taskId: 't1', name: 'align', status: 'RUNNING' }],
+        items: [{ taskId: 't1', name: 'align', status: 'FAILED' }],
       }),
       GetRunTaskCommand: () => {
         throw new Error('task detail failed');
@@ -331,7 +357,7 @@ describe('enrichTasks', () => {
     });
     const records = await enrichTasks(client, 'run-1', fastOptions);
     expect(records).toEqual([
-      { runId: 'run-1', taskId: 't1', name: 'align', status: TaskStatus.RUNNING },
+      { runId: 'run-1', taskId: 't1', name: 'align', status: TaskStatus.FAILED },
     ]);
   });
 

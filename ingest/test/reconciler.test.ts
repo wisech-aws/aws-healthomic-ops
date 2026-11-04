@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 
 import { reconcileRun, type ReconcileDeps } from '../src/reconcilerHandler.js';
+import { enrichTasks } from '../src/enrichment/tasks.js';
+import type { OmicsClient } from '@aws-sdk/client-omics';
 import { TaskStatus, RunStatus } from '../src/domain/status.js';
 import type { RunRecord, TaskRecord } from '../src/domain/records.js';
 import type { MetricSeries } from '../src/metrics/parse.js';
@@ -95,5 +97,56 @@ describe('reconcileRun — deferred re-sweep', () => {
     // Must not throw despite the first task upsert failing.
     const report = await reconcileRun(deps, 'run-1');
     expect(report.summaryWritten).toBe(true);
+  });
+
+  it('upserts tasks built from ListRunTasks items with GetRunTask only for failed tasks', async () => {
+    const invoked: string[] = [];
+    const client = {
+      send: async (command: { constructor: { name: string }; input: { taskId?: string } }) => {
+        invoked.push(command.constructor.name);
+        if (command.constructor.name === 'ListRunTasksCommand') {
+          return {
+            items: [
+              {
+                taskId: 't-1',
+                name: 'a',
+                status: 'COMPLETED',
+                cpus: 2,
+                memory: 12,
+                instanceType: 'omics.r.large',
+                creationTime: new Date('2026-09-29T12:00:30.000Z'),
+                startTime: new Date('2026-09-29T12:01:00.000Z'),
+                stopTime: new Date('2026-09-29T12:05:00.000Z'),
+              },
+              {
+                taskId: 't-2',
+                name: 'b',
+                status: 'FAILED',
+                startTime: new Date('2026-09-29T12:02:00.000Z'),
+                stopTime: new Date('2026-09-29T12:03:00.000Z'),
+              },
+            ],
+          };
+        }
+        return { taskId: command.input.taskId, status: 'FAILED', failureReason: 'RUN_TASK_FAILED' };
+      },
+    } as unknown as OmicsClient;
+    const fast = { timeoutMs: 50, maxAttempts: 1, sleep: async () => {}, logger: () => undefined, rateLimiter: { acquire: async () => {} } };
+    const { deps, upsertedTasks } = makeDeps({
+      enrichTasks: (runId) => enrichTasks(client, runId, fast),
+    });
+
+    await reconcileRun(deps, 'run-1');
+
+    expect(invoked.filter((n) => n === 'ListRunTasksCommand')).toHaveLength(1);
+    expect(invoked.filter((n) => n === 'GetRunTaskCommand')).toHaveLength(1);
+    expect(upsertedTasks).toHaveLength(2);
+    expect(upsertedTasks[0]).toMatchObject({
+      taskId: 't-1',
+      instanceType: 'omics.r.large',
+      cpus: 2,
+      startedAt: '2026-09-29T12:01:00.000Z',
+    });
+    expect(upsertedTasks[1]).toMatchObject({ taskId: 't-2', failureReason: 'RUN_TASK_FAILED' });
   });
 });

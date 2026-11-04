@@ -359,16 +359,22 @@ export async function enrichTask(
   return mapTaskFields(runId, detail.value);
 }
 
+/** ListRunTasks page size (the API maximum). */
+export const LIST_RUN_TASKS_PAGE_SIZE = 100;
+
 /**
- * Enrich a run's tasks via `ListRunTasks` and `GetRunTask` (Req 2.1).
+ * Enrich a run's tasks via `ListRunTasks`, calling `GetRunTask` ONLY for
+ * FAILED/CANCELLED tasks (Req 2.1).
  *
- * Uses `ListRunTasks` to page through the run's tasks (following `nextToken`),
- * then `GetRunTask` to fetch the fuller per-task detail for each. Both are the
- * only task read operations invoked. Returns one `Partial<TaskRecord>` per task
- * discovered; a task whose `GetRunTask` enrichment fails falls back to the
- * fields already present on its `ListRunTasks` item, and if `ListRunTasks`
- * itself fails after retries the function logs the failure and returns an empty
- * array (persist nothing extra; leave fields unset) (Req 2.5, 2.6).
+ * Pages through `ListRunTasks` ({@link LIST_RUN_TASKS_PAGE_SIZE} items per page,
+ * following `nextToken`). A list item already carries taskId, status, name,
+ * cpus, memory, gpus, instanceType, creationTime, startTime and stopTime
+ * (verified live), so it is used directly; `GetRunTask` is called only for a
+ * FAILED/CANCELLED task to add its statusMessage/failureReason. A 207-task run
+ * therefore costs 3 ListRunTasks pages (plus one GetRunTask per failed task)
+ * instead of 1 + 207 calls. A task whose `GetRunTask` fails falls back to its
+ * list fields, and if `ListRunTasks` itself fails after retries the function
+ * logs the failure and returns what it gathered so far (Req 2.5, 2.6).
  *
  * @param client  The HealthOmics SDK client.
  * @param runId   The run whose tasks to enrich; echoed into failure logs.
@@ -390,7 +396,14 @@ export async function enrichTasks(
     const page = await callWithRetry(
       'ListRunTasks',
       runId,
-      () => client.send(new ListRunTasksCommand({ id: runId, startingToken: token })),
+      () =>
+        client.send(
+          new ListRunTasksCommand({
+            id: runId,
+            startingToken: token,
+            maxResults: LIST_RUN_TASKS_PAGE_SIZE,
+          }),
+        ),
       options,
     );
     if (!page.ok) {
@@ -402,8 +415,9 @@ export async function enrichTasks(
     startingToken = page.value.nextToken;
   } while (startingToken !== undefined && startingToken !== '');
 
-  // For each listed task, fetch the fuller GetRunTask detail. On failure, fall
-  // back to the fields already on the ListRunTasks item (Req 2.5).
+  // Use the list item as-is; only a FAILED/CANCELLED task needs GetRunTask for
+  // its statusMessage/failureReason. On failure, fall back to the list fields
+  // (Req 2.5).
   const records: Partial<TaskRecord>[] = [];
   for (const item of listed) {
     const taskId = item.taskId;
@@ -412,6 +426,10 @@ export async function enrichTasks(
     if (typeof taskId !== 'string' || taskId.length === 0) {
       // No usable task id: keep whatever the list item gave us; the caller's
       // identifier validation will reject an unusable record at persistence.
+      records.push(listFields);
+      continue;
+    }
+    if (item.status !== 'FAILED' && item.status !== 'CANCELLED') {
       records.push(listFields);
       continue;
     }
