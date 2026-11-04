@@ -372,10 +372,47 @@ describe('IngestStack Kinesis ingest path (toggle-able: off/present/active)', ()
     return Template.fromStack(ingestStack);
   }
 
-  it('OFF (default): no Kinesis stream or event-source mapping — direct path only', () => {
+  function omicsRuleTargets(t: Template): Array<{
+    Arn?: unknown;
+    KinesisParameters?: { PartitionKeyPath?: string };
+  }> {
+    const rules = t.findResources('AWS::Events::Rule');
+    const omicsRule = Object.values(rules).find(
+      (r) => JSON.stringify(r.Properties?.EventPattern?.source) === JSON.stringify(['aws.omics']),
+    );
+    return omicsRule?.Properties?.Targets ?? [];
+  }
+
+  it('DEFAULT (no context) is ACTIVE: the rule targets only the Kinesis stream, partitioned by runId', () => {
+    const t = ingestTemplateWithMode();
+    t.resourceCountIs('AWS::Kinesis::Stream', 1);
+    t.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
+    const targets = omicsRuleTargets(t);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].KinesisParameters?.PartitionKeyPath).toBe('$.detail.runId');
+    const streams = t.findResources('AWS::Kinesis::Stream');
+    const streamId = Object.keys(streams)[0];
+    expect(JSON.stringify(targets[0].Arn)).toContain(streamId);
+  });
+
+  it('DEFAULT exposes the Kinesis dead letter queue URL as a stack output', () => {
+    const t = ingestTemplateWithMode();
+    const outputs = t.findOutputs('IngestKinesisDlqUrl');
+    expect(Object.keys(outputs)).toHaveLength(1);
+    const queues = t.findResources('AWS::SQS::Queue');
+    const kinesisDlqId = Object.keys(queues).find((id) => id.startsWith('IngestKinesisDlq'));
+    expect(kinesisDlqId).toBeDefined();
+    expect(JSON.stringify(Object.values(outputs)[0].Value)).toContain(kinesisDlqId!);
+  });
+
+  it('OFF: no Kinesis stream, event-source mapping, or Kinesis DLQ output; direct path only', () => {
     const t = ingestTemplateWithMode('off');
     t.resourceCountIs('AWS::Kinesis::Stream', 0);
     t.resourceCountIs('AWS::Lambda::EventSourceMapping', 0);
+    expect(Object.keys(t.findOutputs('IngestKinesisDlqUrl'))).toHaveLength(0);
+    const targets = omicsRuleTargets(t);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].KinesisParameters).toBeUndefined();
   });
 
   it('PRESENT: provisions the stream + consumer + ESM but EventBridge still targets the Lambda (idle)', () => {
@@ -447,8 +484,8 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     return match[0][1] as FnResource;
   }
 
-  it('defaults to event on both ingest functions and gives the Kinesis consumer 192 MB', () => {
-    const t = ingestTemplate({ kinesisIngestMode: 'active' });
+  it('with no context, defaults to event on both ingest functions and gives the Kinesis consumer 192 MB', () => {
+    const t = ingestTemplate({});
     // The live Kinesis path is still provisioned (no plan to remove it).
     t.resourceCountIs('AWS::Kinesis::Stream', 1);
     t.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);

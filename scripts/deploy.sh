@@ -41,17 +41,21 @@
 #   scripts/deploy.sh --stack HealthOmicsApi # build, deploy one named stack
 #   scripts/deploy.sh --skip-build           # deploy without rebuilding (use with care)
 #   scripts/deploy.sh --region us-west-2     # override region (default: $AWS_REGION or us-east-1)
-#   scripts/deploy.sh --kinesis-mode present # select the Kinesis ingest path (default: off)
+#   scripts/deploy.sh --kinesis-mode off     # select the ingest path (default: active)
 #   scripts/deploy.sh --help
 #
 # --kinesis-mode <off|present|active> selects the HealthOmicsIngest ingest path
-# (passed through to CDK as `-c kinesisIngestMode=<mode>`):
-#   off     (default) direct EventBridge -> Lambda only (no Kinesis resources).
+# (always passed through to CDK as `-c kinesisIngestMode=<mode>`):
+#   active  (default) EventBridge targets the Kinesis stream and the Kinesis
+#           consumer Lambda is the live ingest path (~$29/mo stream charge).
 #   present also provision the Kinesis stream + consumer, but EventBridge still
-#           targets the Lambda (the Kinesis path sits idle; ~$30/mo idle cost).
-#   active  EventBridge targets the Kinesis stream (Kinesis becomes the live
-#           ingest path). Toggle back to present/off with a single redeploy;
-#           neither path is deleted on the toggle.
+#           targets the direct ingest Lambda (the Kinesis path sits idle).
+#   off     direct EventBridge -> Lambda only (no Kinesis resources).
+#   Toggle between modes with a single redeploy; the event enrichment mode
+#   is not set here and uses the CDK default (event).
+#
+# Deploys run with `--require-approval never`, so IAM and security-group
+# changes are applied without an interactive prompt.
 #
 # Requires: AWS CLI on PATH, Node.js 20.x, each package's deps installed
 # (`npm install` in ingest/, frontend/, infra/), AWS credentials for the target
@@ -71,7 +75,7 @@ STACK="--all"
 FRONTEND_ONLY=0
 DO_BUILD=1
 REGION="${AWS_REGION:-us-east-1}"
-KINESIS_MODE="off"
+KINESIS_MODE="active"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -91,7 +95,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,61p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,65p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "Unknown argument: $1 (use --help)"; exit 2 ;;
@@ -174,7 +178,7 @@ echo ""
 echo "Stacks and what each needs:"
 echo "  HealthOmicsData     DynamoDB single table (the data store)."
 echo "  HealthOmicsApi      AppSync GraphQL API + Cognito user pool (sign-in)."
-echo "  HealthOmicsIngest   EventBridge rule + ingest Lambda. MUST deploy in the"
+echo "  HealthOmicsIngest   EventBridge rule, Kinesis stream, ingest Lambdas. MUST be in the"
 echo "                      SAME region as your HealthOmics runs so events arrive."
 echo "  HealthOmicsFrontend S3 + CloudFront hosting for the SPA (needs frontend/dist)."
 echo ""
@@ -190,13 +194,9 @@ else
   echo "==> Skipping build (--skip-build)."
 fi
 
-# Pass the Kinesis mode through to CDK only when non-default, so the default
-# deploy invocation stays byte-identical to prior behavior (the stack defaults
-# to 'off' on its own).
-CDK_CONTEXT_ARGS=""
-if [ "${KINESIS_MODE}" != "off" ]; then
-  CDK_CONTEXT_ARGS="-c kinesisIngestMode=${KINESIS_MODE}"
-fi
+# Always pass the Kinesis mode through to CDK (including 'off'), so the mode
+# this script reports is the mode that is deployed.
+CDK_CONTEXT_ARGS="-c kinesisIngestMode=${KINESIS_MODE}"
 
 echo "==> cdk deploy ${STACK}…"
 (

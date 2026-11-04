@@ -23,8 +23,9 @@
  * tells Lambda to retry FROM the earliest reported sequence number, so a failed
  * record (e.g. a terminal task whose enrichment threw) is retried without
  * losing the ones after it. Combined with `bisectBatchOnFunctionError` +
- * a max-retry/max-age on the event-source mapping, a poison record is
- * eventually routed to the on-failure DLQ rather than blocking the shard.
+ * a max-retry/max-age on the event-source mapping, a record that keeps failing
+ * is eventually routed to the on-failure dead letter queue rather than blocking
+ * the shard.
  */
 import type { EventBridgeEvent, KinesisStreamEvent, KinesisStreamBatchResponse } from 'aws-lambda';
 

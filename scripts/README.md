@@ -15,23 +15,28 @@ scripts/deploy.sh --frontend-only          # build SPA, deploy only HealthOmicsF
 scripts/deploy.sh --stack HealthOmicsApi   # build, deploy one named stack
 scripts/deploy.sh --skip-build             # deploy without rebuilding (use with care)
 scripts/deploy.sh --region us-west-2       # override region (default: $AWS_REGION or us-east-1)
-scripts/deploy.sh --kinesis-mode present   # select the Kinesis ingest path (default: off)
+scripts/deploy.sh --kinesis-mode off       # select the ingest path (default: active)
 scripts/deploy.sh --help
 ```
 
 `--kinesis-mode <off|present|active>` selects the `HealthOmicsIngest` ingest
-path (passed through to CDK as `-c kinesisIngestMode=<mode>`):
+path. The script always passes it to CDK as `-c kinesisIngestMode=<mode>`,
+including `off`:
 
-- `off` (default) — direct EventBridge → Lambda only; no Kinesis resources.
-- `present` — also provision the Kinesis stream + consumer, but EventBridge
-  still targets the Lambda, so the Kinesis path sits idle (≈ $30/mo idle cost
-  for the on-demand stream).
-- `active` — EventBridge targets the Kinesis stream, making Kinesis the live
-  ingest path. Toggle back to `present`/`off` with a single redeploy; neither
-  path is deleted on the toggle.
+- `active` (default): EventBridge targets the Kinesis stream, and the Kinesis
+  consumer Lambda is the live ingest path. The on-demand stream has a fixed
+  charge of about $29/month in us-east-1.
+- `present`: also provision the Kinesis stream and consumer, but EventBridge
+  still targets the direct ingest Lambda, so the Kinesis path sits idle (the
+  stream charge still applies).
+- `off`: direct EventBridge → Lambda only, with no Kinesis resources.
 
-The default (`off`) does not pass any `-c` flag, so a plain `scripts/deploy.sh`
-is unchanged from before.
+Toggle between modes with a single redeploy. The script does not set
+`eventEnrichmentMode`, so it deploys the CDK default (`event`).
+
+The script deploys with `--require-approval never`, so IAM and security-group
+changes are applied without a confirmation prompt. Run `npx cdk diff` from
+`infra/` first if you want to review them.
 
 **Prerequisite checks (fail fast, no auto-install).** Before building or
 deploying, the script verifies: the **AWS CLI** is on `PATH`; **Node.js** is
@@ -139,10 +144,7 @@ AWS, so validation and arg-parsing can be verified without credentials.
 # Validate the bundled run fixture without touching AWS:
 scripts/send-event.mjs --dry-run --fixture run
 
-# Publish a synthetic task event to the default EventBridge bus:
-scripts/send-event.mjs --mode eventbridge --fixture task --region us-west-2
-
-# Invoke the ingest Lambda directly with a run fixture:
+# Invoke the direct ingest Lambda with a run fixture:
 scripts/send-event.mjs --mode lambda --fixture run \
     --function healthomics-ingest --region us-west-2
 ```
@@ -158,6 +160,16 @@ scripts/send-event.mjs --mode lambda --fixture run \
 | `--region <region>` | AWS region (or `$AWS_REGION`). |
 | `--dry-run` | Validate + print what would be sent; never contacts AWS. |
 | `--help`, `-h` | Show help. |
+
+> `--mode eventbridge` does not work with the bundled fixtures. The fixtures
+> must use `source: aws.omics`, and EventBridge rejects `PutEvents` entries
+> whose source starts with `aws.`. Use `--dry-run` or `--mode lambda` instead.
+> `--mode lambda` invokes the direct ingest Lambda (stack output
+> `IngestFunctionName`). That function exists in every `kinesisIngestMode` and
+> writes to the same table and AppSync API as the Kinesis consumer Lambda, so
+> it exercises the whole downstream path. To exercise the Kinesis consumer
+> itself, put the fixture onto the stream with `aws kinesis put-record` (see
+> the main README).
 
 Sending modes lazily import the AWS SDK v3 clients (`@aws-sdk/client-eventbridge`,
 `@aws-sdk/client-lambda`). Run the script with a Node.js resolution context that

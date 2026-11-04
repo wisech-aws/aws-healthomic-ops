@@ -33,14 +33,15 @@ const KINESIS_CONSUMER_ENTRY = path.join(
  * Toggle for the alternative Kinesis Data Streams ingest path
  * Set via CDK context
  * `-c kinesisIngestMode=<mode>`:
- *   - 'off'     (default): only the direct EventBridge -> Lambda path exists.
+ *   - 'off'    : only the direct EventBridge -> Lambda path exists (no Kinesis
+ *                resources, no idle Kinesis charge).
  *   - 'present': ALSO provision the Kinesis stream + batch-consumer + event-
  *                source mapping, but EventBridge still targets the ingest Lambda
  *                directly (the Kinesis path sits idle — deploy/validate the
  *                resources without changing live ingestion).
- *   - 'active' : EventBridge targets the Kinesis stream (PartitionKey = runId)
- *                instead of the Lambda (the batch-consumer becomes the live
- *                ingest path). Roll back to 'present'/'off' with a single
+ *   - 'active' (default): EventBridge targets the Kinesis stream (PartitionKey =
+ *                runId) instead of the Lambda (the batch-consumer becomes the
+ *                live ingest path). Roll back to 'present'/'off' with a single
  *                re-deploy — neither path is deleted on the toggle.
  *
  * Kinesis was chosen over SQS FIFO because EventBridge -> Kinesis supports a
@@ -50,6 +51,9 @@ const KINESIS_CONSUMER_ENTRY = path.join(
  * stream), accepted for the large-batch throughput and clean topology.
  */
 type KinesisIngestMode = 'off' | 'present' | 'active';
+
+/** Default `kinesisIngestMode` when the context value is absent. */
+export const DEFAULT_KINESIS_INGEST_MODE: KinesisIngestMode = 'active';
 
 /**
  * How the ingest handler enriches events with HealthOmics read APIs, passed to
@@ -67,9 +71,10 @@ type KinesisIngestMode = 'off' | 'present' | 'active';
  *   - 'api'    : the legacy behavior (rollback): GetRun on every run event,
  *                GetRunTask on every terminal task event.
  *
- * The live stack runs the Kinesis path, so always pass both flags, e.g.
- *   cdk deploy -c kinesisIngestMode=active -c eventEnrichmentMode=event
- *   cdk deploy -c kinesisIngestMode=active -c eventEnrichmentMode=api   # rollback
+ * Both flags have defaults (kinesisIngestMode=active, eventEnrichmentMode=event),
+ * so a plain `cdk deploy` uses them. Override either, e.g.
+ *   cdk deploy -c eventEnrichmentMode=api      # rollback
+ *   cdk deploy -c kinesisIngestMode=off        # direct path, no Kinesis stream
  * An invalid value fails synth.
  */
 export type EventEnrichmentMode = 'event' | 'shadow' | 'api';
@@ -433,7 +438,7 @@ export class IngestStack extends Stack {
     });
 
     // --- Alternative Kinesis Data Streams ingest path (toggle-able, additive) -
-    // Read the mode from CDK context; default 'off'. When 'present'/'active' we
+    // Read the mode from CDK context; default 'active'. When 'present'/'active' we
     // provision the Kinesis stream + batch-consumer Lambda + event-source
     // mapping ALONGSIDE the direct path. The EventBridge target is the Lambda
     // UNLESS mode is 'active', in which case it is the Kinesis stream (with a
@@ -441,7 +446,8 @@ export class IngestStack extends Stack {
     // cut over ('active'), and roll back — a single context change + redeploy,
     // deleting neither path.
     const kinesisMode =
-      (this.node.tryGetContext('kinesisIngestMode') as KinesisIngestMode) ?? 'off';
+      (this.node.tryGetContext('kinesisIngestMode') as KinesisIngestMode) ??
+      DEFAULT_KINESIS_INGEST_MODE;
     if (kinesisMode !== 'off') {
       this.buildKinesisIngestPath(props, rule, kinesisMode, eventEnrichmentMode);
     }
@@ -577,8 +583,8 @@ export class IngestStack extends Stack {
       retentionPeriod: Duration.hours(24),
     });
 
-    // On-failure DLQ for records that exhaust retries (poison records), so a bad
-    // record does not block its shard indefinitely.
+    // On-failure dead letter queue for records that still fail after the
+    // bounded retries, so a bad record does not block its shard indefinitely.
     const kinesisDlq = new Queue(this, 'IngestKinesisDlq', {
       retentionPeriod: Duration.days(14),
     });
@@ -655,8 +661,8 @@ export class IngestStack extends Stack {
 
     // Event-source mapping: batch per-shard into the consumer, report partial
     // failures (retry from the earliest failed sequence), bisect on error to
-    // isolate a poison record, bound retries/age, and route exhausted records
-    // to the DLQ. `KinesisEventSource` grants the consumer kinesis read on the
+    // isolate a failing record, bound retries/age, and route records that still
+    // fail to the dead letter queue. `KinesisEventSource` grants the consumer kinesis read on the
     // stream automatically.
     consumer.addEventSource(
       new KinesisEventSource(stream, {
@@ -694,6 +700,13 @@ export class IngestStack extends Stack {
       value: stream.streamName,
       description: 'Name of the Kinesis ingest stream (alternative path).',
       exportName: `${this.stackName}-IngestKinesisStreamName`,
+    });
+
+    new CfnOutput(this, 'IngestKinesisDlqUrl', {
+      value: kinesisDlq.queueUrl,
+      description:
+        'URL of the Kinesis ingest dead letter queue (batch metadata for records that still failed after retries).',
+      exportName: `${this.stackName}-IngestKinesisDlqUrl`,
     });
   }
 }
