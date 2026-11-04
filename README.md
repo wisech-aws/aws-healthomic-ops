@@ -42,7 +42,7 @@ flowchart TD
     HO["AWS HealthOmics<br/>(runs + tasks)"] -->|"Run / Task Status Change events"| EB["Amazon EventBridge<br/>default bus<br/>rule: source = aws.omics"]
     EB -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Stream<br/>on-demand buffer<br/>(protects Lambda concurrency)"]
     KDS -->|"batches per shard"| ING["Kinesis ingest consumer Lambda<br/>Node.js 20.x / TS, 192 MB<br/>state built from event payload"]
-    ING -.->|"exhausted / poison records"| DLQ["Amazon SQS<br/>Kinesis DLQ"]
+    ING -.-> DLQ["Amazon SQS<br/>dead letter queue"]
     ING -.->|"exceptional only: GetRun at run PENDING/terminal,<br/>GetRunTask for FAILED/CANCELLED tasks,<br/>GetWorkflow for a new workflow graph"| HOAPI["HealthOmics Read APIs"]
     ING -->|"upsert run/task/graph<br/>(updatedAt conditional)"| DDB[("Amazon DynamoDB<br/>single table, on-demand, PITR<br/>+ GSI1")]
     ING -->|"publishRunUpdate / publishTaskUpdate<br/>(IAM auth)"| APPSYNC["AWS AppSync<br/>GraphQL API"]
@@ -108,7 +108,7 @@ while parsing a workflow definition bundle.
 flowchart LR
     EB["EventBridge rule<br/>source = aws.omics"] -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Streams<br/>(on-demand, 24h retention)"]
     KDS -->|"batch per shard<br/>(ReportBatchItemFailures)"| CONS["Batch-consumer Lambda, 192 MB<br/>(reuses ingest pipeline)"]
-    CONS -.->|"exhausted / poison records"| KDLQ["Amazon SQS<br/>Kinesis DLQ"]
+    CONS -.-> KDLQ["Amazon SQS<br/>dead letter queue"]
     CONS -->|"same downstream as direct path"| DDB[("DynamoDB + AppSync")]
 ```
 
@@ -674,7 +674,7 @@ scripts/send-event.mjs --mode lambda --fixture run \
 
 `--function` may also come from `$INGEST_FUNCTION_NAME`; `--event-bus` defaults to `default` (or `$EVENT_BUS_NAME`); `--region` defaults to `$AWS_REGION`. The sending modes lazily import `@aws-sdk/client-eventbridge` / `@aws-sdk/client-lambda`, so run the script from a Node context that provides them (e.g. the `ingest/` package or a workspace that installs them).
 
-**Expected result.** With the SPA open (signed in through Cognito and subscribed), publishing a synthetic run or task event should update the corresponding run in the fleet view — or the task node in the run detail view — **within 5 seconds, with no browser polling.** If nothing updates, check: the deploy region matches `--region`; the ingest Lambda's CloudWatch logs for enrichment or publish errors; the SQS dead-letter queue for events that failed after 3 EventBridge retries; and that you are signed in with a valid Cognito user.
+**Expected result.** With the SPA open (signed in through Cognito and subscribed), publishing a synthetic run or task event should update the corresponding run in the fleet view — or the task node in the run detail view — **within 5 seconds, with no browser polling.** If nothing updates, check: the deploy region matches `--region`; the ingest Lambda's CloudWatch logs for enrichment or publish errors; the SQS dead letter queue; and that you are signed in with a valid Cognito user.
 
 ---
 
