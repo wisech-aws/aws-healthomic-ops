@@ -377,44 +377,10 @@ near-zero idle cost. The optional Kinesis buffer adds one fixed charge when
 enabled: the on-demand stream, about $0.04 per stream-hour, or about
 $29/month in us-east-1.
 
-Estimated monthly cost at 100,000 runs (about 40 tasks each), default
-configuration (`kinesisIngestMode=off`, `eventEnrichmentMode=event`),
-us-east-1 list prices:
-
-| Service | Basis | Est. monthly |
-|---------|-------|--------------|
-| DynamoDB writes | ~13.6M write units (run and task upserts) | ~$17 |
-| DynamoDB reads | Ingest reads and dashboard queries | ~$1–3 |
-| DynamoDB storage | ~1.5 GB (100k runs, ~4M tasks) | ~$0.40 |
-| DynamoDB PITR | Continuous backup of ~1.5 GB | ~$0.30 |
-| Lambda (ingest) | ~12.4M invocations, ~200 ms at 192 MB (direct ingest Lambda): ~465k GB-seconds (~$7.75) plus requests (~$2.50) | ~$10 |
-| CloudWatch Logs | ~12.4M `ingest_event` lines plus Lambda platform lines, a few GB ingested | ~$2–5 |
-| AppSync requests | ~12.4M publish and query operations | ~$50 |
-| AppSync real-time | Connection-minutes and ~12.4M messages | ~$25–40 |
-| CloudFront | SPA loads (~3.3 MB each), light viewer traffic | ~$15 |
-| S3 (SPA assets) | A few MB stored, plus GETs | ~$0.10 |
-| Cognito (Plus plan) | Tens of monthly active users at $0.020 | ~$0.10–2 |
-| EventBridge (`aws.omics`) | AWS-source events on the default bus | $0 |
-| SQS dead letter queues | Only on failure | ~$0 |
-| Re-sweep: EventBridge Scheduler | ~100k one-shot schedules at ~$1/M | ~$0.10 |
-| Re-sweep: Reconciler Lambda | ~100k invocations, ~10 s at 128 MB | ~$2 |
-| Re-sweep: extra DynamoDB writes | ~41 rewrites per run (tasks and summary), ~4.1M write units | ~$5 |
-| Re-sweep: CloudWatch `GetMetricData` | ~200k requests (2 metric families per run) | ~$1–3 |
-| **Total, default (`off`)** | Sum of the rows above | **≈ $129–153** |
-
-With the optional Kinesis buffer (`kinesisIngestMode=active`), the Kinesis
-consumer Lambda replaces the direct ingest Lambda row, the stream is added,
-and the re-sweep rows drop out, because the re-sweep does not run on the
-Kinesis path:
-
-| Service | Basis | Est. monthly |
-|---------|-------|--------------|
-| Total, default (`off`) | From the table above | ≈ $129–153 |
-| Kinesis Data Streams (optional) | 730 stream-hours at about $0.04, plus about 12 GB written and read | +$30–31 |
-| Lambda (direct ingest) | Removed: the consumer processes these events instead | −$10 |
-| Lambda (Kinesis consumer) | 192 MB, batched, so at most ~12.4M events at ~200 ms | +$10 (upper bound) |
-| Re-sweep rows | Not run on the Kinesis path (Scheduler, Reconciler, extra writes, `GetMetricData`) | −$8–10 |
-| **Total, `active`** | $129–153 + $30–31 − $10 + $10 − $8–10 | **≈ $151–174** |
+| Configuration | Est. monthly at 100,000 runs (about 40 tasks each) |
+|---------------|-----------------------------------------------------|
+| Default (`kinesisIngestMode=off`) | ≈ $129–153, including the deferred re-sweep and $2–5 for CloudWatch Logs; near-zero at idle |
+| Optional Kinesis (`kinesisIngestMode=active`) | ≈ $151–174, including about $30 for Kinesis (billed even at idle), without the deferred re-sweep |
 
 These estimates cover the dashboard only, not HealthOmics workflow execution.
 AppSync is the largest item, and tasks per run is the main lever: at about 150
