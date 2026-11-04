@@ -103,7 +103,11 @@ APIs only for:
   for parameters, configuration, and exact timestamps;
 - `GetRunTask` for `FAILED` or `CANCELLED` tasks, because task events don't
   carry `statusMessage` or `failureReason`;
-- `GetWorkflow` the first time a workflow version's graph is needed.
+- `GetWorkflow` the first time a workflow version's graph is needed;
+- plus fallback calls when expected fields are missing (`GetRun` when the
+  stored run has no `GetRun` data or the event has no status, `GetRunTask`
+  when a terminal task event lacks its name, start time, or stop time; see
+  [docs/architecture.md](docs/architecture.md#event-driven-enrichment-eventenrichmentmode)).
 
 On a 207-task nf-core/rnaseq run that was 2 HealthOmics calls, compared with
 217 on the legacy per-task path. Writes use a monotonic `updatedAt` guard, so
@@ -230,7 +234,7 @@ synth.
 
 | Mode | Behavior |
 |------|----------|
-| `event` (default) | State comes from the event. `GetRun` at run `PENDING` and terminal, `GetRunTask` only for `FAILED` or `CANCELLED` tasks, `GetWorkflow` only for a workflow version with no stored graph. |
+| `event` (default) | State comes from the event. `GetRun` at run `PENDING` and terminal, `GetRunTask` for `FAILED` or `CANCELLED` tasks, `GetWorkflow` only for a workflow version with no stored graph, plus fallback calls when expected fields are missing. |
 | `shadow` | As `event`, plus `GetRunTask` on every terminal task event. Differences are logged and counted in the `HealthOmicsIngest/EnrichmentShadowMismatch` metric, and all compared fields are then written from `GetRunTask`. Use it to re-check event data after an ingest change. |
 | `api` | Legacy rollback: `GetRun` on every run event and `GetRunTask` on every terminal task event. |
 

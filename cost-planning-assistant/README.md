@@ -1,6 +1,7 @@
 # Cost Planning Assistant (standalone)
 
-A self-contained command-line tool (plus an LLM skill asset) that produces a
+A self-contained command-line tool (plus a separate, standalone LLM skill;
+see [The LLM skill](#the-llm-skill)) that produces a
 **pre-run, what-if cost estimate** for an AWS HealthOmics workflow — before
 you've run anything, when no measured task data exists yet. It guides you
 through picking instance types, step counts, estimated runtime, and storage
@@ -56,7 +57,7 @@ recommendation you can accept or override), per-step runtime and scatter
 width, a storage mode + size choice, a running summary, and finally the
 itemized estimate.
 
-### Non-interactive (scriptable; also what the LLM skill drives)
+### Non-interactive (scriptable)
 
 Write a plan to a file:
 
@@ -97,22 +98,40 @@ a guessed or zero value.
 
 ## The LLM skill
 
-`skill/cost-planning-assistant.skill.md` is a markdown SOP for an AI agent: it
-drives this CLI's non-interactive `--json` mode conversationally, presents
-the instance menu and the estimate as tables, recommends instance choices
-without deciding for the user, and defers every rate and every calculation to
-this CLI — it never restates a price or re-derives the math.
+`skill/cost-planning-assistant.skill.md` is a markdown SOP for an AI agent
+that produces the same kind of pre-run, what-if estimate conversationally. It
+is fully self-contained: it does not use this CLI or any bundled code or
+script, so an agent can follow it on its own. The file contains:
 
-The skill also supports a **direct-API mode** for agents that cannot run
-`node` (some sandboxes can't execute node or read shell profiles). In that
-mode the agent calls the AWS Price List API itself (read-only
-`pricing:GetProducts`) for live rates and does the cost math by hand, using
-the exact query, parsing rules, and formulas transcribed into the skill from
-this package's verified source. The primary direct-API fetch is a single
-SigV4-signed `curl` to the Price List API (no AWS CLI, MCP, or node required).
-Driving the CLI remains the preferred, single
-source of truth; direct-API mode mirrors it exactly and never fabricates a
-rate.
+- **The conversation flow.** It first asks whether you have a Run ID (if so,
+  it points you to the AWS Billing and Cost Management console or the
+  HealthOmics run analyzer for measured cost and stops), then the Region, then
+  each workflow step one question at a time (label, resource needs, per-task
+  runtime, scatter width) with a running summary, then storage mode, size,
+  and overall run wall-clock time. It recommends the smallest fitting
+  instance type plus close alternatives, and you confirm every choice.
+- **The live price fetch.** Rates are fetched fresh every time and never
+  stored in the file. The agent tries, in order, the public HealthOmics price
+  list JSON file and the Price List API (`pricing:GetProducts`, through the
+  AWS CLI or a SigV4-signed `curl`). If it cannot reach AWS, it hands you the
+  query to run, or, as a last resort, asks you to read rates off the AWS
+  pricing page and confirm each one. It never takes a rate from memory or
+  extrapolates one.
+- **The exact math.** The one-minute minimum per task (applied before
+  multiplying by scatter width), instance-hours × `Instance-hrs` rate,
+  storage GB-hours × the `Run Storage` (STATIC) or `Dynamic Run Storage`
+  (DYNAMIC) rate, and STATIC sizes rounded up to a valid size (1,200 GiB,
+  2,400 GiB, then 2,400 GiB increments).
+- **The instance spec table.** vCPU, memory, and GPU specs for the
+  `omics.m`, `omics.c`, `omics.r`, and GPU families, used only for
+  recommendations (no prices).
+- **The output format.** An itemized table with the arithmetic for each line,
+  the total, Region, currency, rate source and retrieval time, any notes, and
+  the disclaimer verbatim. A line without a rate shows as unavailable, is
+  left out of the total, and marks the estimate `PARTIAL`.
+- **A revise loop.** You change one input (instance type, runtime, scatter,
+  steps, or storage), and the agent recomputes and re-presents without
+  starting over, reusing rates already fetched where it can.
 
 ## Handoff for executed runs
 

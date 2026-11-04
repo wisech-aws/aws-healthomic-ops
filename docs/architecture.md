@@ -93,11 +93,11 @@ An invalid value fails synth.
   - `GetRun` at run `PENDING` (parameters, configuration, exact `createdAt`)
     and at a terminal run status (exact `stoppedAt`, status message). It is
     also called on a `STARTING`, `RUNNING`, or `STOPPING` event if the stored
-    run has no `GetRun` data yet (for example, the `PENDING` event was
-    missed).
+    run has no `GetRun` data yet (no stored `rawGetRun`; for example, the
+    `PENDING` event was missed), and on any run event with no status.
   - `GetRunTask` only for `FAILED` or `CANCELLED` tasks (events never carry
-    `statusMessage` or `failureReason`), or for a terminal task event missing
-    its name, start time, or stop time.
+    `statusMessage` or `failureReason`), for a terminal task event missing
+    its name, start time, or stop time, or for a task event with no status.
   - `GetWorkflow` only when the workflow version's graph is not stored yet
     (cache key `workflowId` + `workflowVersionName`). A failed fetch or parse
     is cached for 1 hour (`GRAPH_FAILURE_RETRY_WINDOW_MS`), so a broken
