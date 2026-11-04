@@ -593,12 +593,13 @@ export class IngestStack extends Stack {
       projectRoot: INGEST_PROJECT_ROOT,
       depsLockFilePath: INGEST_DEPS_LOCK_FILE,
       timeout: Duration.seconds(60),
-      // 128 MB (the Lambda minimum and cheapest setting), set explicitly. The
-      // consumer handles small event batches. It was briefly 256 MB after a
-      // 128/128 peak while downloading/unzipping/parsing a workflow definition
-      // bundle; that was reverted for cost. If Max Memory Used reaches 128 MB
-      // again, raise this here rather than through the console.
-      memorySize: 128,
+      // 192 MB, set explicitly. The consumer handles small event batches, but
+      // a validation run in event mode at 128 MB peaked at 115 MB (and an
+      // earlier run hit 128/128 while downloading/unzipping/parsing a workflow
+      // definition bundle). 192 MB keeps headroom at lower cost than 256 MB.
+      // If Max Memory Used approaches 192 MB, raise this here rather than
+      // through the console.
+      memorySize: 192,
       environment: {
         TABLE_NAME: props.dataStack.table.tableName,
         APPSYNC_ENDPOINT: props.apiStack.api.graphqlUrl,

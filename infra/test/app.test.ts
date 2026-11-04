@@ -447,7 +447,7 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     return match[0][1] as FnResource;
   }
 
-  it('defaults to event on both ingest functions and gives the Kinesis consumer 128 MB', () => {
+  it('defaults to event on both ingest functions and gives the Kinesis consumer 192 MB', () => {
     const t = ingestTemplate({ kinesisIngestMode: 'active' });
     // The live Kinesis path is still provisioned (no plan to remove it).
     t.resourceCountIs('AWS::Kinesis::Stream', 1);
@@ -456,7 +456,7 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     const direct = fn(t, 'IngestFunction');
     expect(consumer.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
     expect(direct.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
-    expect(consumer.Properties.MemorySize).toBe(128);
+    expect(consumer.Properties.MemorySize).toBe(192);
     // Existing consumer env is unchanged.
     expect(consumer.Properties.Environment?.Variables?.OMICS_TPS).toBe('2');
   });
@@ -472,7 +472,7 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     expect(fn(t, 'KinesisIngestConsumer').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
     expect(fn(t, 'IngestFunction').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
     // Memory does not depend on the enrichment mode.
-    expect(fn(t, 'KinesisIngestConsumer').Properties.MemorySize).toBe(128);
+    expect(fn(t, 'KinesisIngestConsumer').Properties.MemorySize).toBe(192);
   });
   it('honors -c eventEnrichmentMode=api (rollback)', () => {
     const t = ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'api' });
