@@ -199,7 +199,7 @@ export async function loadRateCard(
     // that resolves without error yet yields zero rates is almost certainly an upstream or
     // response-shape problem (the incident this guards against: a parser bug dropped every
     // product, `fetchRateMap` returned {} rates, and `putRateCard` cached that empty map as a
-    // fresh, non-stale, failureReason-free card — poisoning the cache for the whole ~7-day
+    // fresh, non-stale, failureReason-free card — corrupting the cache for the whole ~7-day
     // staleness window so every later request served the empty card and never re-fetched).
     // So we never `putRateCard` an empty map; we fall through to the same fallback as a thrown
     // fetch (serve any cached card stale, else report unavailable) — which keeps the card

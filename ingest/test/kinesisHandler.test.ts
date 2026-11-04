@@ -86,7 +86,7 @@ describe('kinesisHandler', () => {
     expect(pipeline).toHaveBeenCalledTimes(2);
   });
 
-  it('reports the record as a failure when its body is malformed (poison -> DLQ)', async () => {
+  it('reports the record as a failure when its body is malformed (-> dead letter queue)', async () => {
     const bad = kinesisRecord('49590009', {});
     // Corrupt the base64 payload so JSON.parse throws.
     bad.kinesis.data = Buffer.from('not json', 'utf8').toString('base64');

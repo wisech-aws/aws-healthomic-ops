@@ -15,7 +15,7 @@
  *
  * A defensive uncompressed-size cap ({@link MAX_UNCOMPRESSED_BYTES}) protects the
  * Lambda from a pathological (e.g. zip-bomb) archive: if the total decoded bytes
- * exceed the cap, decoding throws rather than exhausting memory. A corrupt or
+ * exceed the cap, decoding throws rather than running out of memory. A corrupt or
  * otherwise undecodable archive also throws. Both throws are caught upstream in
  * the definition fetcher and treated as an unzip failure (Req 1.8).
  */

@@ -17,15 +17,22 @@ how the run detail view merges live updates, and the deferred re-sweep. The
 
 `kinesisIngestMode` selects how the Amazon EventBridge rule
 (`source = aws.omics`, default bus) delivers events to ingest. It is a CDK
-context flag (`-c kinesisIngestMode=<mode>`, `infra/lib/ingest-stack.ts`):
+context flag (`-c kinesisIngestMode=<mode>`, `infra/lib/ingest-stack.ts`).
+The default is `off`, the direct path; the Kinesis buffer is opt-in:
 
 | Mode | EventBridge target | Kinesis resources | Notes |
 |------|--------------------|-------------------|-------|
-| `active` (default) | Amazon Kinesis Data Streams stream, partition key `$.detail.runId` | Stream, Kinesis consumer Lambda, event source mapping, Kinesis dead letter queue | Bursts queue in the stream instead of using Lambda concurrency per event. |
-| `present` | Direct ingest Lambda | Provisioned but idle | Lets you deploy and check the Kinesis resources before switching. The stream still bills. |
-| `off` | Direct ingest Lambda (up to 3 retries, then the direct-path dead letter queue) | None | No fixed stream charge. Each event is one Lambda invocation. |
+| `off` (default) | Direct ingest Lambda (up to 3 retries, then the direct-path dead letter queue) | None | No fixed stream charge. Each event is one Lambda invocation. |
+| `present` | Direct ingest Lambda | Stream, Kinesis consumer Lambda, event source mapping, Kinesis dead letter queue, all idle | Lets you deploy and check the Kinesis resources before switching. The stream still bills. |
+| `active` | Amazon Kinesis Data Streams stream, partition key `$.detail.runId` | Stream, Kinesis consumer Lambda, event source mapping, Kinesis dead letter queue | Bursts queue in the stream instead of using Lambda concurrency per event. |
 
-Switching modes is a context change plus a redeploy. The toggle never deletes
+Use `active` when large batches of task-heavy runs could hit Lambda
+concurrency limits or throttling on the direct path. The trade-offs are the
+fixed on-demand stream charge (about $29/month, even when idle) and no
+deferred re-sweep on the Kinesis path (see [Deferred re-sweep](#deferred-re-sweep)).
+
+Switching modes is a context change plus a redeploy. Pass the same mode on
+every deploy, because a deploy without the flag returns to `off`. The toggle never deletes
 the direct ingest Lambda, so moving between `active` and `present` or `off` is
 one deploy in either direction. Moving to `off` removes the stream from the
 stack, but the stream has a `RETAIN` policy, so it stays in the account (and
@@ -33,11 +40,11 @@ keeps billing) until you delete it.
 
 ```mermaid
 flowchart LR
-    subgraph OFF["kinesisIngestMode=off"]
+    subgraph OFF["kinesisIngestMode=off (default)"]
         EB1["EventBridge rule"] -->|"up to 3 retries"| DIR["Direct ingest Lambda"]
         EB1 -.->|"failed delivery"| DLQ1["Direct-path<br/>dead letter queue"]
     end
-    subgraph ACTIVE["kinesisIngestMode=active (default)"]
+    subgraph ACTIVE["kinesisIngestMode=active (optional)"]
         EB2["EventBridge rule"] -->|"PartitionKey = $.detail.runId"| KDS["Kinesis stream<br/>on-demand, 24 h retention"]
         KDS -->|"batches per shard"| CONS["Kinesis consumer Lambda"]
         CONS -.->|"still failing after retries"| DLQ2["Kinesis<br/>dead letter queue"]
@@ -113,7 +120,7 @@ can be checked in Amazon CloudWatch Logs.
 
 ```bash
 cd infra
-npx cdk deploy --all                                # defaults: active + event
+npx cdk deploy --all                                # defaults: off + event
 npx cdk deploy --all -c eventEnrichmentMode=shadow  # check event data
 npx cdk deploy --all -c eventEnrichmentMode=api     # rollback
 ```
@@ -186,9 +193,10 @@ online, and once when the run reaches a terminal status.
 
 ## Deferred re-sweep
 
-> The deferred re-sweep is currently scheduled only by the direct ingest
-> Lambda, so it runs only with `kinesisIngestMode=off`. With the default
-> Kinesis consumer Lambda it does not run. Wiring it into the consumer would
+> The deferred re-sweep runs on the default direct path (`kinesisIngestMode`
+> `off` or `present`). Only the direct ingest Lambda gets the
+> `RECONCILER_*` environment variables, so it does not run on the optional
+> Kinesis path (`active`). Wiring it into the Kinesis consumer Lambda would
 > add HealthOmics calls per run, so it is a separate decision. See
 > [Known limitations](../README.md#known-limitations).
 
@@ -223,7 +231,7 @@ the Reconciler Lambda with `{ runId }`. The Reconciler Lambda:
 
 ```mermaid
 flowchart LR
-    ING["Direct ingest Lambda<br/>(terminal run event,<br/>kinesisIngestMode=off)"] -->|"CreateSchedule at(now+5m)"| SCH["EventBridge Scheduler<br/>one-shot, group: &lt;stack&gt;-resweep"]
+    ING["Direct ingest Lambda<br/>(terminal run event)"] -->|"CreateSchedule at(now+5m)"| SCH["EventBridge Scheduler<br/>one-shot, group: &lt;stack&gt;-resweep"]
     SCH -->|"about 5 min later, invoke {runId}"| REC["Reconciler Lambda"]
     REC -->|"GetRun / ListRunTasks<br/>(GetRunTask for failed tasks)"| HO["HealthOmics read APIs"]
     REC -->|"re-sweep CPU/MEMORY"| CW["CloudWatch (PromQL)"]
@@ -246,7 +254,7 @@ wave of re-sweeps stays within about 10 TPS of HealthOmics reads, and a single
 
 Every ingest role uses explicit action lists and scoped resources:
 
-- Direct ingest Lambda and Kinesis consumer Lambda:
+- Direct ingest Lambda and (when Kinesis is enabled) Kinesis consumer Lambda:
   - HealthOmics read-only: `GetRun`, `ListRunTasks`, `GetRunTask`,
     `GetWorkflow`, scoped to the deployment account and region's run and workflow ARNs.
   - `appsync:GraphQL` on the `publishRunUpdate` and `publishTaskUpdate`
@@ -266,7 +274,7 @@ Every ingest role uses explicit action lists and scoped resources:
 
 ## AWS SDK bundling
 
-The three IngestStack Lambdas (direct ingest, Kinesis consumer, Reconciler)
+The IngestStack Lambdas (direct ingest, Reconciler, and the optional Kinesis consumer)
 bundle the pinned AWS SDK for JavaScript v3 clients instead of using the SDK
 in the Lambda runtime. The ApiStack resolver Lambdas use the runtime SDK. The runtime SDK is older and does not
 deserialize newer `GetRun` response fields (for example `networkingMode`,

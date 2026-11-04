@@ -83,7 +83,7 @@ fi
 
 # --- 3. ingest dependencies installed? -------------------------------------
 # A cheap proxy for "deps installed": the omics client dir exists. The .mjs
-# preflight does the authoritative, exhaustive module check; this is just so the
+# preflight does the authoritative, complete module check; this is just so the
 # wrapper can offer to install before handing off.
 if [ ! -d "$INGEST_DIR/node_modules/@aws-sdk/client-omics" ]; then
   if [ "$AUTO_INSTALL" -eq 1 ]; then

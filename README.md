@@ -4,12 +4,12 @@ Near real-time run and task monitoring for AWS HealthOmics workflows, built
 on serverless AWS services.
 
 AWS HealthOmics publishes run and task status-change events to Amazon
-EventBridge. By default they are buffered in an Amazon Kinesis Data Streams
-stream, and the Kinesis consumer Lambda builds run and task state from the
-event payload itself, calling HealthOmics read APIs only in a few exceptional
-cases. It writes that state to a single Amazon DynamoDB table and publishes
-each change through AWS AppSync, which pushes live updates to a React
-single-page app (SPA) served from Amazon S3 through Amazon CloudFront.
+EventBridge, which invokes an AWS Lambda ingest function. The ingest Lambda
+builds run and task state from the event payload itself, calling HealthOmics
+read APIs only in a few cases. It writes that state to a single Amazon
+DynamoDB table and publishes each change through AWS AppSync, which pushes
+live updates to a React single-page app (SPA) served from Amazon S3 through
+Amazon CloudFront.
 
 This TypeScript monorepo's packages each pin exact dependency versions and
 have their own `build` and `test` scripts.
@@ -61,16 +61,13 @@ shows "unavailable" rather than guessing when data is missing. Details are in
 
 ## Architecture
 
-Solid arrows are the per-event path; dashed arrows are exceptional or failure
-paths. The diagram shows the default configuration.
+The diagram shows the default configuration.
 
 ```mermaid
 flowchart TD
     HO["AWS HealthOmics<br/>(runs + tasks)"] -->|"Run / Task Status Change events"| EB["Amazon EventBridge<br/>default bus<br/>rule: source = aws.omics"]
-    EB -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Streams<br/>on-demand stream"]
-    KDS -->|"batches per shard"| ING["Kinesis consumer Lambda<br/>192 MB<br/>state built from event payload"]
-    ING -.-> DLQ["Amazon SQS<br/>Kinesis dead letter queue"]
-    ING -.->|"exceptional only: GetRun at run PENDING/terminal,<br/>GetRunTask for FAILED/CANCELLED tasks,<br/>GetWorkflow for a new workflow graph"| HOAPI["HealthOmics read APIs"]
+    EB -->|"up to 3 retries"| ING["Ingest Lambda<br/>state built from event payload"]
+    EB -.->|"dead letter queue"| DLQ["Amazon SQS"]
     ING -->|"upsert run/task/graph<br/>(updatedAt conditional)"| DDB[("Amazon DynamoDB<br/>single table, on-demand, PITR<br/>+ GSI1, GSI2")]
     ING -->|"publishRunUpdate / publishTaskUpdate<br/>(IAM auth)"| APPSYNC["AWS AppSync<br/>GraphQL API"]
     APPSYNC -->|"JS resolvers read"| DDB
@@ -89,34 +86,47 @@ The AWS CDK app defines four stacks, split by lifecycle:
 |-------|----------|
 | `HealthOmicsData` (`DataStack`) | DynamoDB single table: on-demand, point-in-time recovery, deletion protection, `GSI1` (runs by recency), `GSI2` (workflow groups for Reports). |
 | `HealthOmicsApi` (`ApiStack`) | AppSync API, schema, and JS resolvers; Lambda resolvers for logs and error excerpts, run metrics, cost estimates, and Reports; Cognito user pool and app client. |
-| `HealthOmicsIngest` (`IngestStack`) | EventBridge rule; Kinesis stream, Kinesis consumer Lambda, and Kinesis dead letter queue; direct ingest Lambda and its dead letter queue; Reconciler Lambda and EventBridge Scheduler group for the deferred re-sweep; least-privilege IAM. |
+| `HealthOmicsIngest` (`IngestStack`) | EventBridge rule; ingest Lambda and its dead letter queue; Reconciler Lambda and EventBridge Scheduler group for the deferred re-sweep; least-privilege IAM. Only when [Kinesis ingest](#optional-kinesis-buffer-kinesisingestmode) is enabled: Kinesis stream, Kinesis consumer Lambda, and Kinesis dead letter queue. |
 | `HealthOmicsFrontend` (`FrontendStack`) | Private S3 bucket, CloudFront distribution with Origin Access Control, SPA routing, and deploy-time config injection. |
 
 CDK deploys them in dependency order (Data → Api → Ingest, Api → Frontend).
 
 ### How ingest works
 
-EventBridge writes each `aws.omics` event to the Kinesis stream keyed by
-`runId`, so bursts queue in the stream instead of using Lambda concurrency per
-event. The Kinesis consumer Lambda builds task and run state from the event
-payload and calls HealthOmics only at run start and end, for failed or
-cancelled tasks, and the first time a workflow version's graph is needed. On a
-207-task nf-core/rnaseq run that was 2 HealthOmics calls, compared with 217
-on the legacy per-task path. Writes use a monotonic `updatedAt` guard, so
-duplicate or out-of-order events never move state backward. The direct ingest
-Lambda (EventBridge → Lambda) is always deployed and is the live path when
-`kinesisIngestMode` is `off` or `present`. Details, including the event fields
-the mapper reads and the deferred re-sweep, are in
+The EventBridge rule invokes the ingest Lambda for each `aws.omics` event,
+with up to 3 retries before an event goes to the dead letter queue. With
+event enrichment (`eventEnrichmentMode=event`, the default), task and run
+state comes from the event payload. The ingest Lambda calls HealthOmics read
+APIs only for:
+
+- `GetRun` when a run reaches `PENDING` and when it reaches a terminal status,
+  for parameters, configuration, and exact timestamps;
+- `GetRunTask` for `FAILED` or `CANCELLED` tasks, because task events don't
+  carry `statusMessage` or `failureReason`;
+- `GetWorkflow` the first time a workflow version's graph is needed.
+
+On a 207-task nf-core/rnaseq run that was 2 HealthOmics calls, compared with
+217 on the legacy per-task path. Writes use a monotonic `updatedAt` guard, so
+duplicate or out-of-order events never move state backward. When a run ends,
+the ingest Lambda schedules a deferred re-sweep that corrects late task
+states and utilization.
+
+An optional Amazon Kinesis Data Streams buffer can sit between EventBridge and
+ingest for very large batches; see
+[Optional Kinesis buffer](#optional-kinesis-buffer-kinesisingestmode). It is
+off by default and not shown in the diagram. Details, including the event
+fields the mapper reads and the deferred re-sweep, are in
 [docs/architecture.md](docs/architecture.md).
 
 ## Prerequisites
 
 - An AWS account and credentials (`aws configure`, `AWS_PROFILE`, or
   environment variables) allowed to deploy AWS CloudFormation, IAM, AWS
-  Lambda, Amazon EventBridge, Amazon EventBridge Scheduler, Amazon Kinesis Data
-  Streams, Amazon SQS, Amazon DynamoDB, AWS AppSync, Amazon Cognito, Amazon S3,
-  Amazon CloudFront, Amazon CloudWatch, and Amazon CloudWatch Logs resources.
-  Prefer least-privilege credentials.
+  Lambda, Amazon EventBridge, Amazon EventBridge Scheduler, Amazon SQS, Amazon
+  DynamoDB, AWS AppSync, Amazon Cognito, Amazon S3, Amazon CloudFront, Amazon
+  CloudWatch, and Amazon CloudWatch Logs resources, plus Amazon Kinesis Data
+  Streams if you enable the optional Kinesis buffer. Prefer least-privilege
+  credentials.
 - A region where HealthOmics is available (see
   [HealthOmics endpoints](https://docs.aws.amazon.com/general/latest/gr/healthomics-quotas.html)).
   Deploy into the same region (and, by default, the same account) as your
@@ -148,12 +158,16 @@ the mapper reads and the deferred re-sweep, are in
    cd infra && npx cdk bootstrap aws://<account>/<region> && cd ..
    ```
 
-3. Build and deploy all stacks with the defaults (Kinesis ingest, event
-   enrichment):
+3. Build and deploy all stacks with the defaults (direct EventBridge →
+   Lambda ingest, event enrichment):
 
    ```bash
    scripts/deploy.sh --region <region>
    ```
+
+   The default needs no Kinesis flag. To opt in to the
+   [Kinesis buffer](#optional-kinesis-buffer-kinesisingestmode), add
+   `--kinesis-mode active`.
 
    The script checks prerequisites and bootstrap, builds ingest and the SPA,
    and runs `npx cdk deploy --all` with `--require-approval never`, so IAM and
@@ -179,16 +193,34 @@ To deploy with `npx cdk` directly, build ingest and the SPA first; see
 
 ## Configuration
 
-### Ingest path (`kinesisIngestMode`)
+### Optional Kinesis buffer (`kinesisIngestMode`)
 
-Set with `-c kinesisIngestMode=<mode>` on `npx cdk deploy`, or
-`scripts/deploy.sh --kinesis-mode <mode>` (the script always passes the flag).
+Kinesis ingest is an opt-in mode. Set it with `-c kinesisIngestMode=<mode>`
+on `npx cdk deploy`, or `scripts/deploy.sh --kinesis-mode <mode>` (the script
+always passes the flag).
 
 | Mode | Behavior |
 |------|----------|
-| `active` (default) | EventBridge → Kinesis stream → Kinesis consumer Lambda. Bursts queue in the stream. The on-demand stream has a fixed charge of about $29/month. |
-| `present` | Kinesis resources are deployed but idle; EventBridge targets the direct ingest Lambda. |
-| `off` | No Kinesis resources. EventBridge targets the direct ingest Lambda with up to 3 retries and a dead letter queue. Near-zero idle cost, but each event is a Lambda invocation, which adds concurrency pressure during large batches. |
+| `off` (default) | No Kinesis resources. EventBridge → ingest Lambda directly, with up to 3 retries and a dead letter queue. Near-zero idle cost. |
+| `present` | Kinesis stream, consumer Lambda, and event source mapping are created, but the EventBridge rule still targets the ingest Lambda, so the Kinesis path sits idle. The stream still bills. |
+| `active` | EventBridge → Kinesis on-demand stream (partition key `runId`) → Kinesis consumer Lambda, which runs the same ingest pipeline in batches. |
+
+Consider `active` when you start large batches of task-heavy runs at once.
+On the direct path every event is its own Lambda invocation, which can hit
+Lambda concurrency limits or throttling; with Kinesis, bursts queue in the
+stream instead. The trade-offs: the on-demand stream bills about $29/month
+even when idle, it is retained (and keeps billing) when you switch back to
+`off` or tear down, and the deferred re-sweep does not run on the Kinesis path
+(see [Known limitations](#known-limitations)).
+
+```bash
+scripts/deploy.sh --region <region> --kinesis-mode active
+# or, from infra/:
+npx cdk deploy --all -c kinesisIngestMode=active
+```
+
+Switching modes is a context change plus a redeploy. Deploy with the same
+mode every time, because a deploy without the flag returns to `off`.
 
 ### Enrichment mode (`eventEnrichmentMode`)
 
@@ -275,8 +307,8 @@ scripts/send-event.mjs --mode lambda --fixture task \
 ```
 
 The direct ingest Lambda exists in every mode and shares the table and
-AppSync API with the Kinesis consumer Lambda. To exercise the Kinesis consumer
-itself, put the fixture on the stream:
+AppSync API with the Kinesis consumer Lambda. With Kinesis enabled, you can
+exercise the Kinesis consumer itself by putting the fixture on the stream:
 
 ```bash
 aws kinesis put-record --stream-name <IngestKinesisStreamName> \
@@ -296,14 +328,16 @@ the run or task should update within about 5 seconds, with no polling.
   outcome, any error, and `apiCalls` (that event's `GetRun`, `GetRunTask`, and
   `GetWorkflow` counts). Filter on `ingest_event` in CloudWatch Logs Insights
   to check call volume or find failures.
-- Kinesis dead letter queue (default path, stack output
-  `IngestKinesisDlqUrl`). After 5 retries or 1 hour, the event source mapping
-  sends a message with the failed batch's shard and sequence range, not the
-  events. Replay the records from the stream within its 24-hour retention
+- Dead letter queue (default, stack output `DeadLetterQueueUrl`). It holds
+  the original EventBridge events that failed after 3 delivery attempts, kept
+  for 14 days. It is used whenever `kinesisIngestMode` is `off` (the default)
+  or `present`.
+- Kinesis dead letter queue (only with `kinesisIngestMode=active`, stack
+  output `IngestKinesisDlqUrl`). After 5 retries or 1 hour, the event source
+  mapping sends a message with the failed batch's shard and sequence range,
+  not the events. Replay the records from the stream within its 24-hour
+  retention
   ([steps](docs/deployment.md#replaying-from-the-kinesis-dead-letter-queue)).
-- Direct-path dead letter queue (stack output `DeadLetterQueueUrl`). Used when
-  `kinesisIngestMode` is `off` or `present`. It holds the original EventBridge
-  events that failed after 3 delivery attempts, kept for 14 days.
 - Shadow mismatches. In `shadow` mode, the
   `HealthOmicsIngest/EnrichmentShadowMismatch` metric (dimension `field`) and
   `enrichment_shadow_mismatch` log lines show where event values differed
@@ -334,14 +368,15 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Cost
 
-Most components bill per request and cost nothing at idle. The default Kinesis
-ingest path adds one fixed charge: the on-demand stream, about $0.04 per
-stream-hour, or about $29/month in us-east-1.
+Most components bill per request, so the default configuration has
+near-zero idle cost. The optional Kinesis buffer adds one fixed charge when
+enabled: the on-demand stream, about $0.04 per stream-hour, or about
+$29/month in us-east-1.
 
 | Configuration | Est. monthly at 100,000 runs (about 40 tasks each) |
 |---------------|-----------------------------------------------------|
-| Default (`kinesisIngestMode=active`) | ≈ $150–175, including about $30 for Kinesis and $2–5 for CloudWatch Logs |
-| `kinesisIngestMode=off` | ≈ $130–155, including the deferred re-sweep; near-zero at idle |
+| Default (`kinesisIngestMode=off`) | ≈ $130–155, including the deferred re-sweep and $2–5 for CloudWatch Logs; near-zero at idle |
+| Optional Kinesis (`kinesisIngestMode=active`) | ≈ $150–175, including about $30 for Kinesis (billed even at idle), without the deferred re-sweep |
 
 These estimates cover the dashboard only, not HealthOmics workflow execution.
 AppSync is the largest item, and tasks per run is the main lever: at about 150
@@ -351,11 +386,13 @@ sources are in [docs/cost.md](docs/cost.md).
 
 ## Known limitations
 
-- The deferred re-sweep is scheduled only by the direct ingest Lambda, so it
-  runs only with `kinesisIngestMode=off`. With the default Kinesis consumer
-  Lambda, a task whose terminal event is lost stays non-terminal, and
-  utilization that lands after the run ends is not added to the run summary.
-  Enabling it on the Kinesis path would add HealthOmics calls per run.
+- The deferred re-sweep runs on the default direct path (`off` and
+  `present`) but not on the optional Kinesis path, because only the direct
+  ingest Lambda is configured to schedule it. With
+  `kinesisIngestMode=active`, a task whose terminal event is lost stays
+  non-terminal, and utilization that lands after the run ends is not added to
+  the run summary. Enabling it on the Kinesis path would add HealthOmics
+  calls per run.
 - The Lambdas use the `nodejs20.x` runtime, which AWS
   [deprecated on Apr 30, 2026](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html).
   Lambda blocks creating functions on it from Jul 29, 2027 and updating them
@@ -363,10 +400,11 @@ sources are in [docs/cost.md](docs/cost.md).
   upgrade is planned.
 - `scripts/send-event.mjs --mode eventbridge` can't publish its fixtures,
   because EventBridge rejects `PutEvents` entries whose source starts with
-  `aws.`. Use `--dry-run`, `--mode lambda`, or `aws kinesis put-record` (see
-  [Testing and verifying](#testing-and-verifying)).
-- Kinesis dead letter queue messages carry batch metadata, not events, so
-  failed records must be replayed from the stream within 24 hours.
+  `aws.`. Use `--dry-run`, `--mode lambda`, or, with Kinesis enabled,
+  `aws kinesis put-record` (see [Testing and verifying](#testing-and-verifying)).
+- With Kinesis enabled, Kinesis dead letter queue messages carry batch
+  metadata, not events, so failed records must be replayed from the stream
+  within 24 hours.
 - Task events never carry `statusMessage` or `failureReason`, so `FAILED` and
   `CANCELLED` tasks still call `GetRunTask`. The shape of those two events has
   not been checked against live data.
@@ -386,9 +424,9 @@ Maintainer notes on HealthOmics event and API shapes to re-check are in
 
 ## Teardown
 
-Before destroying, note the `IngestKinesisStreamName` output of
-`HealthOmicsIngest`, the `TableName` output of `HealthOmicsData`, and the
-`UserPoolId` output of `HealthOmicsApi`. Then, from `infra/`:
+Before destroying, note the `TableName` output of `HealthOmicsData`, the
+`UserPoolId` output of `HealthOmicsApi`, and, if Kinesis was ever enabled, the
+`IngestKinesisStreamName` output of `HealthOmicsIngest`. Then, from `infra/`:
 
 ```bash
 npx cdk destroy --all
@@ -398,24 +436,28 @@ This deletes the Lambdas, queues, EventBridge rule and Scheduler group, the
 AppSync API, the CloudFront distribution, and the S3 site bucket (its objects
 are deleted automatically). The default event bus is not touched.
 
-Three resources have a `RETAIN` policy and stay in the account until you
+These resources have a `RETAIN` policy and stay in the account until you
 delete them:
-
-> Warning: the Kinesis stream keeps billing about $0.04 per stream-hour
-> (about $29/month) until you delete it.
 
 - The DynamoDB table, with deletion protection on. It holds all run, task,
   and graph data. When a table with PITR is deleted, DynamoDB keeps a system
   backup for 35 days; take an on-demand backup if you need it longer.
 - The Cognito user pool and its users.
-- The Kinesis stream.
+- Only if Kinesis was enabled (`present` or `active`): the Kinesis stream.
+  It stays after teardown or after switching back to `off`.
 
 ```bash
 aws dynamodb update-table --table-name <TableName> --no-deletion-protection-enabled
 aws dynamodb delete-table --table-name <TableName>
 aws cognito-idp delete-user-pool --user-pool-id <UserPoolId>
-aws kinesis delete-stream --stream-name <IngestKinesisStreamName>
 ```
+
+> Warning: a retained Kinesis stream keeps billing about $0.04 per
+> stream-hour (about $29/month) until you delete it:
+>
+> ```bash
+> aws kinesis delete-stream --stream-name <IngestKinesisStreamName>
+> ```
 
 Lambda CloudWatch log groups (`/aws/lambda/HealthOmics*`) also remain; delete
 them in CloudWatch Logs if you don't need them. Local `cdk-outputs.json` and

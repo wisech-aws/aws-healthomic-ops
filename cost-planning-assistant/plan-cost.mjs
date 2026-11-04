@@ -198,7 +198,7 @@ async function main() {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
     // Handle EOF / closed stdin gracefully. When input runs out (piped input
-    // exhausted, Ctrl-D, or a non-TTY stdin), readline emits 'close': any
+    // ends, Ctrl-D, or a non-TTY stdin), readline emits 'close': any
     // later rl.question() throws ERR_USE_AFTER_CLOSE, and a question already
     // in flight when 'close' fires would otherwise never resolve. Resolve the
     // prompt to a cancel sentinel in both cases so the driver's isCancel()

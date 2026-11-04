@@ -16,11 +16,12 @@ first:
 ```bash
 npm --prefix ingest run build
 npm --prefix frontend run build     # produces frontend/dist
-cd infra && npx cdk deploy --all    # defaults: kinesisIngestMode=active, eventEnrichmentMode=event
+cd infra && npx cdk deploy --all    # defaults: kinesisIngestMode=off, eventEnrichmentMode=event
 ```
 
-Add `-c kinesisIngestMode=<mode>` or `-c eventEnrichmentMode=<mode>` to
-override a default (see [Configuration](../README.md#configuration)). If
+The default needs no Kinesis flag. Add `-c kinesisIngestMode=active` to opt
+in to the Kinesis buffer, or `-c eventEnrichmentMode=<mode>` to change
+enrichment (see [Configuration](../README.md#configuration)). If
 `frontend/dist` is missing, the `FrontendStack` skips the asset upload with a
 warning; build the SPA and redeploy `HealthOmicsFrontend`.
 
@@ -84,6 +85,10 @@ account, so cross-account enrichment (`GetRun`, `GetRunTask`, `GetWorkflow`)
 also needs a role in the source account, which this repo does not set up.
 
 ## Replaying from the Kinesis dead letter queue
+
+This applies only with `kinesisIngestMode=active`. On the default direct
+path, failed events go to the direct-path dead letter queue (stack output
+`DeadLetterQueueUrl`) as the original EventBridge events.
 
 When a Kinesis batch still fails after 5 retries or 1 hour, the event source
 mapping sends one message to the Kinesis dead letter queue (stack output
