@@ -1,813 +1,432 @@
-# HealthOmics Workflow Dashboard
+# AWS HealthOmics Workflow Dashboard
 
-A serverless, event-driven dashboard for monitoring AWS HealthOmics workflow runs in near real time. HealthOmics emits state-change events to Amazon EventBridge; they are buffered in an Amazon Kinesis Data Stream, and an ingest consumer Lambda builds run/task state from the event payload itself (calling HealthOmics read APIs only in a few exceptional cases, not per task), upserts it into a single DynamoDB table, and publishes the change through an AWS AppSync GraphQL mutation. AppSync serves queries for the initial load and pushes live updates through subscriptions to a React single-page app hosted on Amazon S3 behind CloudFront.
+Near real-time run and task monitoring for AWS HealthOmics workflows, built
+on serverless AWS services.
 
-This is a TypeScript monorepo with independently buildable and testable packages:
+AWS HealthOmics publishes run and task status-change events to Amazon
+EventBridge. By default they are buffered in an Amazon Kinesis Data Streams
+stream, and the Kinesis consumer Lambda builds run and task state from the
+event payload itself, calling HealthOmics read APIs only in a few exceptional
+cases. It writes that state to a single Amazon DynamoDB table and publishes
+each change through AWS AppSync, which pushes live updates to a React
+single-page app (SPA) served from Amazon S3 through Amazon CloudFront.
 
-| Package     | Purpose                                                                 |
-|-------------|-------------------------------------------------------------------------|
-| `infra/`    | AWS CDK v2 (TypeScript) app: `DataStack`, `ApiStack`, `IngestStack`, `FrontendStack`. |
-| `ingest/`   | Ingest Lambda (Node.js 20.x, TypeScript) — event normalization, enrichment, persistence, publish, and the workflow-definition parser. |
-| `frontend/` | React + Vite (TypeScript) single-page app styled with the [Cloudscape Design System](https://cloudscape.design/) — fleet view and run detail view. |
-| `fixtures/` | Sample HealthOmics events and workflow definitions used by tests and local verification. |
-| `scripts/`  | Local verification and operational scripts (`deploy.sh`, `dev-local.sh`, `send-event.mjs`, `inject-config.mjs`, `ensure-run-metrics-permission.mjs`, `backfill-run-summaries.mjs`). |
+This TypeScript monorepo's packages each pin exact dependency versions and
+have their own `build` and `test` scripts.
 
-Each package pins its dependencies to exact versions and exposes `build` and `test` scripts.
+| Package | Purpose |
+|---------|---------|
+| `infra/` | AWS CDK v2 app with four stacks: `DataStack`, `ApiStack`, `IngestStack`, `FrontendStack`. |
+| `ingest/` | Ingest Lambdas (TypeScript): event mapping, enrichment, persistence, publish, the deferred re-sweep, and the workflow-definition parsers. |
+| `frontend/` | React and Vite SPA using the [Cloudscape Design System](https://cloudscape.design/). |
+| `fixtures/` | Sample HealthOmics events and workflow definitions for tests and local checks. |
+| `scripts/` | Deploy, local development, and operational scripts. See [`scripts/README.md`](scripts/README.md). |
+| `cost-planning-assistant/`, `dist-cost-estimator/` | Standalone HealthOmics cost tools: pre-run planning and a per-run estimator. See each package's README. |
 
 ## Contents
 
+- [Features](#features)
 - [Architecture](#architecture)
-- [Run locally with one command](#run-locally-with-one-command)
-- [Dashboard features](#dashboard-features)
 - [Prerequisites](#prerequisites)
-- [Deploy](#deploy)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Local development](#local-development)
+- [Testing and verifying](#testing-and-verifying)
+- [Troubleshooting](#troubleshooting)
+- [Security](#security)
+- [Cost](#cost)
+- [Known limitations](#known-limitations)
 - [Teardown](#teardown)
-- [Pointing the dashboard at a HealthOmics account](#pointing-the-dashboard-at-a-healthomics-account)
-- [Verifying end-to-end event flow](#verifying-end-to-end-event-flow)
-- [Cost documentation](#cost-documentation)
-- [Known limitations of task dependency inference and DAG inference](#known-limitations-of-task-dependency-inference-and-dag-inference)
-- [Confirm against AWS docs](#confirm-against-aws-docs)
-- [Toolchain](#toolchain)
+- [Contributing](#contributing)
+- [License](#license)
 
----
+## Features
+
+- Fleet view: the run list with status, workflow, IDs, engine version, batch
+  ID, start time, and duration. It has a date-range window (last 30 days by
+  default), search, filters, sorting, grouping by engine version or batch,
+  stale-run badges, a two-run parameter diff, and live updates.
+- Run detail view: the task graph (True DAG from the workflow definition,
+  inferred DAG, or timeline), a task detail panel with logs and error
+  excerpts, resource summary, measured utilization, a per-run cost estimate,
+  longest-running tasks, a task timeline, a failed-task filter, and the run's
+  inputs, outputs, and configuration.
+- Reports view: mean, median, and p90 statistics across runs of one workflow
+  version over a time window, with histograms, drill-down to individual runs,
+  and CSV or print-to-PDF export.
+
+Every view is deep-linkable (`#/run/<id>`, `#/run/<id>/task/<id>`), and the UI
+shows "unavailable" rather than guessing when data is missing. Details are in
+[docs/features.md](docs/features.md).
 
 ## Architecture
 
-The system is fully managed and event-driven end to end. HealthOmics publishes run and task status-change events to the default EventBridge bus; a rule matching `source = aws.omics` routes them to the ingest path. In the deployed configuration (`kinesisIngestMode=active`, see [Alternative Kinesis ingest path](#alternative-kinesis-ingest-path)) that is an on-demand Amazon Kinesis Data Stream, which buffers bursts so a large batch of task-heavy runs drains through a bounded consumer instead of fanning out to one Lambda invocation per event. The Kinesis ingest consumer Lambda (192 MB) defensively maps each event and, in the default `event` [enrichment mode](#event-driven-enrichment-eventenrichmentmode), builds task and run state from the event payload. HealthOmics read APIs are called only at run start/end, for failed or cancelled tasks, and for a workflow version whose graph is not stored yet. The consumer upserts run/task/graph items into a single on-demand DynamoDB table with a monotonic `updatedAt` guard, then calls the AppSync `publishRunUpdate` / `publishTaskUpdate` mutations. AppSync fans those mutations out to subscribed browsers and also serves the initial `listRuns` / `getRun` / `listTasksForRun` queries. The React SPA is served privately from S3 through CloudFront (Origin Access Control) and authenticates to AppSync through a Cognito user pool.
-
-Solid arrows are the per-event path; dashed arrows are exceptional or failure paths.
+Solid arrows are the per-event path; dashed arrows are exceptional or failure
+paths. The diagram shows the default configuration.
 
 ```mermaid
 flowchart TD
     HO["AWS HealthOmics<br/>(runs + tasks)"] -->|"Run / Task Status Change events"| EB["Amazon EventBridge<br/>default bus<br/>rule: source = aws.omics"]
-    EB -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Stream<br/>on-demand buffer<br/>(protects Lambda concurrency)"]
-    KDS -->|"batches per shard"| ING["Kinesis ingest consumer Lambda<br/>Node.js 20.x / TS, 192 MB<br/>state built from event payload"]
-    ING -.-> DLQ["Amazon SQS<br/>dead letter queue"]
-    ING -.->|"exceptional only: GetRun at run PENDING/terminal,<br/>GetRunTask for FAILED/CANCELLED tasks,<br/>GetWorkflow for a new workflow graph"| HOAPI["HealthOmics Read APIs"]
-    ING -->|"upsert run/task/graph<br/>(updatedAt conditional)"| DDB[("Amazon DynamoDB<br/>single table, on-demand, PITR<br/>+ GSI1")]
+    EB -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Streams<br/>on-demand stream"]
+    KDS -->|"batches per shard"| ING["Kinesis consumer Lambda<br/>192 MB<br/>state built from event payload"]
+    ING -.-> DLQ["Amazon SQS<br/>Kinesis dead letter queue"]
+    ING -.->|"exceptional only: GetRun at run PENDING/terminal,<br/>GetRunTask for FAILED/CANCELLED tasks,<br/>GetWorkflow for a new workflow graph"| HOAPI["HealthOmics read APIs"]
+    ING -->|"upsert run/task/graph<br/>(updatedAt conditional)"| DDB[("Amazon DynamoDB<br/>single table, on-demand, PITR<br/>+ GSI1, GSI2")]
     ING -->|"publishRunUpdate / publishTaskUpdate<br/>(IAM auth)"| APPSYNC["AWS AppSync<br/>GraphQL API"]
     APPSYNC -->|"JS resolvers read"| DDB
     APPSYNC -->|"onRunUpdated / onTaskUpdated<br/>subscription push"| SPA["React SPA (Vite + TS)"]
     APPSYNC -->|"listRuns / getRun / listTasksForRun"| SPA
-    SPA -->|"served via"| CF["Amazon CloudFront (OAC)"]
-    CF --> S3[("Amazon S3<br/>private bucket")]
+    S3[("Amazon S3<br/>private bucket")] -->|"origin (OAC)"| CF["Amazon CloudFront"]
+    CF -->|"serves"| SPA
     COG["Amazon Cognito<br/>user pool + app client"] -->|"default authz"| APPSYNC
 ```
 
-Infrastructure is one AWS CDK v2 app split into four stacks by lifecycle and blast radius:
+### Stacks
 
-| Stack | Responsibilities |
-|-------|------------------|
-| `DataStack` | DynamoDB single table (on-demand, point-in-time recovery, `GSI1`). |
-| `ApiStack` | AppSync GraphQL API, schema, JS resolvers, Cognito user pool + app client (strong password policy + enforced threat protection), default Cognito authz plus IAM authz for the ingest publish mutations. |
-| `IngestStack` | Ingest Lambda, EventBridge rule, SQS dead-letter queue, retry policy, least-privilege IAM, and the `EVENT_ENRICHMENT_MODE` setting for both ingest functions (CDK context `eventEnrichmentMode`, see [Event-driven enrichment](#event-driven-enrichment-eventenrichmentmode)). The Lambda **bundles** the pinned AWS SDK v3 clients (rather than using the older SDK baked into the Node 20 runtime) so newer `GetRun` response fields — e.g. `networkingMode`, `configuration`, `vpcConfig` — are not silently dropped during deserialization. Also owns the **deferred re-sweep** (a Reconciler Lambda plus a one-shot EventBridge Scheduler group; see [Deferred re-sweep](#deferred-re-sweep-late-settling-reconciliation)) and the toggle-able [Kinesis ingest path](#alternative-kinesis-ingest-path) (an on-demand Kinesis Data Stream + batch-consumer Lambda + event-source mapping). |
-| `FrontendStack` | Private S3 bucket, CloudFront distribution with OAC, SPA 403/404 → `index.html` routing, build-config injection. |
+The AWS CDK app defines four stacks, split by lifecycle:
 
-Stack ordering ensures the Cognito user pool exists before API authorization is configured, and a failure in any stack fails the whole deployment (CloudFormation rolls back rather than leaving a partially-provisioned stack in service).
+| Stack | Contents |
+|-------|----------|
+| `HealthOmicsData` (`DataStack`) | DynamoDB single table: on-demand, point-in-time recovery, deletion protection, `GSI1` (runs by recency), `GSI2` (workflow groups for Reports). |
+| `HealthOmicsApi` (`ApiStack`) | AppSync API, schema, and JS resolvers; Lambda resolvers for logs and error excerpts, run metrics, cost estimates, and Reports; Cognito user pool and app client. |
+| `HealthOmicsIngest` (`IngestStack`) | EventBridge rule; Kinesis stream, Kinesis consumer Lambda, and Kinesis dead letter queue; direct ingest Lambda and its dead letter queue; Reconciler Lambda and EventBridge Scheduler group for the deferred re-sweep; least-privilege IAM. |
+| `HealthOmicsFrontend` (`FrontendStack`) | Private S3 bucket, CloudFront distribution with Origin Access Control, SPA routing, and deploy-time config injection. |
 
-### Alternative Kinesis ingest path
+CDK deploys them in dependency order (Data → Api → Ingest, Api → Frontend).
 
-Alongside the direct EventBridge → Lambda path, the `IngestStack` can provision
-an alternative ingest path backed by **Amazon Kinesis Data Streams**. It is
-controlled entirely by a single CDK context flag — `-c kinesisIngestMode=<mode>`
-(`infra/lib/ingest-stack.ts`) — with three modes:
+### How ingest works
 
-- **`off`** (default): only the direct path exists. The EventBridge rule
-  (`source = aws.omics`) targets the ingest Lambda directly, as described above.
-- **`present`**: the Kinesis stream, a **batch-consumer Lambda** (reusing the
-  exact ingest pipeline), and the Kinesis event-source mapping are provisioned
-  **alongside** the direct path, but EventBridge **still targets the ingest
-  Lambda** — the Kinesis path sits idle. This lets you deploy and validate the
-  resources without changing live ingestion.
-- **`active`**: the EventBridge rule targets the **Kinesis stream** instead of
-  the Lambda, using a **native dynamic partition key** (`$.detail.runId`). Events
-  then flow **EventBridge → Kinesis → batch-consumer Lambda**: all of a run's
-  events land on one shard (per-run ordering by shard, parallel across runs), and
-  the event-source mapping uses `ReportBatchItemFailures` for partial-batch retry
-  (plus bisect-on-error, a bounded retry/age, and an on-failure SQS DLQ).
-
-The toggle is additive and reversible: switching between modes is a single
-context change + redeploy and never deletes either path, so you can cut over
-(`active`) and roll back (`present`/`off`) with one deploy. Kinesis was chosen
-over SQS FIFO because EventBridge → Kinesis supports the native dynamic
-partition key with no enqueue Lambda and no bridging queue; the tradeoff is that
-an on-demand Kinesis stream does not scale to zero (a small idle hourly cost).
-
-**The deployed environment runs with the Kinesis path (`active`).** The CDK
-default is still `off`, so every deploy must pass `-c kinesisIngestMode=active`
-(or `scripts/deploy.sh --kinesis-mode active`); a deploy without it moves the
-EventBridge target back to the direct Lambda.
-
-The consumer has no reserved concurrency: its concurrency is shards ×
-parallelization factor (10), so a large batch of task-heavy runs queues in the
-stream rather than consuming Lambda concurrency per event. It runs at 192 MB
-(`infra/lib/ingest-stack.ts`), which leaves headroom over the peak observed
-while parsing a workflow definition bundle.
-
-```mermaid
-flowchart LR
-    EB["EventBridge rule<br/>source = aws.omics"] -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Streams<br/>(on-demand, 24h retention)"]
-    KDS -->|"batch per shard<br/>(ReportBatchItemFailures)"| CONS["Batch-consumer Lambda, 192 MB<br/>(reuses ingest pipeline)"]
-    CONS -.-> KDLQ["Amazon SQS<br/>dead letter queue"]
-    CONS -->|"same downstream as direct path"| DDB[("DynamoDB + AppSync")]
-```
-
-### Event-driven enrichment (`eventEnrichmentMode`)
-
-HealthOmics task events (`omicsVersion` 1.0.0) carry the task's name,
-resources, and timing, so the dashboard builds task and run state from the
-event payload instead of calling HealthOmics for every task. The policy is set
-with the CDK context flag `-c eventEnrichmentMode=<mode>`, passed to both ingest
-functions as `EVENT_ENRICHMENT_MODE` (`infra/lib/ingest-stack.ts`,
-`ingest/src/handler.ts`):
-
-- **`event`** (default, and what is deployed): task and run state comes from the
-  EventBridge event. HealthOmics read APIs are called only when the event cannot
-  supply a field:
-  - `GetRun` at run `PENDING` (parameters, configuration, exact `createdAt`)
-    and at a terminal run status (exact `stoppedAt`, status message). It is
-    also called as a fallback on a `STARTING`/`RUNNING`/`STOPPING` event if the
-    stored run has no `GetRun` data yet (for example, the `PENDING` event was
-    missed).
-  - `GetRunTask` only for `FAILED`/`CANCELLED` tasks (events never carry
-    `statusMessage` or `failureReason`), or for a terminal task event missing
-    its name, start time, or stop time.
-  - `GetWorkflow` only when the workflow version's graph is not already stored
-    (cache key: `workflowId` + `workflowVersionName`). A failed fetch or parse
-    is cached for 1 hour (`GRAPH_FAILURE_RETRY_WINDOW_MS`) so a broken
-    definition is not retried on every run event.
-- **`shadow`**: same as `event`, plus `GetRunTask` on every terminal task event
-  to validate the event values. Each differing field (name, cpus, memory,
-  instanceType, createdAt, startedAt, stoppedAt) logs
-  `enrichment_shadow_mismatch` and emits the EMF metric
-  `HealthOmicsIngest/EnrichmentShadowMismatch` (dimension `field`); the API
-  values are written for those fields. Use it to re-validate event data after
-  an ingest change.
-- **`api`**: the legacy behavior, kept for rollback: `GetRun` on every run
-  event and `GetRunTask` on every terminal task event.
-
-On a 207-task nf-core/rnaseq run, the ingest path in `event` mode made **2
-HealthOmics calls in total** (`GetRun` at `PENDING` and at terminal), compared
-with 217 under the legacy path (about one `GetRunTask` per task plus the run
-calls). The [deferred re-sweep](#deferred-re-sweep-late-settling-reconciliation)
-adds its own small, paged read about 5 minutes after the run ends. Every
-processed event writes one structured `ingest_event` log line with an
-`apiCalls` count (`GetRun` / `GetRunTask` / `GetWorkflow`), so the call volume
-can be checked in CloudWatch Logs.
-
-Always pass the Kinesis flag alongside the enrichment mode:
-
-```bash
-cd infra
-cdk deploy --all -c kinesisIngestMode=active                                # event mode (default)
-cdk deploy --all -c kinesisIngestMode=active -c eventEnrichmentMode=shadow  # validate event data
-cdk deploy --all -c kinesisIngestMode=active -c eventEnrichmentMode=api     # rollback
-```
-
-An invalid `eventEnrichmentMode` value fails synth. `scripts/deploy.sh` does not
-set `eventEnrichmentMode`, so it deploys the default `event` mode; use
-`cdk deploy` directly for `shadow` or `api`.
-
-### Event metadata reference
-
-The fields the ingest mapper reads from HealthOmics events (`omicsVersion`
-1.0.0), defined in `ingest/src/eventMapper.ts`. Observed statuses are
-`PENDING`, `STARTING`, `RUNNING`, `STOPPING`, `COMPLETED`, `FAILED`, and
-`CANCELLED`.
-
-**Task Status Change** (`detail-type: "Task Status Change"`):
-
-| Event field | Dashboard field | Carried on |
-|-------------|-----------------|------------|
-| `arn` (`.../task/<task-id>`) | `taskId` (parsed from the ARN) | All statuses |
-| `runId` | `runId` | All statuses |
-| `status` | `status` | All statuses |
-| `taskName` (not `name`) | `name` | All statuses |
-| `cpus` (string, e.g. `"2"`) | `cpus` (number) | All statuses |
-| `memory` (string, GiB) | `memory` (number, GiB) | All statuses |
-| `gpus` (string) | Not mapped (no `gpus` field in the schema) | All statuses |
-| `creationTime` | `createdAt` | All statuses |
-| `instanceType` | `instanceType` | Added at `RUNNING` |
-| `startTime` | `startedAt` | Added at `RUNNING` |
-| `stopTime` | `stoppedAt` | Added at `COMPLETED` |
-| *(not carried)* `statusMessage`, `failureReason` | From `GetRunTask` | `FAILED` / `CANCELLED` only |
-
-Numeric values arrive as strings and timestamps match `GetRunTask`. Because task
-events never carry `statusMessage` or `failureReason`, `GetRunTask` is still
-called for `FAILED`/`CANCELLED` tasks; the shape of those two events has not
-been verified against live data. The mapper still reads a legacy `name` field
-as a fallback, which is what the sample `fixtures/events/task-status-change.json`
-uses.
-
-**Run Status Change** (`detail-type: "Run Status Change"`):
-
-| Event field | Dashboard field | Carried on |
-|-------------|-----------------|------------|
-| `runId` | `runId` | All statuses |
-| `status` | `status` | All statuses |
-| `runName` | `name` | All statuses |
-| `workflowId` | `workflowId` | All statuses |
-| `workflowName` | `workflowName` | All statuses |
-| `workflowVersionName` | `workflowVersionName` (optional) | All statuses, when the run has a version |
-| `runOutputUri` | `outputUri` (optional) | All statuses |
-
-Run events carry only identity, `workflowVersionName`, and `runOutputUri`.
-Timestamps, parameters, run configuration, engine version, and status messages
-come from `GetRun` at `PENDING` and at terminal. Until `GetRun` supplies them,
-`event` mode uses the event `time` as `createdAt` at `PENDING` and `startedAt`
-at `RUNNING`.
-
-### Live updates in the run detail view
-
-The run detail view (`frontend/src/rundetail/RunDetailView.tsx`,
-`frontend/src/rundetail/mergeTasks.ts`) applies `onTaskUpdated` and
-`onRunUpdated` messages monotonically: it never moves a task or run from a
-terminal status back to a non-terminal one, otherwise keeps the record with the
-newer `updatedAt` (for tasks, an `updatedAt` tie goes to the higher status
-rank). It re-syncs the task list
-with one `listTasksForRun` query (a DynamoDB read, no HealthOmics calls) after
-an Amplify reconnect, when the task subscription is acknowledged, when the tab
-becomes visible, when the browser comes back online, and once when the run
-reaches a terminal status.
-
-### Deferred re-sweep (late-settling reconciliation)
-
-A run's per-run performance rollup (`Run_Summary`) is computed by the ingest
-completion hook **at the instant the run reaches a terminal state**. At that
-moment two things are frequently *not yet settled*:
-
-1. **Task states** — EventBridge delivers run/task events **at-least-once and
-   out of order**, so a `RUNNING` task event can be processed *after* the task
-   actually finished. The ingest handler already defends against this with a
-   status-monotonic upsert guard and an *authoritative-terminal-override* (when
-   it enriches a task via `GetRunTask` and the API reports a terminal status, it
-   trusts that over a stale event status). But a sub-second enrichment-lag tail
-   can still leave a task stored as non-terminal when HealthOmics already has it
-   terminal — and no further event arrives to correct it.
-2. **Utilization metrics** — HealthOmics emits CPU/memory utilization at a ~30s
-   interval and CloudWatch ingestion lags the terminal event by tens of seconds
-   to minutes, so the completion-hook metric sweep often records "utilization
-   unavailable" even though the data lands shortly afterward.
-
-The **deferred re-sweep** closes both gaps. When a run reaches terminal, the
-ingest completion hook schedules a **one-shot [Amazon EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html)**
-(`at(now + RECONCILE_DELAY_MINUTES)`, default **5 minutes**) that invokes a small
-**Reconciler Lambda** with `{ runId }`. By the time it fires, both the task
-states and the metrics have settled, so the Reconciler:
-
-1. re-reads the **authoritative** run + all task state from the HealthOmics read
-   APIs (one `GetRun`, `ListRunTasks` pages of 100, and `GetRunTask` only for
-   `FAILED`/`CANCELLED` tasks) and re-upserts each task,
-   correcting any that drifted (the repository's monotonic + terminal-status
-   guards make a redundant write a harmless no-op);
-2. re-sweeps CloudWatch for the now-available utilization series;
-3. recomputes the `Run_Summary` and re-writes it with a freshly-bumped
-   `updatedAt` so it wins the monotonic guard (populating utilization the
-   terminal-instant sweep missed), and refreshes the `Group_Registry`;
-4. **deletes its own one-shot schedule** so nothing accumulates
-   (belt-and-suspenders with `ActionAfterCompletion: DELETE` on the schedule).
-
-```mermaid
-flowchart LR
-    ING["Ingest Lambda<br/>(terminal run)"] -->|"CreateSchedule at(now+5m)"| SCH["EventBridge Scheduler<br/>one-shot, group: &lt;stack&gt;-resweep"]
-    SCH -->|"~5 min later, invoke {runId}"| REC["Reconciler Lambda"]
-    REC -->|"GetRun / ListRunTasks<br/>(GetRunTask for failed tasks)"| HO["HealthOmics read APIs"]
-    REC -->|"re-sweep CPU/MEMORY"| CW["CloudWatch (PromQL)"]
-    REC -->|"correct tasks + rewrite Run_Summary (force updatedAt)"| DDB[("DynamoDB")]
-    REC -->|"DeleteSchedule (self-cleanup)"| SCH
-```
-
-The feature is **idempotent and failure-isolated**: if everything already
-settled correctly the reconcile is a harmless no-op, and a scheduling failure in
-the completion hook never disturbs the already-persisted summary. It is also
-**staged-rollout safe** — the ingest handler only schedules a re-sweep when the
-reconciler infrastructure is wired via environment (`RECONCILER_FUNCTION_ARN` +
-`RECONCILER_SCHEDULER_ROLE_ARN`); absent those, it simply skips scheduling. The
-delay is configurable via the `RECONCILE_DELAY_MINUTES` environment variable.
-
-IAM is least-privilege: the ingest role may only `scheduler:CreateSchedule`
-within the dedicated schedule group and `iam:PassRole` the single
-scheduler-invoke role (conditioned on `iam:PassedToService = scheduler.amazonaws.com`);
-the Reconciler role may only read the HealthOmics run APIs, read CloudWatch
-metrics (`GetMetricData`/`ListMetrics` — the same documented `Resource: *`
-exception as the metrics resolver, since these actions do not support
-resource-level scoping), read/write the single DynamoDB table, and
-`scheduler:DeleteSchedule` within its own group.
-
----
-
-## Run locally with one command
-
-To browse the dashboard UI on your machine without deploying any AWS resources:
-
-```bash
-scripts/dev-local.sh
-```
-
-This installs the frontend dependencies on first run, writes a local config to
-`frontend/.env.local` if you don't already have one, and starts the Vite dev
-server (opening `http://localhost:5173`).
-
-The generated local config sets `VITE_LOCAL_MOCK=true`, which puts the GraphQL
-client in **local mock mode**: it serves a small set of in-memory sample runs
-and tasks and uses no-op subscriptions instead of calling AppSync. This means
-the UI runs with **no deployed backend and no Cognito sign-in** — you get a
-populated fleet view to click through, and Amplify is never configured, so
- there is no `No federated jwt` auth error.
-
-Click a run's workflow name in the fleet list to open its **run detail view**,
-which renders the task dependency graph (React Flow) with a visible layer
-indicator (True DAG / Inferred DAG / Timeline), per-task status colors, and a
-completed/total + elapsed-time progress indicator. Use **← Back to fleet** to
-return to the list.
-
-Options:
-
-```bash
-scripts/dev-local.sh --port 3000   # use a specific port
-scripts/dev-local.sh --no-install  # skip the dependency install check
-scripts/dev-local.sh --help
-```
-
-To point the local dev server at a **real deployed backend**, generate the
-config from your stack outputs and restart:
-
-```bash
-cd infra && cdk deploy --all -c kinesisIngestMode=active --outputs-file ../cdk-outputs.json && cd ..
-node scripts/inject-config.mjs --outputs cdk-outputs.json --stack HealthOmicsApi --out frontend/.env.local
-# The injected config does not set VITE_LOCAL_MOCK, so the client uses the real
-# AppSync backend. If you previously ran in mock mode, ensure the generated file
-# does not still contain `VITE_LOCAL_MOCK=true` (delete frontend/.env.local first).
-scripts/dev-local.sh --no-install
-```
-
-Connecting to a real backend requires a signed-in Cognito user (the API's
-default authorization is the Cognito user pool). Alternatively, export
-`VITE_APPSYNC_ENDPOINT`, `VITE_USER_POOL_ID`, `VITE_USER_POOL_CLIENT_ID`, and
-`VITE_AWS_REGION` (and leave `VITE_LOCAL_MOCK` unset) before running the script.
-
-> The full event pipeline (Lambda, DynamoDB, AppSync) requires a deployed stack.
-> Tests run entirely locally with no AWS: `cd ingest && npm test`,
-> `cd infra && npm test`, `cd frontend && npm test`. See
-> [Verifying end-to-end event flow](#verifying-end-to-end-event-flow) to
-> exercise the pipeline with synthetic events.
-
----
-
-## Dashboard features
-
-The dashboard has two views: a **fleet view** (the run list) and a **run detail
-view** (per-run analytics and the task graph). Every derived value follows a
-strict no-fabrication rule: when the underlying data is absent, the UI shows an
-explicit "unavailable"/"unknown" affordance or a dash rather than a guessed
-value.
-
-Views are **deep-linkable** via the History API: a run opens at `#/run/<id>` and
-a selected task at `#/run/<id>/task/<id>`, so a URL can be bookmarked or shared,
-and browser **back/forward** restores the corresponding view without a page
-reload. All displayed timestamps (fleet Start time, run-detail times) are
-**absolute** — there is no relative "N ago" rendering.
-
-### Fleet view (run list)
-
-- **Columns:** status (with a stale-run warning badge), workflow (clickable, opens the run detail view), run name, run ID, workflow ID, engine version, batch ID, start time (shown as an **absolute** timestamp), and wall-clock duration.
-- **Default ordering:** genuinely-pending runs — a non-terminal run (e.g. `PENDING`/`STARTING`) that has no start time — sort to the **front**, since they are the newest things in the fleet. Every other run — runs that have started **and** terminal runs that never started (e.g. a run `CANCELLED`/`FAILED` before start) — is ordered by **effective recency** (`startedAt` if present, else `updatedAt`, tie-broken by `updatedAt`). For a cancelled/failed-before-start run `updatedAt` is when it reached that terminal state, so **cancelled runs are not pinned to the top** — they appear by when they were actually cancelled (`frontend/src/fleet/ordering.ts`).
-- **Free-form search:** a text box that filters the list by case-insensitive substring across run name, run ID, workflow name/ID, status, engine version, and batch ID.
-- **Filtering & sorting:** multi-select status filter, workflow filter, and sort by recency or duration (ascending/descending). The default (recency, no filters) preserves the ordering described above.
-- **Copy affordances:** a one-click copy control sits beside identifiers that are present — run ID and workflow ID in the list — so an operator can copy them without hand-selecting text (absent values keep their `—` sentinel with no copy control).
-- **Grouping:** mutually-exclusive toggles to group the list by engine version or by batch ID (runs started together via a batch share a `batchId`); each group renders as its own sub-table.
-- **Pagination:** client-side paging of the flat list (25 runs per page). Grouped views are not paged. Search resets to page 1.
-- **Stale-run detection:** a non-terminal run whose `updatedAt` is older than a threshold is flagged with a warning badge.
-- **Live updates:** runs update in place and new runs insert in order via the `onRunUpdated` subscription, with a per-run pending indicator — no page reload.
-- **Compare parameters:** select two runs to open a side-by-side parameters diff (added/removed/changed/unchanged), with per-side parse-error and cross-workflow notices.
-
-### Run detail view
-
-- **Task DAG visualizer:** the primary element, rendered via React Flow with dagre layout. Nodes are colored by task status, truncate long names with a hover tooltip showing the full name, and support a node search that highlights matches and dims the rest. The currently selected node (whose logs are open) gets an amber ring; the slowest task gets a distinct magenta ring shown in the legend.
-- **Resource summary:** a compact strip of peak concurrent tasks / vCPUs, CPU-hours, and peak memory. Metrics whose inputs are absent render "unavailable"; the memory metric always carries an "unconfirmed units" note (see the confirm-against-docs list).
-- **Longest-running tasks:** the top tasks by wall-clock duration (an approximation explicitly labeled as such, not a dependency-graph critical path); the slowest is highlighted on the DAG.
-- **Task timeline:** a collapsible per-task queue-wait vs run-time breakdown. Queue-wait is shown under an "unconfirmed `createdAt`" caveat; run-time is not.
-- **Failed-task filter:** a toggle plus count badge to show only `FAILED`/`CANCELLED` tasks.
-- **Inputs & outputs:** the run's parameters as a Parameter/Value table (S3 values link to the console; folder locations complete the prefix with a trailing slash), plus a **Run configuration** table surfacing storage, run cache, networking (VPC + configuration name), and log level captured from `GetRun`. The IAM run-role ARN is **not** shown — it is a sensitive identifier captured only in the non-exposed `rawGetRun` blob and is not exposed via GraphQL (see the confirm-against-docs list below). An engine-version badge appears on the header.
-- **Logs:** read-only CloudWatch logs for a selected task (opened by clicking its node) or the run/engine streams, rendered below the DAG. The panel adds an **in-panel search/filter** over the loaded lines and a **Download** button that saves exactly the loaded log lines as a `.log` file (no refetch, no fabrication; disabled when there are no events).
-- **Copy affordances:** one-click copy controls sit beside the identifiers and URIs the view shows — the task ID, the workflow ID, S3 URIs (the raw `s3://` URI, copied alongside its console link), and ARNs — so they can be copied without hand-selecting text.
-
-### Reports view (aggregate performance)
-
-A top-level **Reports** area (reachable from the "Reports" button in the top
-navigation) presents **aggregate performance across many runs of the same
-workflow and version over a time window**, complementing the per-run fleet and
-detail views.
-
-- **Grouping:** runs are grouped by the friendly **workflow name + version**; a run with no version name is bucketed as **"(unversioned)"**. The underlying `workflowId` is tracked (hidden) so that when one friendly name+version maps to more than one workflow, the report flags a **collision** rather than silently blending unrelated workflows.
-- **Time window:** a calendar date-range picker, defaulting to the **last 30 days**.
-- **Statistics:** for each tracked metric — wall-clock duration, mean/peak CPU, mean/peak memory (GiB), CPU-hours, peak concurrent tasks, tasks per run, failed tasks per run — the report shows **mean, median, and p90** in summary cards and an aggregate table. Cost is intentionally out of scope for this view.
-- **Charts:** a **duration-distribution bar histogram** (a server-computed, fixed-size set of buckets so the chart is bounded regardless of run count) and a **"Runs over time (per bin)"** bar chart (a server-computed, fixed-size time-binned series). Both are plain bar charts — there is no scatter/per-run chart.
-- **Browse runs by duration bucket (drill-down):** below the histogram, a **collapsible section (collapsed by default)** titled "Browse runs by duration bucket" lays out one clickable control per **non-empty** duration bucket in a grid (~7 per row, so many buckets stay visually organized). Clicking a bucket opens a popover listing that bucket's runs; each run is a hyperlink that **opens the run in a new browser tab** via its deep link (`#/run/<id>`). Empty buckets render no control, and the per-bucket run lists are paged over the full window so no outlier run is hidden.
-- **Availability honesty:** each metric's statistics are computed only over the runs where that metric was actually available, shown with an explicit **"N of M runs"** denominator; an unavailable metric is never counted as zero. Utilization (CPU/memory) exists only for runs whose IAM run role held `cloudwatch:PutMetricData` at run start (see [Verifying end-to-end event flow](#verifying-end-to-end-event-flow), the `ensure-run-metrics-permission.mjs` prerequisite); the view surfaces a note explaining why some runs lack utilization.
-- **Data source:** the pipeline persists a compact **per-run performance rollup** (a `Run_Summary` item) once when a run reaches a terminal state, so reports are fast indexed reads rather than live CloudWatch fan-outs. Existing finished runs can be populated with the one-time [`backfill-run-summaries.mjs`](scripts/README.md#backfill-run-summariesmjs--one-time-run_summary-backfill-workflow-performance-reports-req-9) script.
-- **Downloads:** **CSV** (per-run + aggregate data, for analytics) and **print-to-PDF** (a print-friendly layout of the cards + charts, for executive reporting). Unavailable metrics remain blank (never zero) in both exports, and memory stays in GiB.
-
----
+EventBridge writes each `aws.omics` event to the Kinesis stream keyed by
+`runId`, so bursts queue in the stream instead of using Lambda concurrency per
+event. The Kinesis consumer Lambda builds task and run state from the event
+payload and calls HealthOmics only at run start and end, for failed or
+cancelled tasks, and the first time a workflow version's graph is needed. On a
+207-task nf-core/rnaseq run that was 2 HealthOmics calls, compared with 217
+on the legacy per-task path. Writes use a monotonic `updatedAt` guard, so
+duplicate or out-of-order events never move state backward. The direct ingest
+Lambda (EventBridge → Lambda) is always deployed and is the live path when
+`kinesisIngestMode` is `off` or `present`. Details, including the event fields
+the mapper reads and the deferred re-sweep, are in
+[docs/architecture.md](docs/architecture.md).
 
 ## Prerequisites
 
-- **An AWS account** with permission to deploy the resources above (DynamoDB, Lambda, EventBridge, SQS, AppSync, Cognito, S3, CloudFront, IAM). This account is also where HealthOmics runs (or is the account whose default event bus receives HealthOmics events — see [Pointing the dashboard at a HealthOmics account](#pointing-the-dashboard-at-a-healthomics-account)).
-- **Node.js 20.x.** Node 20 is the Lambda runtime target and the minimum for the local toolchain. Verify with `node --version`.
-- **npm** (bundled with Node) as the package manager.
-- **AWS CDK v2 CLI.** Install globally with `npm install -g aws-cdk`, or invoke via `npx cdk`. Verify with `cdk --version` (must report a v2 version).
-- **AWS credentials** configured for the target account and region (for example via `aws configure`, `AWS_PROFILE`, or `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` environment variables). Prefer least-privilege credentials scoped to what the deploy needs.
-- **A target AWS region** chosen for deployment. HealthOmics, the dashboard, and the EventBridge rule must all be in the same region so events reach the ingest Lambda.
-- **CDK bootstrap** completed once per account/region (see [Deploy](#deploy)).
-- **Per-package install/build.** Install and build each package from its own directory before deploying:
+- An AWS account and credentials (`aws configure`, `AWS_PROFILE`, or
+  environment variables) allowed to deploy AWS CloudFormation, IAM, AWS
+  Lambda, Amazon EventBridge, Amazon EventBridge Scheduler, Amazon Kinesis Data
+  Streams, Amazon SQS, Amazon DynamoDB, AWS AppSync, Amazon Cognito, Amazon S3,
+  Amazon CloudFront, Amazon CloudWatch, and Amazon CloudWatch Logs resources.
+  Prefer least-privilege credentials.
+- A region where HealthOmics is available (see
+  [HealthOmics endpoints](https://docs.aws.amazon.com/general/latest/gr/healthomics-quotas.html)).
+  Deploy into the same region (and, by default, the same account) as your
+  HealthOmics runs.
+- Lambda concurrency: the stacks reserve 402 concurrent executions (400 for
+  the direct ingest Lambda, 2 for the Reconciler Lambda), and Lambda keeps at
+  least 100 unreserved, so the account's concurrent-executions quota must be
+  at least 502. The usual default of 1,000 works. Newer accounts can start
+  lower; request an increase in Service Quotas before deploying.
+- [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html),
+  used by `scripts/deploy.sh` and `scripts/create-cognito-user.sh`.
+- Node.js 20.x (20.19 or later, which Vite 7 needs) and npm. Node 20 matches
+  the Lambda runtime; `deploy.sh` warns on other major versions.
+- The AWS CDK CLI comes from `infra/` as a pinned devDependency. Run it as
+  `npx cdk` from `infra/` rather than a global install, so the version matches.
+- CDK bootstrap, once per account and region (step 2 of the quick start).
 
-  ```bash
-  cd ingest && npm install && npm run build && npm test
-  cd ../infra && npm install && npm run build && npm test
-  cd ../frontend && npm install && npm run build && npm test
-  ```
+## Quick start
 
----
-
-## Deploy
-
-The quickest path from a fresh clone to a live dashboard:
-
-1. **Prerequisites** — an AWS account with credentials configured
-   (`aws configure` or `AWS_PROFILE`), **Node.js 20.x**, and each package's
-   dependencies installed:
-
-   ```bash
-   cd ingest && npm install && cd ..
-   cd infra && npm install && cd ..
-   cd frontend && npm install && cd ..
-   ```
-
-2. **Bootstrap once** per account+region (CDK needs this before the first
-   deploy; it is a one-time step):
+1. Install each package's dependencies:
 
    ```bash
-   cd infra && npx cdk bootstrap aws://<account>/<region>
+   for p in ingest infra frontend; do npm --prefix "$p" install; done
    ```
 
-3. **Deploy** — build ingest, build the SPA, and deploy all stacks in one step:
+2. Bootstrap CDK once per account and region:
 
    ```bash
-   scripts/deploy.sh --kinesis-mode active   # the flag defaults to off; always pass active
+   cd infra && npx cdk bootstrap aws://<account>/<region> && cd ..
    ```
 
-   The script checks the prerequisites above (AWS CLI, Node 20, CDK, credentials,
-   per-package `node_modules`) and the bootstrap state, and fails fast with the
-   exact command to run if anything is missing — it never installs, bootstraps,
-   or deploys silently. See
-   [`scripts/README.md`](scripts/README.md#deploysh--build-and-deploy-in-one-command)
-   for all flags (`--frontend-only`, `--stack`, `--skip-build`, `--region`,
-   `--kinesis-mode`).
+3. Build and deploy all stacks with the defaults (Kinesis ingest, event
+   enrichment):
 
-4. **Create your first sign-in user** (self-signup is disabled):
+   ```bash
+   scripts/deploy.sh --region <region>
+   ```
+
+   The script checks prerequisites and bootstrap, builds ingest and the SPA,
+   and runs `npx cdk deploy --all` with `--require-approval never`, so IAM and
+   security-group changes are applied without a prompt (run `npx cdk diff`
+   from `infra/` first to review them). Flags are in
+   [`scripts/README.md`](scripts/README.md#deploysh--build-and-deploy-in-one-command).
+
+4. Create your first sign-in user (self-signup is disabled; passwords need
+   12+ characters with lowercase, uppercase, a digit, and a symbol):
 
    ```bash
    scripts/create-cognito-user.sh --username you@example.com
    ```
 
-5. **Open the dashboard** at the `HealthOmicsFrontend` `DistributionDomainName`
-   CloudFront URL printed in the deploy outputs, and sign in with that user.
+5. Open `https://<DistributionDomainName>` from the `HealthOmicsFrontend`
+   deploy outputs and sign in.
 
-The sections below explain each step in more detail. Stack names
-(`HealthOmicsData`, `HealthOmicsApi`, `HealthOmicsIngest`, `HealthOmicsFrontend`)
-are illustrative; run `cdk list` to confirm the names your CDK app defines. The
-manual `cdk` steps below are equivalent to `scripts/deploy.sh` — the script just
-runs **build ingest → build the SPA → `cdk deploy`** in the correct order so you
-never publish a stale/missing `frontend/dist`.
+6. Optional: [enable run metrics](#enable-run-metrics) for the IAM run roles
+   your workflows use.
 
-**1. Bootstrap the account/region (once per account+region):**
+To deploy with `npx cdk` directly, build ingest and the SPA first; see
+[docs/deployment.md](docs/deployment.md#deploying-without-deploysh).
 
-```bash
-cd infra
-cdk bootstrap
-```
+## Configuration
 
-**2. Build the SPA** (from the repo root). No environment values are needed at
-build time — the backend config is injected at deploy time (see step 4):
+### Ingest path (`kinesisIngestMode`)
 
-```bash
-npm --prefix frontend install   # first time only
-npm --prefix frontend run build # produces frontend/dist
-```
+Set with `-c kinesisIngestMode=<mode>` on `npx cdk deploy`, or
+`scripts/deploy.sh --kinesis-mode <mode>` (the script always passes the flag).
 
-**3. Deploy everything:**
+| Mode | Behavior |
+|------|----------|
+| `active` (default) | EventBridge → Kinesis stream → Kinesis consumer Lambda. Bursts queue in the stream. The on-demand stream has a fixed charge of about $29/month. |
+| `present` | Kinesis resources are deployed but idle; EventBridge targets the direct ingest Lambda. |
+| `off` | No Kinesis resources. EventBridge targets the direct ingest Lambda with up to 3 retries and a dead letter queue. Near-zero idle cost, but each event is a Lambda invocation, which adds concurrency pressure during large batches. |
 
-```bash
-cd infra
-cdk deploy --all -c kinesisIngestMode=active
-```
+### Enrichment mode (`eventEnrichmentMode`)
 
-The enrichment mode defaults to `event`; see
-[Event-driven enrichment](#event-driven-enrichment-eventenrichmentmode) for
-`-c eventEnrichmentMode=shadow|api`.
+Set with `-c eventEnrichmentMode=<mode>` on `npx cdk deploy`. `deploy.sh`
+does not set it, so it always deploys the default. An invalid value fails
+synth.
 
-CDK resolves cross-stack dependency order automatically (Data → Api → Ingest,
-Api → Frontend). When the `FrontendStack` deploys it:
+| Mode | Behavior |
+|------|----------|
+| `event` (default) | State comes from the event. `GetRun` at run `PENDING` and terminal, `GetRunTask` only for `FAILED` or `CANCELLED` tasks, `GetWorkflow` only for a workflow version with no stored graph. |
+| `shadow` | As `event`, plus `GetRunTask` on every terminal task event. Differences are logged and counted in the `HealthOmicsIngest/EnrichmentShadowMismatch` metric, and all compared fields are then written from `GetRunTask`. Use it to re-check event data after an ingest change. |
+| `api` | Legacy rollback: `GetRun` on every run event and `GetRunTask` on every terminal task event. |
 
-- uploads the built `frontend/dist` to the private S3 bucket,
-- writes a `config.js` generated from the live `ApiStack` outputs (AppSync
-  endpoint, Cognito user pool ID, app client ID, region), and
-- invalidates the CloudFront cache.
+For example, `cd infra && npx cdk deploy --all -c eventEnrichmentMode=shadow`.
+The deferred re-sweep delay is the `RECONCILE_DELAY_MINUTES` environment
+variable (default 5; see
+[docs/architecture.md](docs/architecture.md#deferred-re-sweep)).
 
-**4. How runtime config works.** The SPA carries no hardcoded environment
-values. At deploy time the `FrontendStack` writes `config.js` that sets
-`window.__APP_CONFIG__` from the `ApiStack` outputs; the app reads it at runtime
-(`frontend/src/api/config.ts`). This means the **same pre-built bundle** can be
-deployed against any backend without rebuilding. The mapping is:
+### Enable run metrics
 
-| ApiStack output      | `window.__APP_CONFIG__` field | Purpose                    |
-|----------------------|-------------------------------|----------------------------|
-| `GraphqlApiUrl`      | `appsyncEndpoint`             | AppSync GraphQL endpoint   |
-| `UserPoolId`         | `userPoolId`                  | Cognito user pool          |
-| `UserPoolClientId`   | `userPoolClientId`            | Cognito app client         |
-| `Region`             | `region`                      | AWS region                 |
-
-> If `frontend/dist` does not exist when you deploy, the `FrontendStack` skips
-> the asset upload (with a warning) so the rest of the deploy still succeeds —
-> just run the build (step 2) and redeploy `HealthOmicsFrontend` to publish the
-> site.
-
-**5. Create a sign-in user.** The API's default authorization is the Cognito
-user pool and self-signup is disabled, so create at least one user (this is an
-operational step, not part of the stacks). The easiest way is the helper, which
-reads the user pool from the deployed stack outputs, validates the password
-against the policy, and sets a permanent password so you can sign in right away:
+HealthOmics emits run and task utilization metrics only for runs whose IAM
+run role has `cloudwatch:PutMetricData` when the run starts. The run role is
+yours, not created by this repo, so grant it once per role:
 
 ```bash
-scripts/create-cognito-user.sh --username you@example.com
-```
-
-It prompts securely for the password (or pass `--password`); see
-[`scripts/README.md`](scripts/README.md#create-cognito-usersh--create-a-sign-in-user)
-for all flags and behavior.
-
-> **Manual fallback.** If you prefer the raw CLI, the helper is equivalent to:
->
-> ```bash
-> aws cognito-idp admin-create-user \
->   --user-pool-id <UserPoolId> --username you@example.com \
->   --user-attributes Name=email,Value=you@example.com Name=email_verified,Value=true \
->   --message-action SUPPRESS
-> aws cognito-idp admin-set-user-password \
->   --user-pool-id <UserPoolId> --username you@example.com \
->   --password '<StrongPassw0rd!>' --permanent
-> ```
-
-> **Password requirements (enforced by the user pool).** The `ApiStack`
-> configures an explicit strong password policy, so the password you set must
-> satisfy **all** of:
-> - **at least 12 characters**,
-> - **lowercase, uppercase, a digit, and a symbol** (all four required),
-> - **not one of the last 3 passwords** for that user (password history), and
-> - an admin-issued **temporary** password expires in **1 day** (set
->   `--permanent`, as above, for a non-temporary password).
->
-> A password that does not meet the policy is rejected by
-> `admin-set-user-password` / sign-up. Pick a password (or generate one) that
-> meets every rule above.
-
-> **Brute-force / credential-stuffing protection (always on).** The user pool
-> runs on the Cognito **PLUS** feature plan with **threat protection enforced**
-> (`StandardThreatProtectionMode.FULL_FUNCTION`): Cognito adaptively blocks
-> sign-ins from risky sources and detects compromised credentials, and the SPA
-> app client sets `preventUserExistenceErrors` so failed sign-ins do not reveal
-> whether an account exists. This is provisioned by CDK — no manual step — but
-> note the PLUS plan bills per monthly active user (small for an admin-only
-> pool). Access/ID tokens are valid for 1 hour and refresh tokens for 30 days.
-
-The dashboard is then reachable at the CloudFront distribution domain emitted by
-the `FrontendStack`; sign in with that user.
-
-> **Local development** uses a different path: `scripts/dev-local.sh` runs the
-> SPA in mock mode (or against a real backend via env vars) — see
-> [Run locally with one command](#run-locally-with-one-command). The legacy
-> `scripts/inject-config.mjs` (writing `.env.production`) is still available for
-> build-time injection if you prefer baking config into the bundle, but the
-> deploy-time `config.js` path above is the default and needs no rebuild.
-
-**6. Enable run-metrics emission (one-time, out-of-band, per run role).**
-HealthOmics only emits `aws.omics` run/task utilization metrics (used by the
-dashboard's resource summary) for runs whose IAM **run role** already holds
-`cloudwatch:PutMetricData` at the time the run starts. This run role is a
-HealthOmics service role, not created by this repo's CDK, so it is **not**
-provisioned by `cdk deploy --all` — grant it once, out-of-band, per run role,
-before starting any runs you want metrics for:
-
-```bash
-# Check what would change, without touching AWS:
 node scripts/ensure-run-metrics-permission.mjs --dry-run --role-name <your-run-role-name>
-
-# Apply it for real:
 node scripts/ensure-run-metrics-permission.mjs --role-name <your-run-role-name>
 ```
 
-The script is idempotent (safe to re-run). Granting `cloudwatch:PutMetricData`
-enables CloudWatch metric ingestion, which CloudWatch bills for. Runs started
-**before** the policy is applied never emit metrics retroactively — this only
-affects runs started after the grant. See
-[`scripts/README.md`](scripts/README.md#ensure-run-metrics-permissionmjs--grant-run-role-metric-emission-req-43)
-for full flag documentation.
+The script is idempotent
+([options](scripts/README.md#ensure-run-metrics-permissionmjs--grant-run-role-metric-emission-req-43)).
+CloudWatch bills for the metrics, and runs started before the grant never get
+them.
 
----
+### Account, users, and SPA config
+
+HealthOmics sends events to the default EventBridge bus of the account and
+region where runs execute, and the ingest rule on that bus matches
+`{"source": ["aws.omics"]}`, so a same-account, same-region deploy needs no
+setup on the HealthOmics side. Cross-account forwarding, the Cognito password
+policy, and how the SPA gets its AppSync and Cognito settings at deploy time
+are covered in [docs/deployment.md](docs/deployment.md).
+
+## Local development
+
+To browse the UI with no AWS resources, run `scripts/dev-local.sh` (options
+`--port <n>`, `--no-install`, `--help`) and open the URL it prints (port 5173
+by default). On first run it installs the frontend dependencies and writes
+`frontend/.env.local` with `VITE_LOCAL_MOCK=true`, so the GraphQL client
+serves in-memory sample runs with no backend and no sign-in.
+
+To point the dev server at a deployed backend:
+
+```bash
+cd infra && npx cdk deploy --all --outputs-file ../cdk-outputs.json && cd ..
+rm -f frontend/.env.local   # drop the mock-mode config
+node scripts/inject-config.mjs --outputs cdk-outputs.json --stack HealthOmicsApi --out frontend/.env.local
+scripts/dev-local.sh --no-install
+```
+
+You need a Cognito user to sign in. Alternatively, export
+`VITE_APPSYNC_ENDPOINT`, `VITE_USER_POOL_ID`, `VITE_USER_POOL_CLIENT_ID`, and
+`VITE_AWS_REGION`, and leave `VITE_LOCAL_MOCK` unset.
+
+## Testing and verifying
+
+Unit tests run locally with no AWS access:
+
+```bash
+for p in ingest infra frontend; do npm --prefix "$p" test; done
+```
+
+To push a synthetic event through a deployed stack, use
+`scripts/send-event.mjs` with a fixture from `fixtures/events/` (shorthands
+`run` and `task`). It sends nothing if the fixture fails validation.
+
+```bash
+# Validate only, no AWS calls:
+scripts/send-event.mjs --dry-run --fixture run
+
+# Invoke the direct ingest Lambda (stack output IngestFunctionName):
+scripts/send-event.mjs --mode lambda --fixture task \
+    --function <IngestFunctionName> --region <region>
+```
+
+The direct ingest Lambda exists in every mode and shares the table and
+AppSync API with the Kinesis consumer Lambda. To exercise the Kinesis consumer
+itself, put the fixture on the stream:
+
+```bash
+aws kinesis put-record --stream-name <IngestKinesisStreamName> \
+    --partition-key <runId-from-fixture> \
+    --data fileb://fixtures/events/task-status-change.json --region <region>
+```
+
+`--mode eventbridge` does not work (see
+[Known limitations](#known-limitations)). Run the script from a Node context
+that provides `@aws-sdk/client-lambda`, such as `ingest/`. With the SPA open,
+the run or task should update within about 5 seconds, with no polling.
+
+## Troubleshooting
+
+- `ingest_event` log lines. Each processed event writes one structured line
+  with the type, status, `runId`, `taskId`, enrichment mode, write and publish
+  outcome, any error, and `apiCalls` (that event's `GetRun`, `GetRunTask`, and
+  `GetWorkflow` counts). Filter on `ingest_event` in CloudWatch Logs Insights
+  to check call volume or find failures.
+- Kinesis dead letter queue (default path, stack output
+  `IngestKinesisDlqUrl`). After 5 retries or 1 hour, the event source mapping
+  sends a message with the failed batch's shard and sequence range, not the
+  events. Replay the records from the stream within its 24-hour retention
+  ([steps](docs/deployment.md#replaying-from-the-kinesis-dead-letter-queue)).
+- Direct-path dead letter queue (stack output `DeadLetterQueueUrl`). Used when
+  `kinesisIngestMode` is `off` or `present`. It holds the original EventBridge
+  events that failed after 3 delivery attempts, kept for 14 days.
+- Shadow mismatches. In `shadow` mode, the
+  `HealthOmicsIngest/EnrichmentShadowMismatch` metric (dimension `field`) and
+  `enrichment_shadow_mismatch` log lines show where event values differed
+  from `GetRunTask`.
+- No live updates: check that the deploy region matches the HealthOmics
+  region, that you are signed in, and the ingest logs for publish errors.
+- HTTP 401 on publish: the AppSync IAM auth provider is missing, usually after
+  `aws appsync update-graphql-api`, which replaces the whole auth config.
+  Redeploy from CDK.
+
+## Security
+
+- Access needs an Amazon Cognito user created by an admin (self-signup is
+  off). The app client allows only SRP sign-in and hides whether a user
+  exists, and the pool enforces Cognito threat protection.
+- Cognito is AppSync's default authorization. The publish mutations accept
+  only IAM, and only the ingest roles can call them.
+- The AppSync DynamoDB data source is read-only; only ingest writes the table.
+- The S3 bucket blocks public access and enforces TLS; CloudFront reads it
+  through Origin Access Control.
+- The raw `GetRun` capture (`rawGetRun`) and the run role ARN in it are never
+  exposed through GraphQL or the UI.
+- IAM uses explicit actions and scoped resources. The only `Resource: *`
+  grants are CloudWatch metric reads and AWS Price List reads, which don't
+  support resource-level scoping.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Cost
+
+Most components bill per request and cost nothing at idle. The default Kinesis
+ingest path adds one fixed charge: the on-demand stream, about $0.04 per
+stream-hour, or about $29/month in us-east-1.
+
+| Configuration | Est. monthly at 100,000 runs (about 40 tasks each) |
+|---------------|-----------------------------------------------------|
+| Default (`kinesisIngestMode=active`) | ≈ $150–175, including about $30 for Kinesis and $2–5 for CloudWatch Logs |
+| `kinesisIngestMode=off` | ≈ $130–155, including the deferred re-sweep; near-zero at idle |
+
+These estimates cover the dashboard only, not HealthOmics workflow execution.
+AppSync is the largest item, and tasks per run is the main lever: at about 150
+tasks per run the total is roughly $300–450. Event mode keeps HealthOmics read
+calls low (2 instead of 217 on a 207-task run). The full model, inputs, and
+sources are in [docs/cost.md](docs/cost.md).
+
+## Known limitations
+
+- The deferred re-sweep is scheduled only by the direct ingest Lambda, so it
+  runs only with `kinesisIngestMode=off`. With the default Kinesis consumer
+  Lambda, a task whose terminal event is lost stays non-terminal, and
+  utilization that lands after the run ends is not added to the run summary.
+  Enabling it on the Kinesis path would add HealthOmics calls per run.
+- The Lambdas use the `nodejs20.x` runtime, which AWS
+  [deprecated on Apr 30, 2026](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html).
+  Lambda blocks creating functions on it from Jul 29, 2027 and updating them
+  from Aug 31, 2027. `cdk synth` prints a deprecation warning. A runtime
+  upgrade is planned.
+- `scripts/send-event.mjs --mode eventbridge` can't publish its fixtures,
+  because EventBridge rejects `PutEvents` entries whose source starts with
+  `aws.`. Use `--dry-run`, `--mode lambda`, or `aws kinesis put-record` (see
+  [Testing and verifying](#testing-and-verifying)).
+- Kinesis dead letter queue messages carry batch metadata, not events, so
+  failed records must be replayed from the stream within 24 hours.
+- Task events never carry `statusMessage` or `failureReason`, so `FAILED` and
+  `CANCELLED` tasks still call `GetRunTask`. The shape of those two events has
+  not been checked against live data.
+- The True DAG comes from parsing the workflow definition, because the run
+  APIs carry no task dependencies. The WDL, Nextflow (DSL2, including
+  `include`), and CWL parsers are heuristic, so edges built from constructs
+  they don't recognize may be missing. A definition that can't be parsed in
+  30 seconds, uses an unsupported language, or forms a cycle gets no graph
+  (failures are retried after 1 hour). Nodes match tasks by exact,
+  case-sensitive name.
+- Without a graph, the inferred DAG orders tasks by `startedAt` and treats
+  overlapping tasks as concurrent, which can be wrong, so it is labeled
+  "inferred". With no timing data the view falls back to the timeline.
+
+Maintainer notes on HealthOmics event and API shapes to re-check are in
+[docs/maintainers.md](docs/maintainers.md).
 
 ## Teardown
 
-Destroy all stacks with the CDK CLI from `infra/`:
+Before destroying, note the `IngestKinesisStreamName` output of
+`HealthOmicsIngest`, the `TableName` output of `HealthOmicsData`, and the
+`UserPoolId` output of `HealthOmicsApi`. Then, from `infra/`:
 
 ```bash
-cd infra
-cdk destroy --all
+npx cdk destroy --all
 ```
 
-Notes:
+This deletes the Lambdas, queues, EventBridge rule and Scheduler group, the
+AppSync API, the CloudFront distribution, and the S3 site bucket (its objects
+are deleted automatically). The default event bus is not touched.
 
-- The stacks apply `DESTROY` removal policies (and S3 auto-delete) so `cdk destroy` removes the DynamoDB table, S3 bucket contents, and other resources rather than orphaning them. `cdk destroy` reports any resource that cannot be removed.
-- Because the `DataStack` table uses a `DESTROY` removal policy, teardown **deletes all stored run/task/graph data**. If you need to keep the data, change the table's removal policy to `RETAIN` and take a backup (point-in-time recovery is enabled) before destroying.
-- The EventBridge rule created on the **default** bus is owned by the `IngestStack` and is removed when that stack is destroyed; the default bus itself is an account resource and is not deleted.
-- The Cognito users you created are account resources, not part of the stacks; delete them separately (`aws cognito-idp admin-delete-user`) if desired. The user pool itself is removed with the `ApiStack`.
-- Delete any locally generated `cdk-outputs.json` / `frontend/.env.*` files if you no longer need them (all gitignored).
+Three resources have a `RETAIN` policy and stay in the account until you
+delete them:
 
----
+> Warning: the Kinesis stream keeps billing about $0.04 per stream-hour
+> (about $29/month) until you delete it.
 
-## Pointing the dashboard at a HealthOmics account
-
-The dashboard is driven entirely by HealthOmics events landing on the **default** EventBridge bus in the account and region where the stacks are deployed. To point the dashboard at a HealthOmics account:
-
-1. **Deploy into the same account and region as HealthOmics.** HealthOmics delivers its run/task status-change events to the default event bus of the account and region in which the runs execute. The `IngestStack` creates an EventBridge rule on that **default** bus with the pattern `{"source": ["aws.omics"]}`, so no cross-account or custom-bus wiring is required when the dashboard is co-located with HealthOmics. Confirm the deploy region matches the region where your HealthOmics runs execute.
-2. **No producer-side configuration is needed for same-account events.** HealthOmics automatically emits `aws.omics` events to the default bus; the rule matches them and routes them to the ingest path. There is nothing to enable on the HealthOmics side.
-3. **IAM.** The ingest Lambda's execution role is granted, by the `IngestStack`, least-privilege access only:
-   - HealthOmics **read-only** on `GetRun`, `ListRunTasks`, `GetRunTask`, `GetWorkflow` (no create/update/delete).
-   - `appsync:GraphQL` scoped to the `publishRunUpdate` and `publishTaskUpdate` mutation fields only.
-   - DynamoDB write access scoped to the table and `GSI1`.
-   For the events to enrich correctly, the deploying principal and the Lambda role must be able to call those HealthOmics read APIs in the target region.
-4. **Cross-account (optional).** If HealthOmics runs in a different account than the dashboard, forward `aws.omics` events from the source account's default bus to the dashboard account (an EventBridge rule targeting the dashboard account's event bus, plus the corresponding cross-account bus resource policy). The ingest rule and enrichment IAM still apply in the dashboard account. This path is beyond the default single-account setup above.
-
----
-
-## Verifying end-to-end event flow
-
-Use `scripts/send-event.mjs` to push a synthetic `aws.omics` event through the real pipeline. It validates the fixture against the same schema the ingest pipeline assumes and, on validation failure, rejects the event and sends nothing (leaving run/task data unchanged). Fixtures live under `fixtures/events/` (`run-status-change.json`, `task-status-change.json`; shorthands `run` and `task`).
-
-**1. Dry-run (no AWS calls).** Confirms the fixture is well-formed and shows what would be sent — never imports the AWS SDK or contacts AWS:
+- The DynamoDB table, with deletion protection on. It holds all run, task,
+  and graph data. When a table with PITR is deleted, DynamoDB keeps a system
+  backup for 35 days; take an on-demand backup if you need it longer.
+- The Cognito user pool and its users.
+- The Kinesis stream.
 
 ```bash
-scripts/send-event.mjs --dry-run --fixture run
+aws dynamodb update-table --table-name <TableName> --no-deletion-protection-enabled
+aws dynamodb delete-table --table-name <TableName>
+aws cognito-idp delete-user-pool --user-pool-id <UserPoolId>
+aws kinesis delete-stream --stream-name <IngestKinesisStreamName>
 ```
 
-**2. EventBridge mode.** Publishes the fixture as a synthetic event to the default bus via `PutEvents`, exercising the full path (rule → Lambda → DynamoDB → AppSync → subscription):
+Lambda CloudWatch log groups (`/aws/lambda/HealthOmics*`) also remain; delete
+them in CloudWatch Logs if you don't need them. Local `cdk-outputs.json` and
+`frontend/.env.*` files are gitignored and can be deleted.
 
-```bash
-scripts/send-event.mjs --mode eventbridge --fixture task --region <region>
-```
+## Contributing
 
-**3. Lambda mode.** Invokes the ingest Lambda directly with the fixture payload (useful when you want to bypass the bus/rule and test the handler itself):
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
-```bash
-scripts/send-event.mjs --mode lambda --fixture run \
-    --function <ingest-function-name> --region <region>
-```
+## License
 
-`--function` may also come from `$INGEST_FUNCTION_NAME`; `--event-bus` defaults to `default` (or `$EVENT_BUS_NAME`); `--region` defaults to `$AWS_REGION`. The sending modes lazily import `@aws-sdk/client-eventbridge` / `@aws-sdk/client-lambda`, so run the script from a Node context that provides them (e.g. the `ingest/` package or a workspace that installs them).
-
-**Expected result.** With the SPA open (signed in through Cognito and subscribed), publishing a synthetic run or task event should update the corresponding run in the fleet view — or the task node in the run detail view — **within 5 seconds, with no browser polling.** If nothing updates, check: the deploy region matches `--region`; the ingest Lambda's CloudWatch logs for enrichment or publish errors; the SQS dead letter queue; and that you are signed in with a valid Cognito user.
-
----
-
-## Cost documentation
-
-The design goal is **zero cost at idle**: every component is fully managed and scales to zero when no events or requests are being processed. No EC2, ECS, or Fargate is provisioned, and no NAT gateways are created, so there are no recurring hourly compute or networking charges. DynamoDB uses on-demand (PAY_PER_REQUEST) capacity only — no provisioned/reserved throughput.
-
-> **Looking for a dollar figure?** See [Estimated cost at scale (100,000 runs / month)](#estimated-cost-at-scale-100000-runs--month) below for a measured, itemized estimate of the **dashboard's** monthly cost (this does not include AWS HealthOmics workflow-execution cost).
-
-### Cost drivers
-
-Each expected cost driver, its billing unit, and the AWS service that meters it:
-
-| Cost driver | Billing unit | Metering service | Idle behavior |
-|-------------|--------------|------------------|---------------|
-| AppSync GraphQL requests | Per query/mutation request (per million requests) | AWS AppSync | Scales to zero — billed only per request. |
-| AppSync real-time subscriptions | Per subscription connection-minute plus per message delivered | AWS AppSync | Scales to zero — billed only while clients are connected/receiving. |
-| Lambda invocations | Per request plus GB-seconds of compute duration | AWS Lambda | Scales to zero — billed only per invocation. |
-| DynamoDB reads (on-demand) | Per read request unit (RRU) | Amazon DynamoDB | Scales to zero — billed only per request. |
-| DynamoDB writes (on-demand) | Per write request unit (WRU) | Amazon DynamoDB | Scales to zero — billed only per request. |
-| DynamoDB storage | Per GB-month of stored data | Amazon DynamoDB | Usage-based, proportional to stored items (see fixed/recurring note below). |
-| CloudFront | Per GB of data transfer out plus per 10,000 HTTP/HTTPS requests | Amazon CloudFront | Scales to zero — billed only per request/transfer. |
-| S3 (SPA assets) | Per GB-month storage plus per-request GET/PUT | Amazon S3 | Usage-based; SPA asset storage is a few MB. |
-| SQS dead-letter queue | Per request (per million requests) | Amazon SQS | Scales to zero — billed only when messages are enqueued. |
-| EventBridge (default bus, `aws.omics`) | AWS service events on the default bus are not charged for ingestion | Amazon EventBridge | No charge for AWS-source events on the default bus. |
-| EventBridge Scheduler (deferred re-sweep) | Per scheduled invocation (per million); one-shot schedules auto-delete | Amazon EventBridge Scheduler | Scales to zero — one schedule per terminal run, no standing schedules. |
-| Reconciler Lambda (deferred re-sweep) | Per invocation plus GB-seconds; one invocation per terminal run | AWS Lambda | Scales to zero — billed only per terminal run. |
-
-### Fixed / recurring charges (idle-cost flags)
-
-Per the idle-cost constraint, any resource that bills a **fixed recurring charge independent of usage** is flagged here as violating "zero cost at idle":
-
-- **DynamoDB point-in-time recovery (PITR) — potential recurring charge.** PITR is enabled on the table (required by the design). PITR bills per GB-month of continuous-backup storage. When the table holds no data this rounds to zero, but any stored data incurs a small storage-based charge that is **not** driven by request traffic. Flagged as a usage-proportional storage charge that persists while data is retained, though it is not a flat per-hour fee.
-- **CloudFront / S3 storage — usage-proportional, not flat.** Stored SPA assets and CloudFront usage bill by storage and transfer, not by a fixed hourly rate; there is no minimum monthly fee, so these do not constitute a fixed recurring charge.
-- **Cognito user pool (PLUS plan) — usage-based per active user, no free tier.** The user pool runs on the Cognito **PLUS** feature plan (for enforced threat protection; see the security notes). PLUS bills **per monthly active user (MAU) at $0.020/MAU with no free tier** — unlike the Essentials/Lite tiers, PLUS has **no 10,000-MAU allowance**, so even a single active user bills. There is still no flat provisioning fee, so a pool with **no active users in a month costs $0** (it does not violate zero-cost-at-idle); the charge is purely proportional to monthly sign-ins. Because this is an **admin-only pool** (self-signup disabled), MAU is small — e.g. ~$0.10/mo at 5 users, ~$0.50/mo at 25, ~$2/mo at 100 — but it is **not** zero once anyone signs in during the month.
-
-**Result:** no component in this stack incurs a *flat, usage-independent hourly or monthly* charge. The only always-on cost is data-proportional storage (DynamoDB items + PITR continuous backups, and a few MB of SPA assets in S3), which trends to zero as stored data trends to zero. This satisfies the zero-idle-cost intent; the PITR/storage line items are flagged above so an operator who requires literally-zero standing cost can disable PITR and empty the table.
-
-### Estimated cost at scale (100,000 runs / month)
-
-> **Scope:** these figures estimate the cost of **this dashboard** (its DynamoDB,
-> Lambda, AppSync, S3/CloudFront, Cognito, SQS) to *ingest and serve* 100,000
-> runs in a month. They **do not** include the cost of executing the workflows
-> themselves in AWS HealthOmics (compute, run storage), which is a separate and
-> typically much larger spend that depends entirely on each workflow's
-> CPU/memory/duration and cannot be derived from this repository.
-
-The estimate is anchored on **measured** values from live data in this account,
-not guesses:
-
-- Run item in DynamoDB: **~3.6 KB** (of which `rawGetRun`, the raw `GetRun` capture, is ~2.7 KB).
-- Task item in DynamoDB: **~0.29 KB**.
-- Tasks per run: **~40** (measured on an `nf-core-fetchngs` sample run).
-- SPA payload per fresh page load: **~3.3 MB** (JS + CSS, uncompressed).
-
-**Modeling assumptions (the dashboard's usage pattern):** each run emits ~4
-run-status events, and each task ~3 task-status events; every event is processed
-by the ingest Lambda (DynamoDB upserts and one AppSync publish that fans out to
-connected subscribers). In the default `event` enrichment mode HealthOmics read
-APIs are called only at run start/end and for failed tasks, not per event (see
-[Event-driven enrichment](#event-driven-enrichment-eventenrichmentmode)). At ~40
-tasks/run that is roughly **~124 writes and ~124 publishes per run** (~12.4M each
-across 100k runs). Prices are us-east-1 on-demand, no free tier or reserved
-capacity applied. (Cognito is on the **PLUS** feature plan, which has **no
-free tier** — every monthly active user bills at $0.020/MAU.)
-
-| Service | Basis | Est. monthly |
-|---------|-------|--------------|
-| DynamoDB — writes | ~13.6M write units (run + task upserts) | ~$17 |
-| DynamoDB — reads | ingest reads + dashboard queries | ~$1–3 |
-| DynamoDB — storage | ~1.5 GB (100k runs + ~4M tasks) | ~$0.40 |
-| DynamoDB — PITR | continuous backup of ~1.5 GB | ~$0.30 |
-| Lambda — ingest | ~12.4M events, ~200 ms @ 192 MB (upper bound; Kinesis batching reduces invocations) | ~$10 |
-| AppSync — requests | ~12.4M publish/query operations | ~$50 |
-| AppSync — real-time | subscription connection-minutes + ~12.4M messages delivered | ~$25–40 |
-| CloudFront | SPA loads (~3.3 MB each); assumes light viewer traffic | ~$15 |
-| S3 (SPA assets) | a few MB stored + GETs | ~$0.10 |
-| Cognito (PLUS plan) | admin-only pool, ~tens of monthly active users @ $0.020/MAU (PLUS has no free tier) | ~$0.10–2 |
-| EventBridge (`aws.omics`) | AWS-source events on the default bus | $0 (not billed) |
-| SQS dead-letter queue | only on delivery failure | ~$0 |
-| Deferred re-sweep — Scheduler | ~100k one-shot schedules (1 per terminal run) @ ~$1/M | ~$0.10 |
-| Deferred re-sweep — Reconciler Lambda | ~100k invocations, ~10 s @ 128 MB (paced task re-enrichment) | ~$2 |
-| Deferred re-sweep — extra DynamoDB writes | ~41 re-writes/run (tasks + summary) ≈ 4.1M write units | ~$5 |
-| Deferred re-sweep — extra CloudWatch GetMetricData | ~200k metric-data requests (2 families/run) | ~$1–3 |
-| **Total (dashboard only)** | | **≈ $130–160 / month** |
-
-**Sensitivities — read before relying on these numbers:**
-
-- **Tasks per run is the dominant lever.** The estimate uses the measured ~40 tasks/run. Real nf-core pipelines often run **100–200+ tasks/run**, which scales AppSync, Lambda, and DynamoDB writes proportionally — at ~150 tasks/run the dashboard total is roughly **$300–450/month**.
-- **AppSync is the largest line item** (~$75–90 combined) because the pipeline publishes an update for every run/task status event and fans it out to subscribers.
-- **`rawGetRun` roughly quadruples the run-item write cost** (a ~3.6 KB item consumes 4 write units vs. 1 for a sub-1 KB item). It is inexpensive in absolute terms here, but trimming or dropping the raw capture would cut run-write cost ~4×.
-- **CloudFront scales with viewers and refreshes, not run count**, and the SPA bundle is large (~3.3 MB); code-splitting would reduce transfer.
-- **The deferred re-sweep adds ~$8–10/month at 100k runs** (mostly the ~41 extra DynamoDB writes per run for the re-enriched tasks + summary; the Scheduler and Reconciler Lambda themselves are pennies-to-a-couple-dollars). It scales linearly with run count and, like the ingest writes, with **tasks per run** — at ~150 tasks/run the re-sweep's DynamoDB re-write cost rises proportionally (~$18–20). It is effectively a **~one re-enrichment pass per run**, so it roughly doubles the *task-write* portion of the per-run cost while eliminating the stuck-task tail and the missing-utilization gap. If cost matters more than a few-minutes-fresher summary, raising `RECONCILE_DELAY_MINUTES` does not change cost, but skipping the re-sweep entirely (unset the reconciler env) removes this line at the price of reintroducing the late-settling gaps.
-- Figures are estimates for planning only; actual bills vary with AWS pricing, region, free-tier eligibility, and real traffic.
-
----
-
-## Known limitations of task dependency inference and DAG inference
-
-The HealthOmics run APIs do not expose task dependency edges, so the true dependency DAG is derived from the workflow definition and, when that is unavailable, inferred from timing. Each known limitation is listed as a discrete entry:
-
-- **No frontend query fetches the stored static graph.** The GraphQL schema (`infra/graphql/schema.graphql`) exposes only `listRuns`, `getRun`, and `listTasksForRun` — there is no query to retrieve the cached `StaticGraph` (persisted by ingest keyed by `workflowId`). The frontend layer selector (`frontend/src/taskview/selectLayer.ts`) therefore receives the static graph as an *input parameter*; unless a caller supplies it, `selectLayer` never sees a graph and falls back to the Inferred_DAG or Timeline_View even when a True_DAG was computed and stored. Wiring a `getStaticGraph(workflowId)` query is required to surface the True_DAG in the SPA.
-- **Inferred DAG ordering is timing-based, not dependency-based.** When no static graph is supplied, `frontend/src/taskview/inferredDag.ts` orders tasks purely by `startedAt` and groups tasks with overlapping `[startedAt, stoppedAt]` intervals as "concurrent." Overlap in time does not imply independence, and non-overlap does not imply a dependency, so the inferred layout can show false concurrency or a misleading sequence. It carries a visible "inferred" label for this reason.
-- **Tasks without timing data cannot be ordered.** Tasks with a missing or unparseable `startedAt` are grouped into a single trailing level in the inferred ordering; their true position relative to timed tasks is unknown. When no task has usable timing at all, the view degrades to the Timeline_View with an "ordering data unavailable" indication.
-- **True_DAG node-to-task matching is exact and case-sensitive.** The overlay (`frontend/src/taskview/trueDag.ts`) matches a static-graph node to a run task by exact, case-sensitive `name` equality. If HealthOmics reports a task name that differs from the definition's call/process/step name (aliasing, prefixing, scatter suffixes, casing), the node is rendered with an unmatched-status indication and shows no live status.
-- **WDL parser is heuristic, not a full grammar.** `ingest/src/parser/wdl.ts` recognizes `call` statements and `name.output` reference forms to derive edges. It does not fully evaluate expressions, scatter bodies, conditionals, imports, or aliased sub-workflow outputs beyond collecting the calls they contain, so dependencies expressed through unsupported constructs may be missed.
-- **Nextflow parser resolves DSL2 channel wiring heuristically.** `ingest/src/parser/nextflow.ts` collects `process` declarations and scans the `workflow { ... }` block for channel assignments and process calls, resolving `PROCESS.out`-style references and locally-bound variables. Channel wiring expressed through operators, complex closures, `include` from modules, or dynamic constructs it does not recognize is ignored rather than erroring, so some edges may be missing.
-- **CWL parser derives edges from `in`/`out`/`source` references only.** `ingest/src/parser/cwl.ts` builds one node per workflow `step` and edges from consuming-step `in`/`source` references back to producing-step `out` outputs. Connections expressed through other mechanisms (e.g. subworkflow packing, scatter/valueFrom expressions) may not be captured.
-- **Unparseable, unsupported, or cyclic definitions produce no graph.** If a definition cannot be parsed, uses an unsupported language/engine, or would yield a cycle, the parser rejects it and no static graph is stored; those runs fall back to the inferred/timeline views.
-- **`GetWorkflow` returns a bundle URL, not inline text (confirmed).** Static-graph creation assumes `GetWorkflow` returns the definition text inline on the `definition` field, but for the workflows tested the API actually returns `definition` as a **presigned S3 URL to a `definition.zip`** (with `main` naming the entry file, e.g. `main.nf`, and `definitionRepositoryDetails` for Git-sourced workflows). Because `resolveDefinitionSource()` expects inline text, those runs currently build no static graph and fall back to the Inferred_DAG / Timeline_View. Surfacing the True_DAG for such workflows requires extending the resolver to download and unzip the bundle (and, for real nf-core pipelines, resolve `include` across the module tree). See the confirm-against-docs list below.
-
----
-
-## Confirm against AWS docs
-
-The real HealthOmics event JSON and read-API response shapes are **not** hardcoded from memory — every assumption is isolated behind clearly commented "CONFIRM AGAINST AWS DOCS" markers so it can be corrected in one place once verified against the AWS HealthOmics documentation. Each location below lists the exact source file and the code element to update:
-
-| # | What to confirm | Source file | Code element to update |
-|---|-----------------|-------------|------------------------|
-| 1 | Run status / task status enum member spellings emitted by HealthOmics (casing, extra states, DELETED only on runs) | `ingest/src/domain/status.ts` | `RunStatus` and `TaskStatus` enums (`isRunStatus` / `isTaskStatus` guards depend on them) |
-| 2 | Event `detail-type` strings used to classify run vs task events | `ingest/src/eventMapper.ts` | `detectKind()` — the `RUN_DETAIL_TYPE` / `TASK_DETAIL_TYPE` constants |
-| 3 | Run event `detail` field names (run id, status, run name, workflow id/name) | `ingest/src/eventMapper.ts` | `mapRunEvent()` — the `RUN_FIELDS` constant |
-| 4 | Task event `detail` field names, including that the task id is carried only by the task `arn` (`.../task/<id>`) | `ingest/src/eventMapper.ts` | `mapTaskEvent()` — the `TASK_FIELDS`, `TASK_ARN_FIELD`, and `TASK_ARN_RESOURCE_PREFIX` constants (and `parseTaskIdFromArn`) |
-| 5 | `GetRun` response → RunRecord mapping. Beyond the core fields (timestamps, status, workflowId, outputUri, parameters, engineVersion) this also maps the run configuration surfaced via GraphQL — `storageType`/`storageCapacity`, `cacheId`/`cacheBehavior`, `networkingMode`, `configuration.name`, `logLevel`, and `batchId` — and captures the **entire raw `GetRun` response** as a JSON string (`rawGetRun`, `$metadata` stripped) so no returned field is lost. The IAM run-role ARN (`roleArn`) is intentionally **captured only in the non-exposed `rawGetRun` blob** (it is a sensitive identifier): it is **not** a field on the `Run` type / `RunInput` in the GraphQL schema and is never queryable or rendered in the UI. `rawGetRun` itself is persisted in DynamoDB for audit/completeness and is **not** exposed through the GraphQL API (it can contain sensitive values such as the role ARN and VPC subnet/SG ids). | `ingest/src/enrichment/tasks.ts` | `mapRunResponse()` field mapping |
-| 6 | `ListRunTasks` item / `GetRunTask` response → TaskRecord mapping (status, cpus, memory units, timestamps) | `ingest/src/enrichment/tasks.ts` | `mapTaskFields()` field mapping (used by `enrichRun` / `enrichTasks`) |
-| 7 | `GetWorkflow` export mode + the response field holding the definition. **Confirmed against AWS:** for the workflows tested, `GetWorkflow` with `export=[DEFINITION]` returns the `definition` field as a **presigned S3 URL to a `definition.zip` bundle** (plus `main` = the entry file, e.g. `main.nf`, and `definitionRepositoryDetails` for Git-sourced workflows) — **not** inline definition text. `resolveDefinitionSource()` currently expects inline text, so imported/bundled workflows yield no static graph and fall back to the Inferred/Timeline layers until the resolver is extended to download and unzip the bundle. | `ingest/src/enrichment/workflow.ts` | `resolveDefinitionSource()` — the `WORKFLOW_EXPORT_DEFINITION` and `DEFINITION_SOURCE_FIELD` constants |
-| 8 | `GetWorkflow` engine/language spellings mapped to the parser `Language` union | `ingest/src/enrichment/workflow.ts` | `mapEngineToLanguage()` / `resolveDefinitionSource`'s companion `resolveLanguage()` — the `WORKFLOW_LANGUAGE_FIELD` constant |
-
-Alongside these code elements, the artifacts to update when the real shapes are confirmed are the ingest event fixtures under `fixtures/events/` and the workflow-definition fixtures used by the parser tests.
-
----
-
-## Toolchain
-
-- Node.js 20.x is the Lambda runtime target; Node 20+ is required for the local toolchain.
-- Package manager: npm.
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
