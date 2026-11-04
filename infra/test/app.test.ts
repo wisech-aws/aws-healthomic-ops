@@ -447,16 +447,16 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     return match[0][1] as FnResource;
   }
 
-  it('defaults to shadow on both ingest functions and gives the Kinesis consumer 256 MB', () => {
+  it('defaults to event on both ingest functions and gives the Kinesis consumer 128 MB', () => {
     const t = ingestTemplate({ kinesisIngestMode: 'active' });
     // The live Kinesis path is still provisioned (no plan to remove it).
     t.resourceCountIs('AWS::Kinesis::Stream', 1);
     t.resourceCountIs('AWS::Lambda::EventSourceMapping', 1);
     const consumer = fn(t, 'KinesisIngestConsumer');
     const direct = fn(t, 'IngestFunction');
-    expect(consumer.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
-    expect(direct.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
-    expect(consumer.Properties.MemorySize).toBe(256);
+    expect(consumer.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
+    expect(direct.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
+    expect(consumer.Properties.MemorySize).toBe(128);
     // Existing consumer env is unchanged.
     expect(consumer.Properties.Environment?.Variables?.OMICS_TPS).toBe('2');
   });
@@ -467,6 +467,13 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     expect(fn(t, 'IngestFunction').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
   });
 
+  it('honors -c eventEnrichmentMode=shadow on both functions', () => {
+    const t = ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'shadow' });
+    expect(fn(t, 'KinesisIngestConsumer').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
+    expect(fn(t, 'IngestFunction').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
+    // Memory does not depend on the enrichment mode.
+    expect(fn(t, 'KinesisIngestConsumer').Properties.MemorySize).toBe(128);
+  });
   it('honors -c eventEnrichmentMode=api (rollback)', () => {
     const t = ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'api' });
     expect(fn(t, 'KinesisIngestConsumer').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('api');

@@ -58,12 +58,12 @@ type KinesisIngestMode = 'off' | 'present' | 'active';
  *   - 'event'  : use the fields the task/run events carry; GetRunTask only for
  *                FAILED/CANCELLED tasks (or a terminal event missing fields),
  *                GetRun only at PENDING/terminal (or when the run lacks GetRun
- *                data). ~3 HealthOmics calls per run.
+ *                data). ~3 HealthOmics calls per run. DEFAULT (validated in
+ *                shadow mode on run 1114470: 207 tasks, 0 mismatches).
  *   - 'shadow' : as 'event', plus GetRunTask on every terminal task event to
  *                compare with the event values (EMF metric
  *                HealthOmicsIngest/EnrichmentShadowMismatch) and write the API
- *                values. DEFAULT, for the first deploy; flip to 'event' after a
- *                validated run.
+ *                values. Use to re-validate event data after an ingest change.
  *   - 'api'    : the legacy behavior (rollback): GetRun on every run event,
  *                GetRunTask on every terminal task event.
  *
@@ -77,7 +77,7 @@ export type EventEnrichmentMode = 'event' | 'shadow' | 'api';
 export const EVENT_ENRICHMENT_MODES: readonly EventEnrichmentMode[] = ['event', 'shadow', 'api'];
 
 /** Default `eventEnrichmentMode` when the context value is absent. */
-export const DEFAULT_EVENT_ENRICHMENT_MODE: EventEnrichmentMode = 'shadow';
+export const DEFAULT_EVENT_ENRICHMENT_MODE: EventEnrichmentMode = 'event';
 
 /** Validate the `eventEnrichmentMode` context value; throws at synth if invalid. */
 function resolveEventEnrichmentMode(value: unknown): EventEnrichmentMode {
@@ -593,9 +593,12 @@ export class IngestStack extends Stack {
       projectRoot: INGEST_PROJECT_ROOT,
       depsLockFilePath: INGEST_DEPS_LOCK_FILE,
       timeout: Duration.seconds(60),
-      // 256 MB: at 128 MB the consumer hit its memory ceiling (128/128) while
-      // downloading/unzipping/parsing a workflow definition bundle.
-      memorySize: 256,
+      // 128 MB (the Lambda minimum and cheapest setting), set explicitly. The
+      // consumer handles small event batches. It was briefly 256 MB after a
+      // 128/128 peak while downloading/unzipping/parsing a workflow definition
+      // bundle; that was reverted for cost. If Max Memory Used reaches 128 MB
+      // again, raise this here rather than through the console.
+      memorySize: 128,
       environment: {
         TABLE_NAME: props.dataStack.table.tableName,
         APPSYNC_ENDPOINT: props.apiStack.api.graphqlUrl,
