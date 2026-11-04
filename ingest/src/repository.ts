@@ -574,6 +574,33 @@ export interface UpsertResult {
   runId: string;
   /** The task identifier, present only for task upserts. */
   taskId?: string;
+  /**
+   * The full stored item AFTER a `written` upsert (DynamoDB `ALL_NEW`): the
+   * incoming fields merged over everything previously stored. Absent for a
+   * `preserved` outcome. Lets the handler publish cumulative state without an
+   * extra read.
+   */
+  item?: Record<string, unknown>;
+}
+
+/**
+ * The cache entry for a workflow version's static graph: the usable graph (or
+ * `null` for a failure-only marker), plus the recorded failure reason and the
+ * item's `updatedAt` (when the graph or failure was last written).
+ */
+export interface GraphCacheEntry {
+  graph: StaticGraph | null;
+  failureReason?: string;
+  updatedAt?: string;
+}
+
+/**
+ * Whether a run item already holds the GetRun-only data. `hasGetRun` is true
+ * when `rawGetRun` is stored, which is written only by a successful GetRun.
+ */
+export interface RunEnrichmentMarker {
+  hasGetRun: boolean;
+  createdAt?: string;
 }
 
 /**
@@ -870,6 +897,21 @@ export class DynamoRepository {
     workflowId: string,
     workflowVersionName: string,
   ): Promise<StaticGraph | null> {
+    const entry = await this.getGraphCacheEntry(workflowId, workflowVersionName);
+    return entry?.graph ?? null;
+  }
+
+  /**
+   * Read the static-graph cache entry for a workflow version in ONE GetItem.
+   * Returns `null` when no item exists; otherwise the usable graph (or `null`
+   * for a failure-only marker) together with the stored `failureReason` and
+   * `updatedAt`, so the caller can treat a RECENT failure as cached and skip
+   * re-fetching/re-parsing the definition on every run event.
+   */
+  async getGraphCacheEntry(
+    workflowId: string,
+    workflowVersionName: string,
+  ): Promise<GraphCacheEntry | null> {
     const result = await this.docClient.send(
       new GetCommand({
         TableName: this.tableName,
@@ -880,19 +922,58 @@ export class DynamoRepository {
       }),
     );
 
-    const item = result.Item as GraphItem | undefined;
-    if (!item || !Array.isArray(item.nodes) || !Array.isArray(item.edges)) {
+    const item = result.Item as Partial<GraphItem> | undefined;
+    if (!item) {
       return null;
     }
+    const entry: GraphCacheEntry = { graph: null };
+    if (typeof item.failureReason === 'string') {
+      entry.failureReason = item.failureReason;
+    }
+    if (typeof item.updatedAt === 'string') {
+      entry.updatedAt = item.updatedAt;
+    }
+    if (Array.isArray(item.nodes) && Array.isArray(item.edges)) {
+      entry.graph = {
+        workflowId: item.workflowId ?? workflowId,
+        nodes: item.nodes.map((node) => ({ id: node.id, name: node.name })),
+        edges: item.edges.map((edge) => ({ from: edge.from, to: edge.to })),
+        // Default legacy items (written before fidelity was tracked) to
+        // `approximate` (design §6).
+        fidelity: item.fidelity ?? 'approximate',
+      };
+    }
+    return entry;
+  }
 
-    return {
-      workflowId: item.workflowId ?? workflowId,
-      nodes: item.nodes.map((node) => ({ id: node.id, name: node.name })),
-      edges: item.edges.map((edge) => ({ from: edge.from, to: edge.to })),
-      // Default legacy items (written before fidelity was tracked) to
-      // `approximate` (design §6).
-      fidelity: item.fidelity ?? 'approximate',
+  /**
+   * Whether the run item already carries the GetRun-only data (parameters,
+   * configuration, exact createdAt). One strongly consistent GetItem
+   * projecting only `rawGetRun` and `createdAt`; `rawGetRun` is written only by
+   * a successful GetRun, so its presence is the marker. Returns `null` when no
+   * run item exists yet (e.g. the PENDING event was missed).
+   */
+  async getRunEnrichmentMarker(runId: string): Promise<RunEnrichmentMarker | null> {
+    const result = await this.docClient.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { PK: runPk(runId), SK: runSk(runId) },
+        ConsistentRead: true,
+        ProjectionExpression: '#raw, #createdAt',
+        ExpressionAttributeNames: { '#raw': 'rawGetRun', '#createdAt': 'createdAt' },
+      }),
+    );
+    const item = result.Item as { rawGetRun?: unknown; createdAt?: unknown } | undefined;
+    if (!item) {
+      return null;
+    }
+    const marker: RunEnrichmentMarker = {
+      hasGetRun: typeof item.rawGetRun === 'string' && item.rawGetRun.length > 0,
     };
+    if (typeof item.createdAt === 'string') {
+      marker.createdAt = item.createdAt;
+    }
+    return marker;
   }
 
   /**
@@ -1141,13 +1222,21 @@ export class DynamoRepository {
       ConditionExpression: `attribute_not_exists(PK) OR (${statusClause})`,
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
+      // Return the merged stored item so callers can publish cumulative state
+      // (incoming fields over everything stored) with no extra read/WCU.
+      ReturnValues: 'ALL_NEW',
     });
 
     let lastError: unknown;
     for (let attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt += 1) {
       try {
-        await this.docClient.send(command);
-        return { outcome: 'written', runId, taskId };
+        const output = (await this.docClient.send(command)) as
+          | { Attributes?: Record<string, unknown> }
+          | undefined;
+        const merged = output?.Attributes;
+        return merged !== undefined
+          ? { outcome: 'written', runId, taskId, item: merged }
+          : { outcome: 'written', runId, taskId };
       } catch (err) {
         if (err instanceof ConditionalCheckFailedException) {
           // A fresher-or-equal item already exists; preserve it unchanged.

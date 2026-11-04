@@ -43,7 +43,11 @@ import { parseMatrix } from './metrics/parse.js';
 import { CORE_FAMILIES, resolveSelectors } from './metrics/registry.js';
 import { buildSelector } from './metrics/promql.js';
 import { buildRangeBody, clampStepSeconds, signAndPost } from './metrics/signedQuery.js';
-import type { TaskItem } from './repository.js';
+import type {
+  GraphCacheEntry,
+  RunEnrichmentMarker,
+  TaskItem,
+} from './repository.js';
 import {
   detectKind,
   mapRunEvent,
@@ -78,6 +82,21 @@ export interface IngestRepository {
     workflowId: string,
     workflowVersionName: string,
   ): Promise<StaticGraph | null>;
+  /**
+   * Read the graph cache entry including a failure-only marker's reason and
+   * time, so a recent failure counts as cached. Optional: when absent the
+   * handler falls back to {@link getStaticGraph}.
+   */
+  getGraphCacheEntry?(
+    workflowId: string,
+    workflowVersionName: string,
+  ): Promise<GraphCacheEntry | null>;
+  /**
+   * Whether the run item already holds GetRun-only data (`rawGetRun`). Used in
+   * event/shadow mode to decide whether a STARTING/RUNNING/STOPPING run event
+   * needs a fallback GetRun. Optional: when absent, those events call GetRun.
+   */
+  getRunEnrichmentMarker?(runId: string): Promise<RunEnrichmentMarker | null>;
   putStaticGraph(
     workflowId: string,
     workflowVersionName: string,

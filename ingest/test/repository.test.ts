@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
 
-import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
 import { PutCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 
 import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
@@ -25,6 +24,7 @@ import {
 import { RunStatus, TaskStatus } from '../src/domain/status.js';
 import type { RunRecord, TaskRecord } from '../src/domain/records.js';
 import type { StaticGraph } from '../src/parser/types.js';
+import { InMemoryDocClient } from './helpers/inMemoryDocClient.js';
 
 describe('key derivation', () => {
   it('derives run PK and SK as RUN#<runId>', () => {
@@ -292,128 +292,6 @@ describe('buildTaskItem', () => {
   });
 });
 
-/**
- * In-memory DynamoDB document-client double.
- *
- * It understands only the single `PutCommand` shape the repository issues: a
- * put guarded by `attribute_not_exists(PK) OR :incomingUpdatedAt >
- * #storedUpdatedAt`. It stores items keyed by `PK|SK` and enforces the
- * monotonic condition exactly as DynamoDB would, throwing a
- * `ConditionalCheckFailedException` when the condition is not met. An optional
- * fault injector lets tests simulate transient write failures for the retry
- * behavior (Req 3.10). This is a real evaluation of the write semantics, not a
- * mock that rubber-stamps success.
- */
-class InMemoryDocClient {
-  readonly store = new Map<string, Record<string, unknown>>();
-  sendCount = 0;
-
-  /**
-   * When set, invoked before each write with the current attempt number
-   * (1-based). Return an Error to make that attempt fail transiently, or
-   * undefined to let it proceed.
-   */
-  failNext?: (attempt: number) => Error | undefined;
-  private attempt = 0;
-
-  async send(command: PutCommand): Promise<unknown> {
-    this.sendCount += 1;
-    this.attempt += 1;
-
-    if (this.failNext) {
-      const injected = this.failNext(this.attempt);
-      if (injected) {
-        throw injected;
-      }
-    }
-
-    const input = command.input as {
-      Item?: Record<string, unknown>;
-      Key?: Record<string, unknown>;
-      UpdateExpression?: string;
-      ExpressionAttributeNames?: Record<string, string>;
-      ExpressionAttributeValues?: Record<string, unknown>;
-    };
-
-    // Reconstruct the incoming item. The repository now issues a merge
-    // UpdateCommand (SET #setN = :setN) keyed by PK/SK; older paths (static
-    // graph) still use PutCommand with a full Item. Support both.
-    const eaNames = input.ExpressionAttributeNames ?? {};
-    const eaValues = input.ExpressionAttributeValues ?? {};
-    let item: Record<string, unknown>;
-    if (input.Item) {
-      item = input.Item;
-    } else {
-      // Rebuild {attr: value} from the SET clause's #setN/:setN pairs plus Key.
-      item = { ...(input.Key ?? {}) };
-      for (const [nameKey, attrName] of Object.entries(eaNames)) {
-        if (!nameKey.startsWith('#set')) continue;
-        const valueKey = nameKey.replace('#set', ':set');
-        if (valueKey in eaValues) {
-          item[attrName] = eaValues[valueKey];
-        }
-      }
-    }
-
-    const key = `${String(item.PK)}|${String(item.SK)}`;
-    const incoming = eaValues[':incomingUpdatedAt'] as string | undefined;
-
-    const existing = this.store.get(key);
-
-    // Faithfully evaluate the repository's ConditionExpression:
-    //   attribute_not_exists(PK) OR (statusClause)
-    // For status-less items (summaries) statusClause is the plain monotonic
-    // rule; for run/task items it encodes terminal-wins + no-revert.
-    const vals = eaValues;
-    const TERMINAL = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'DELETED']);
-    let conditionMet: boolean;
-    if (existing === undefined) {
-      conditionMet = true;
-    } else {
-      const monotonic =
-        incoming !== undefined &&
-        typeof existing.updatedAt === 'string' &&
-        incoming > existing.updatedAt;
-      const incomingIsTerminal = vals[':incomingIsTerminal'] as boolean | undefined;
-      if (incomingIsTerminal === undefined) {
-        // status-less item: plain monotonic
-        conditionMet = monotonic;
-      } else {
-        const storedHasStatus = typeof existing.status === 'string';
-        const storedIsTerminal = storedHasStatus && TERMINAL.has(existing.status as string);
-        const terminalWins = incomingIsTerminal && storedHasStatus && !storedIsTerminal;
-        const noRevert = incomingIsTerminal || !storedHasStatus || !storedIsTerminal;
-        conditionMet = terminalWins || (monotonic && noRevert);
-      }
-    }
-
-    if (!conditionMet) {
-      throw new ConditionalCheckFailedException({
-        message: 'The conditional request failed',
-        $metadata: {},
-      });
-    }
-
-    // MERGE semantics for UpdateCommand (preserve stored attributes not present
-    // on the incoming item); full replace for a PutCommand.
-    if (input.Item) {
-      this.store.set(key, { ...item });
-    } else {
-      this.store.set(key, { ...(existing ?? {}), ...item });
-    }
-    return {};
-  }
-
-  /** Reset the per-instance transient-failure attempt counter. */
-  resetAttempts(): void {
-    this.attempt = 0;
-  }
-
-  asDocClient(): DynamoDBDocumentClient {
-    return this as unknown as DynamoDBDocumentClient;
-  }
-}
-
 const TABLE = 'test-table';
 
 function makeRepo(): { repo: DynamoRepository; db: InMemoryDocClient } {
@@ -431,7 +309,7 @@ describe('DynamoRepository.upsertRun / upsertTask - conditional monotonic upsert
       status: RunStatus.RUNNING,
     });
 
-    expect(result).toEqual({ outcome: 'written', runId: 'r-1', taskId: undefined });
+    expect(result).toMatchObject({ outcome: 'written', runId: 'r-1', taskId: undefined });
     expect(db.store.get('RUN#r-1|RUN#r-1')?.status).toBe('RUNNING');
   });
 
@@ -662,7 +540,7 @@ describe('DynamoRepository.upsertRun / upsertTask - conditional monotonic upsert
       updatedAt: '2024-01-01T00:00:00.000Z',
       status: TaskStatus.RUNNING,
     });
-    expect(first).toEqual({ outcome: 'written', runId: 'r-1', taskId: 't-1' });
+    expect(first).toMatchObject({ outcome: 'written', runId: 'r-1', taskId: 't-1' });
 
     const stale = await repo.upsertTask({
       runId: 'r-1',
@@ -1231,5 +1109,134 @@ describe('DynamoRepository.recordGraphFailure (Req 5.7)', () => {
       ),
       { numRuns: 100 },
     );
+  });
+});
+
+describe('DynamoRepository - merged item and cache reads (event-driven ingest)', () => {
+  it('returns the merged stored item (ALL_NEW) on a written upsert', async () => {
+    const { repo } = makeRepo();
+    await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-11-03T22:41:30.000Z',
+      status: TaskStatus.PENDING,
+      name: 'align',
+      cpus: 2,
+      memory: 12,
+    });
+    const result = await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-11-03T22:52:31.000Z',
+      status: TaskStatus.RUNNING,
+      instanceType: 'omics.r.large',
+    });
+    expect(result.outcome).toBe('written');
+    expect(result.item).toMatchObject({
+      status: 'RUNNING',
+      name: 'align',
+      cpus: 2,
+      memory: 12,
+      instanceType: 'omics.r.large',
+    });
+  });
+
+  it('returns no item for a preserved (stale) upsert', async () => {
+    const { repo } = makeRepo();
+    await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-11-03T22:52:51.000Z',
+      status: TaskStatus.COMPLETED,
+    });
+    const stale = await repo.upsertTask({
+      runId: 'r-1',
+      taskId: 't-1',
+      updatedAt: '2026-11-03T22:59:00.000Z',
+      status: TaskStatus.RUNNING,
+    });
+    expect(stale.outcome).toBe('preserved');
+    expect(stale.item).toBeUndefined();
+  });
+
+  it('issues the guarded update with ReturnValues ALL_NEW', async () => {
+    const sent: unknown[] = [];
+    const repo = new DynamoRepository(
+      {
+        send: async (cmd: unknown) => {
+          sent.push(cmd);
+          return {};
+        },
+      } as unknown as DynamoDBDocumentClient,
+      TABLE,
+    );
+    const result = await repo.upsertRun({ runId: 'r-1', updatedAt: '2024-01-01T00:00:00.000Z' });
+    expect((sent[0] as UpdateCommand).input.ReturnValues).toBe('ALL_NEW');
+    // A client that returns no Attributes still yields a written outcome.
+    expect(result).toEqual({ outcome: 'written', runId: 'r-1', taskId: undefined });
+  });
+
+  it('getGraphCacheEntry returns the failure reason and time for a failure-only marker', async () => {
+    const { repo } = makeRepo();
+    expect(await repo.getGraphCacheEntry('wf-1', 'v1')).toBeNull();
+    await repo.recordGraphFailure('wf-1', 'v1', 'parse failed: graph contains a cycle');
+    const entry = await repo.getGraphCacheEntry('wf-1', 'v1');
+    expect(entry?.graph).toBeNull();
+    expect(entry?.failureReason).toBe('parse failed: graph contains a cycle');
+    expect(typeof entry?.updatedAt).toBe('string');
+    // getStaticGraph keeps its behavior: a failure-only marker is no graph.
+    expect(await repo.getStaticGraph('wf-1', 'v1')).toBeNull();
+  });
+
+  it('getGraphCacheEntry returns a stored graph', async () => {
+    const { repo } = makeRepo();
+    const graph: StaticGraph = {
+      workflowId: 'wf-1',
+      nodes: [{ id: 'a', name: 'a' }],
+      edges: [],
+      fidelity: 'exact',
+    };
+    await repo.putStaticGraph('wf-1', 'v1', graph, 'NEXTFLOW');
+    const entry = await repo.getGraphCacheEntry('wf-1', 'v1');
+    expect(entry?.graph).toEqual(graph);
+  });
+
+  it('getRunEnrichmentMarker reports whether rawGetRun is stored', async () => {
+    const { repo } = makeRepo();
+    expect(await repo.getRunEnrichmentMarker('r-1')).toBeNull();
+
+    await repo.upsertRun({ runId: 'r-1', updatedAt: '2024-01-01T00:00:00.000Z', status: RunStatus.STARTING });
+    expect(await repo.getRunEnrichmentMarker('r-1')).toEqual({ hasGetRun: false });
+
+    await repo.upsertRun({
+      runId: 'r-1',
+      updatedAt: '2024-01-01T00:00:05.000Z',
+      status: RunStatus.RUNNING,
+      createdAt: '2023-12-31T23:59:00.123Z',
+      rawGetRun: '{"id":"r-1"}',
+    });
+    expect(await repo.getRunEnrichmentMarker('r-1')).toEqual({
+      hasGetRun: true,
+      createdAt: '2023-12-31T23:59:00.123Z',
+    });
+  });
+
+  it('getRunEnrichmentMarker uses a consistent, projected read', async () => {
+    const sent: GetCommand[] = [];
+    const repo = new DynamoRepository(
+      {
+        send: async (cmd: GetCommand) => {
+          sent.push(cmd);
+          return {};
+        },
+      } as unknown as DynamoDBDocumentClient,
+      TABLE,
+    );
+    await repo.getRunEnrichmentMarker('r-1');
+    expect(sent[0].input).toMatchObject({
+      Key: { PK: 'RUN#r-1', SK: 'RUN#r-1' },
+      ConsistentRead: true,
+      ProjectionExpression: '#raw, #createdAt',
+    });
   });
 });
