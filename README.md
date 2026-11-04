@@ -1,6 +1,6 @@
 # HealthOmics Workflow Dashboard
 
-A serverless, event-driven dashboard for monitoring AWS HealthOmics workflow runs in near real time. HealthOmics emits state-change events to Amazon EventBridge; an ingest Lambda normalizes and enriches them, upserts state into a single DynamoDB table, and publishes the change through an AWS AppSync GraphQL mutation. AppSync serves queries for the initial load and pushes live updates through subscriptions to a React single-page app hosted on Amazon S3 behind CloudFront.
+A serverless, event-driven dashboard for monitoring AWS HealthOmics workflow runs in near real time. HealthOmics emits state-change events to Amazon EventBridge; they are buffered in an Amazon Kinesis Data Stream, and an ingest consumer Lambda builds run/task state from the event payload itself (calling HealthOmics read APIs only in a few exceptional cases, not per task), upserts it into a single DynamoDB table, and publishes the change through an AWS AppSync GraphQL mutation. AppSync serves queries for the initial load and pushes live updates through subscriptions to a React single-page app hosted on Amazon S3 behind CloudFront.
 
 This is a TypeScript monorepo with independently buildable and testable packages:
 
@@ -33,14 +33,17 @@ Each package pins its dependencies to exact versions and exposes `build` and `te
 
 ## Architecture
 
-The system is fully managed and event-driven end to end. HealthOmics publishes run and task status-change events to the default EventBridge bus; a rule matching `source = aws.omics` routes them to the ingest path. Depending on the configured ingest mode (see [Alternative Kinesis ingest path](#alternative-kinesis-ingest-path)) that is either the ingest Lambda directly or an Amazon Kinesis Data Stream fronting a batch-consumer Lambda that runs the same pipeline; the deployed environment uses the Kinesis path. The Lambda defensively maps the event, enriches missing fields through HealthOmics read APIs (event-triggered only), upserts run/task/graph items into a single on-demand DynamoDB table with a monotonic `updatedAt` guard, then calls the AppSync `publishRunUpdate` / `publishTaskUpdate` mutations. AppSync fans those mutations out to subscribed browsers and also serves the initial `listRuns` / `getRun` / `listTasksForRun` queries. The React SPA is served privately from S3 through CloudFront (Origin Access Control) and authenticates to AppSync through a Cognito user pool.
+The system is fully managed and event-driven end to end. HealthOmics publishes run and task status-change events to the default EventBridge bus; a rule matching `source = aws.omics` routes them to the ingest path. In the deployed configuration (`kinesisIngestMode=active`, see [Alternative Kinesis ingest path](#alternative-kinesis-ingest-path)) that is an on-demand Amazon Kinesis Data Stream, which buffers bursts so a large batch of task-heavy runs drains through a bounded consumer instead of fanning out to one Lambda invocation per event. The Kinesis ingest consumer Lambda (192 MB) defensively maps each event and, in the default `event` [enrichment mode](#event-driven-enrichment-eventenrichmentmode), builds task and run state from the event payload. HealthOmics read APIs are called only at run start/end, for failed or cancelled tasks, and for a workflow version whose graph is not stored yet. The consumer upserts run/task/graph items into a single on-demand DynamoDB table with a monotonic `updatedAt` guard, then calls the AppSync `publishRunUpdate` / `publishTaskUpdate` mutations. AppSync fans those mutations out to subscribed browsers and also serves the initial `listRuns` / `getRun` / `listTasksForRun` queries. The React SPA is served privately from S3 through CloudFront (Origin Access Control) and authenticates to AppSync through a Cognito user pool.
+
+Solid arrows are the per-event path; dashed arrows are exceptional or failure paths.
 
 ```mermaid
 flowchart TD
-    HO["AWS HealthOmics<br/>(runs + tasks)"] -->|"state-change events"| EB["Amazon EventBridge<br/>default bus<br/>rule: source = aws.omics"]
-    EB -->|"invoke (retry x3)"| ING["AWS Lambda<br/>Ingest Handler<br/>Node.js 20.x / TS"]
-    EB -.->|"delivery failure after retries"| DLQ["Amazon SQS<br/>Dead-Letter Queue"]
-    ING -->|"read enrich (event-triggered only)"| HOAPI["HealthOmics Read APIs<br/>GetRun / ListRunTasks<br/>GetRunTask / GetWorkflow"]
+    HO["AWS HealthOmics<br/>(runs + tasks)"] -->|"Run / Task Status Change events"| EB["Amazon EventBridge<br/>default bus<br/>rule: source = aws.omics"]
+    EB -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Stream<br/>on-demand buffer<br/>(protects Lambda concurrency)"]
+    KDS -->|"batches per shard"| ING["Kinesis ingest consumer Lambda<br/>Node.js 20.x / TS, 192 MB<br/>state built from event payload"]
+    ING -.->|"exhausted / poison records"| DLQ["Amazon SQS<br/>Kinesis DLQ"]
+    ING -.->|"exceptional only: GetRun at run PENDING/terminal,<br/>GetRunTask for FAILED/CANCELLED tasks,<br/>GetWorkflow for a new workflow graph"| HOAPI["HealthOmics Read APIs"]
     ING -->|"upsert run/task/graph<br/>(updatedAt conditional)"| DDB[("Amazon DynamoDB<br/>single table, on-demand, PITR<br/>+ GSI1")]
     ING -->|"publishRunUpdate / publishTaskUpdate<br/>(IAM auth)"| APPSYNC["AWS AppSync<br/>GraphQL API"]
     APPSYNC -->|"JS resolvers read"| DDB
@@ -57,7 +60,7 @@ Infrastructure is one AWS CDK v2 app split into four stacks by lifecycle and bla
 |-------|------------------|
 | `DataStack` | DynamoDB single table (on-demand, point-in-time recovery, `GSI1`). |
 | `ApiStack` | AppSync GraphQL API, schema, JS resolvers, Cognito user pool + app client (strong password policy + enforced threat protection), default Cognito authz plus IAM authz for the ingest publish mutations. |
-| `IngestStack` | Ingest Lambda, EventBridge rule, SQS dead-letter queue, retry policy, least-privilege IAM. The Lambda **bundles** the pinned AWS SDK v3 clients (rather than using the older SDK baked into the Node 20 runtime) so newer `GetRun` response fields — e.g. `networkingMode`, `configuration`, `vpcConfig` — are not silently dropped during deserialization. Also owns the **deferred re-sweep** (a Reconciler Lambda plus a one-shot EventBridge Scheduler group; see [Deferred re-sweep](#deferred-re-sweep-late-settling-reconciliation)) and the toggle-able [Kinesis ingest path](#alternative-kinesis-ingest-path) (an on-demand Kinesis Data Stream + batch-consumer Lambda + event-source mapping). |
+| `IngestStack` | Ingest Lambda, EventBridge rule, SQS dead-letter queue, retry policy, least-privilege IAM, and the `EVENT_ENRICHMENT_MODE` setting for both ingest functions (CDK context `eventEnrichmentMode`, see [Event-driven enrichment](#event-driven-enrichment-eventenrichmentmode)). The Lambda **bundles** the pinned AWS SDK v3 clients (rather than using the older SDK baked into the Node 20 runtime) so newer `GetRun` response fields — e.g. `networkingMode`, `configuration`, `vpcConfig` — are not silently dropped during deserialization. Also owns the **deferred re-sweep** (a Reconciler Lambda plus a one-shot EventBridge Scheduler group; see [Deferred re-sweep](#deferred-re-sweep-late-settling-reconciliation)) and the toggle-able [Kinesis ingest path](#alternative-kinesis-ingest-path) (an on-demand Kinesis Data Stream + batch-consumer Lambda + event-source mapping). |
 | `FrontendStack` | Private S3 bucket, CloudFront distribution with OAC, SPA 403/404 → `index.html` routing, build-config injection. |
 
 Stack ordering ensures the Cognito user pool exists before API authorization is configured, and a failure in any stack fails the whole deployment (CloudFormation rolls back rather than leaving a partially-provisioned stack in service).
@@ -90,15 +93,142 @@ over SQS FIFO because EventBridge → Kinesis supports the native dynamic
 partition key with no enqueue Lambda and no bridging queue; the tradeoff is that
 an on-demand Kinesis stream does not scale to zero (a small idle hourly cost).
 
-**The deployed environment runs with the Kinesis path (`active`).**
+**The deployed environment runs with the Kinesis path (`active`).** The CDK
+default is still `off`, so every deploy must pass `-c kinesisIngestMode=active`
+(or `scripts/deploy.sh --kinesis-mode active`); a deploy without it moves the
+EventBridge target back to the direct Lambda.
+
+The consumer has no reserved concurrency: its concurrency is shards ×
+parallelization factor (10), so a large batch of task-heavy runs queues in the
+stream rather than consuming Lambda concurrency per event. It runs at 192 MB
+(`infra/lib/ingest-stack.ts`), which leaves headroom over the peak observed
+while parsing a workflow definition bundle.
 
 ```mermaid
 flowchart LR
     EB["EventBridge rule<br/>source = aws.omics"] -->|"PartitionKey = $.detail.runId"| KDS["Amazon Kinesis Data Streams<br/>(on-demand, 24h retention)"]
-    KDS -->|"batch per shard<br/>(ReportBatchItemFailures)"| CONS["Batch-consumer Lambda<br/>(reuses ingest pipeline)"]
+    KDS -->|"batch per shard<br/>(ReportBatchItemFailures)"| CONS["Batch-consumer Lambda, 192 MB<br/>(reuses ingest pipeline)"]
     CONS -.->|"exhausted / poison records"| KDLQ["Amazon SQS<br/>Kinesis DLQ"]
     CONS -->|"same downstream as direct path"| DDB[("DynamoDB + AppSync")]
 ```
+
+### Event-driven enrichment (`eventEnrichmentMode`)
+
+HealthOmics task events (`omicsVersion` 1.0.0) carry the task's name,
+resources, and timing, so the dashboard builds task and run state from the
+event payload instead of calling HealthOmics for every task. The policy is set
+with the CDK context flag `-c eventEnrichmentMode=<mode>`, passed to both ingest
+functions as `EVENT_ENRICHMENT_MODE` (`infra/lib/ingest-stack.ts`,
+`ingest/src/handler.ts`):
+
+- **`event`** (default, and what is deployed): task and run state comes from the
+  EventBridge event. HealthOmics read APIs are called only when the event cannot
+  supply a field:
+  - `GetRun` at run `PENDING` (parameters, configuration, exact `createdAt`)
+    and at a terminal run status (exact `stoppedAt`, status message). It is
+    also called as a fallback on a `STARTING`/`RUNNING`/`STOPPING` event if the
+    stored run has no `GetRun` data yet (for example, the `PENDING` event was
+    missed).
+  - `GetRunTask` only for `FAILED`/`CANCELLED` tasks (events never carry
+    `statusMessage` or `failureReason`), or for a terminal task event missing
+    its name, start time, or stop time.
+  - `GetWorkflow` only when the workflow version's graph is not already stored
+    (cache key: `workflowId` + `workflowVersionName`). A failed fetch or parse
+    is cached for 1 hour (`GRAPH_FAILURE_RETRY_WINDOW_MS`) so a broken
+    definition is not retried on every run event.
+- **`shadow`**: same as `event`, plus `GetRunTask` on every terminal task event
+  to validate the event values. Each differing field (name, cpus, memory,
+  instanceType, createdAt, startedAt, stoppedAt) logs
+  `enrichment_shadow_mismatch` and emits the EMF metric
+  `HealthOmicsIngest/EnrichmentShadowMismatch` (dimension `field`); the API
+  values are written for those fields. Use it to re-validate event data after
+  an ingest change.
+- **`api`**: the legacy behavior, kept for rollback: `GetRun` on every run
+  event and `GetRunTask` on every terminal task event.
+
+On a 207-task nf-core/rnaseq run, the ingest path in `event` mode made **2
+HealthOmics calls in total** (`GetRun` at `PENDING` and at terminal), compared
+with 217 under the legacy path (about one `GetRunTask` per task plus the run
+calls). The [deferred re-sweep](#deferred-re-sweep-late-settling-reconciliation)
+adds its own small, paged read about 5 minutes after the run ends. Every
+processed event writes one structured `ingest_event` log line with an
+`apiCalls` count (`GetRun` / `GetRunTask` / `GetWorkflow`), so the call volume
+can be checked in CloudWatch Logs.
+
+Always pass the Kinesis flag alongside the enrichment mode:
+
+```bash
+cd infra
+cdk deploy --all -c kinesisIngestMode=active                                # event mode (default)
+cdk deploy --all -c kinesisIngestMode=active -c eventEnrichmentMode=shadow  # validate event data
+cdk deploy --all -c kinesisIngestMode=active -c eventEnrichmentMode=api     # rollback
+```
+
+An invalid `eventEnrichmentMode` value fails synth. `scripts/deploy.sh` does not
+set `eventEnrichmentMode`, so it deploys the default `event` mode; use
+`cdk deploy` directly for `shadow` or `api`.
+
+### Event metadata reference
+
+The fields the ingest mapper reads from HealthOmics events (`omicsVersion`
+1.0.0), defined in `ingest/src/eventMapper.ts`. Observed statuses are
+`PENDING`, `STARTING`, `RUNNING`, `STOPPING`, `COMPLETED`, `FAILED`, and
+`CANCELLED`.
+
+**Task Status Change** (`detail-type: "Task Status Change"`):
+
+| Event field | Dashboard field | Carried on |
+|-------------|-----------------|------------|
+| `arn` (`.../task/<task-id>`) | `taskId` (parsed from the ARN) | All statuses |
+| `runId` | `runId` | All statuses |
+| `status` | `status` | All statuses |
+| `taskName` (not `name`) | `name` | All statuses |
+| `cpus` (string, e.g. `"2"`) | `cpus` (number) | All statuses |
+| `memory` (string, GiB) | `memory` (number, GiB) | All statuses |
+| `gpus` (string) | Not mapped (no `gpus` field in the schema) | All statuses |
+| `creationTime` | `createdAt` | All statuses |
+| `instanceType` | `instanceType` | Added at `RUNNING` |
+| `startTime` | `startedAt` | Added at `RUNNING` |
+| `stopTime` | `stoppedAt` | Added at `COMPLETED` |
+| *(not carried)* `statusMessage`, `failureReason` | From `GetRunTask` | `FAILED` / `CANCELLED` only |
+
+Numeric values arrive as strings and timestamps match `GetRunTask`. Because task
+events never carry `statusMessage` or `failureReason`, `GetRunTask` is still
+called for `FAILED`/`CANCELLED` tasks; the shape of those two events has not
+been verified against live data. The mapper still reads a legacy `name` field
+as a fallback, which is what the sample `fixtures/events/task-status-change.json`
+uses.
+
+**Run Status Change** (`detail-type: "Run Status Change"`):
+
+| Event field | Dashboard field | Carried on |
+|-------------|-----------------|------------|
+| `runId` | `runId` | All statuses |
+| `status` | `status` | All statuses |
+| `runName` | `name` | All statuses |
+| `workflowId` | `workflowId` | All statuses |
+| `workflowName` | `workflowName` | All statuses |
+| `workflowVersionName` | `workflowVersionName` (optional) | All statuses, when the run has a version |
+| `runOutputUri` | `outputUri` (optional) | All statuses |
+
+Run events carry only identity, `workflowVersionName`, and `runOutputUri`.
+Timestamps, parameters, run configuration, engine version, and status messages
+come from `GetRun` at `PENDING` and at terminal. Until `GetRun` supplies them,
+`event` mode uses the event `time` as `createdAt` at `PENDING` and `startedAt`
+at `RUNNING`.
+
+### Live updates in the run detail view
+
+The run detail view (`frontend/src/rundetail/RunDetailView.tsx`,
+`frontend/src/rundetail/mergeTasks.ts`) applies `onTaskUpdated` and
+`onRunUpdated` messages monotonically: it never moves a task or run from a
+terminal status back to a non-terminal one, otherwise keeps the record with the
+newer `updatedAt` (for tasks, an `updatedAt` tie goes to the higher status
+rank). It re-syncs the task list
+with one `listTasksForRun` query (a DynamoDB read, no HealthOmics calls) after
+an Amplify reconnect, when the task subscription is acknowledged, when the tab
+becomes visible, when the browser comes back online, and once when the run
+reaches a terminal status.
 
 ### Deferred re-sweep (late-settling reconciliation)
 
@@ -126,7 +256,8 @@ ingest completion hook schedules a **one-shot [Amazon EventBridge Scheduler](htt
 states and the metrics have settled, so the Reconciler:
 
 1. re-reads the **authoritative** run + all task state from the HealthOmics read
-   APIs (`GetRun` / `ListRunTasks` / `GetRunTask`) and re-upserts each task,
+   APIs (one `GetRun`, `ListRunTasks` pages of 100, and `GetRunTask` only for
+   `FAILED`/`CANCELLED` tasks) and re-upserts each task,
    correcting any that drifted (the repository's monotonic + terminal-status
    guards make a redundant write a harmless no-op);
 2. re-sweeps CloudWatch for the now-available utilization series;
@@ -140,7 +271,7 @@ states and the metrics have settled, so the Reconciler:
 flowchart LR
     ING["Ingest Lambda<br/>(terminal run)"] -->|"CreateSchedule at(now+5m)"| SCH["EventBridge Scheduler<br/>one-shot, group: &lt;stack&gt;-resweep"]
     SCH -->|"~5 min later, invoke {runId}"| REC["Reconciler Lambda"]
-    REC -->|"GetRun / ListRunTasks / GetRunTask"| HO["HealthOmics read APIs"]
+    REC -->|"GetRun / ListRunTasks<br/>(GetRunTask for failed tasks)"| HO["HealthOmics read APIs"]
     REC -->|"re-sweep CPU/MEMORY"| CW["CloudWatch (PromQL)"]
     REC -->|"correct tasks + rewrite Run_Summary (force updatedAt)"| DDB[("DynamoDB")]
     REC -->|"DeleteSchedule (self-cleanup)"| SCH
@@ -202,7 +333,7 @@ To point the local dev server at a **real deployed backend**, generate the
 config from your stack outputs and restart:
 
 ```bash
-cd infra && cdk deploy --all --outputs-file ../cdk-outputs.json && cd ..
+cd infra && cdk deploy --all -c kinesisIngestMode=active --outputs-file ../cdk-outputs.json && cd ..
 node scripts/inject-config.mjs --outputs cdk-outputs.json --stack HealthOmicsApi --out frontend/.env.local
 # The injected config does not set VITE_LOCAL_MOCK, so the client uses the real
 # AppSync backend. If you previously ran in mock mode, ensure the generated file
@@ -322,7 +453,7 @@ The quickest path from a fresh clone to a live dashboard:
 3. **Deploy** — build ingest, build the SPA, and deploy all stacks in one step:
 
    ```bash
-   scripts/deploy.sh                 # --kinesis-mode defaults to off
+   scripts/deploy.sh --kinesis-mode active   # the flag defaults to off; always pass active
    ```
 
    The script checks the prerequisites above (AWS CLI, Node 20, CDK, credentials,
@@ -368,8 +499,12 @@ npm --prefix frontend run build # produces frontend/dist
 
 ```bash
 cd infra
-cdk deploy --all
+cdk deploy --all -c kinesisIngestMode=active
 ```
+
+The enrichment mode defaults to `event`; see
+[Event-driven enrichment](#event-driven-enrichment-eventenrichmentmode) for
+`-c eventEnrichmentMode=shadow|api`.
 
 CDK resolves cross-stack dependency order automatically (Data → Api → Ingest,
 Api → Frontend). When the `FrontendStack` deploys it:
@@ -504,7 +639,7 @@ Notes:
 The dashboard is driven entirely by HealthOmics events landing on the **default** EventBridge bus in the account and region where the stacks are deployed. To point the dashboard at a HealthOmics account:
 
 1. **Deploy into the same account and region as HealthOmics.** HealthOmics delivers its run/task status-change events to the default event bus of the account and region in which the runs execute. The `IngestStack` creates an EventBridge rule on that **default** bus with the pattern `{"source": ["aws.omics"]}`, so no cross-account or custom-bus wiring is required when the dashboard is co-located with HealthOmics. Confirm the deploy region matches the region where your HealthOmics runs execute.
-2. **No producer-side configuration is needed for same-account events.** HealthOmics automatically emits `aws.omics` events to the default bus; the rule matches them and invokes the ingest Lambda. There is nothing to enable on the HealthOmics side.
+2. **No producer-side configuration is needed for same-account events.** HealthOmics automatically emits `aws.omics` events to the default bus; the rule matches them and routes them to the ingest path. There is nothing to enable on the HealthOmics side.
 3. **IAM.** The ingest Lambda's execution role is granted, by the `IngestStack`, least-privilege access only:
    - HealthOmics **read-only** on `GetRun`, `ListRunTasks`, `GetRunTask`, `GetWorkflow` (no create/update/delete).
    - `appsync:GraphQL` scoped to the `publishRunUpdate` and `publishTaskUpdate` mutation fields only.
@@ -596,9 +731,11 @@ not guesses:
 - SPA payload per fresh page load: **~3.3 MB** (JS + CSS, uncompressed).
 
 **Modeling assumptions (the dashboard's usage pattern):** each run emits ~4
-run-status events, and each task ~3 task-status events; every event triggers one
-ingest Lambda invocation, a HealthOmics read (`GetRun`/`ListRunTasks`), DynamoDB
-upserts, and one AppSync publish that fans out to connected subscribers. At ~40
+run-status events, and each task ~3 task-status events; every event is processed
+by the ingest Lambda (DynamoDB upserts and one AppSync publish that fans out to
+connected subscribers). In the default `event` enrichment mode HealthOmics read
+APIs are called only at run start/end and for failed tasks, not per event (see
+[Event-driven enrichment](#event-driven-enrichment-eventenrichmentmode)). At ~40
 tasks/run that is roughly **~124 writes and ~124 publishes per run** (~12.4M each
 across 100k runs). Prices are us-east-1 on-demand, no free tier or reserved
 capacity applied. (Cognito is on the **PLUS** feature plan, which has **no
@@ -610,7 +747,7 @@ free tier** — every monthly active user bills at $0.020/MAU.)
 | DynamoDB — reads | ingest reads + dashboard queries | ~$1–3 |
 | DynamoDB — storage | ~1.5 GB (100k runs + ~4M tasks) | ~$0.40 |
 | DynamoDB — PITR | continuous backup of ~1.5 GB | ~$0.30 |
-| Lambda — ingest | ~12.4M invocations, ~200 ms @ 256 MB | ~$12 |
+| Lambda — ingest | ~12.4M events, ~200 ms @ 192 MB (upper bound; Kinesis batching reduces invocations) | ~$10 |
 | AppSync — requests | ~12.4M publish/query operations | ~$50 |
 | AppSync — real-time | subscription connection-minutes + ~12.4M messages delivered | ~$25–40 |
 | CloudFront | SPA loads (~3.3 MB each); assumes light viewer traffic | ~$15 |
