@@ -71,7 +71,9 @@ Kinesis with a dynamic partition key directly, with no enqueue Lambda or
 bridging queue. The cost is the fixed on-demand stream charge (see
 [cost.md](cost.md)).
 
-The direct ingest Lambda keeps a reserved concurrency of 400 in every mode,
+The direct ingest Lambda also has 192 MB memory (at 128 MB the same pipeline
+peaked at 115 MB and once hit 128/128 while parsing a workflow definition
+bundle). It keeps a reserved concurrency of 400 in every mode,
 paired with `OMICS_TPS=0.025` so that 400 × 0.025 stays within the HealthOmics
 run-read budget of about 10 TPS. Only events that call HealthOmics use the
 rate limiter, so the cheap majority (a DynamoDB write and an AppSync publish)

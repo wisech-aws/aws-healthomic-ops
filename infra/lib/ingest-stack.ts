@@ -221,6 +221,11 @@ export class IngestStack extends Stack {
       projectRoot: INGEST_PROJECT_ROOT,
       depsLockFilePath: INGEST_DEPS_LOCK_FILE,
       timeout: Duration.seconds(60),
+      // 192 MB, set explicitly (matches the Kinesis consumer). The same event
+      // pipeline peaked at 115 MB at 128 MB and once hit 128/128 while
+      // unzipping and parsing a workflow definition bundle. If Max Memory Used
+      // approaches 192 MB, raise this here rather than through the console.
+      memorySize: 192,
       // CONCURRENCY / ENRICHMENT-TPS SPLIT (only enrichment-required events are
       // rate-limited). Non-enriching events do NOT call any HealthOmics read API
       // — they are a cheap DynamoDB write + AppSync publish — so they must NOT

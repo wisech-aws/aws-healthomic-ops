@@ -375,8 +375,8 @@ $29/month in us-east-1.
 
 | Configuration | Est. monthly at 100,000 runs (about 40 tasks each) |
 |---------------|-----------------------------------------------------|
-| Default (`kinesisIngestMode=off`) | ≈ $130–155, including the deferred re-sweep and $2–5 for CloudWatch Logs; near-zero at idle |
-| Optional Kinesis (`kinesisIngestMode=active`) | ≈ $150–175, including about $30 for Kinesis (billed even at idle), without the deferred re-sweep |
+| Default (`kinesisIngestMode=off`) | ≈ $129–153, including the deferred re-sweep and $2–5 for CloudWatch Logs; near-zero at idle |
+| Optional Kinesis (`kinesisIngestMode=active`) | ≈ $151–174, including about $30 for Kinesis (billed even at idle), without the deferred re-sweep |
 
 These estimates cover the dashboard only, not HealthOmics workflow execution.
 AppSync is the largest item, and tasks per run is the main lever: at about 150

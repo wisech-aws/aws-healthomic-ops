@@ -500,6 +500,7 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     expect(consumer.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
     expect(direct.Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
     expect(consumer.Properties.MemorySize).toBe(192);
+    expect(direct.Properties.MemorySize).toBe(192);
     // Existing consumer env is unchanged.
     expect(consumer.Properties.Environment?.Variables?.OMICS_TPS).toBe('2');
   });

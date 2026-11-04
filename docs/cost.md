@@ -81,7 +81,7 @@ runs.
 | DynamoDB reads | Ingest reads and dashboard queries | ~$1–3 |
 | DynamoDB storage | ~1.5 GB (100k runs, ~4M tasks) | ~$0.40 |
 | DynamoDB PITR | Continuous backup of ~1.5 GB | ~$0.30 |
-| Lambda (ingest) | ~12.4M invocations, ~200 ms at 128 MB (direct ingest Lambda) | ~$8 |
+| Lambda (ingest) | ~12.4M invocations, ~200 ms at 192 MB (direct ingest Lambda): ~465k GB-seconds (~$7.75) plus requests (~$2.50) | ~$10 |
 | CloudWatch Logs | ~12.4M `ingest_event` lines plus Lambda platform lines, a few GB ingested | ~$2–5 |
 | AppSync requests | ~12.4M publish and query operations | ~$50 |
 | AppSync real-time | Connection-minutes and ~12.4M messages | ~$25–40 |
@@ -94,18 +94,21 @@ runs.
 | Re-sweep: Reconciler Lambda | ~100k invocations, ~10 s at 128 MB | ~$2 |
 | Re-sweep: extra DynamoDB writes | ~41 rewrites per run (tasks and summary), ~4.1M write units | ~$5 |
 | Re-sweep: CloudWatch `GetMetricData` | ~200k requests (2 metric families per run) | ~$1–3 |
-| Total, default (`off`) | | ≈ $130–155 |
+| Total, default (`off`) | Sum of the rows above | ≈ $129–153 |
 
-With the optional Kinesis buffer (`kinesisIngestMode=active`), add the stream,
-swap in the Kinesis consumer Lambda, and drop the re-sweep rows, because the
-re-sweep does not run on the Kinesis path today:
+With the optional Kinesis buffer (`kinesisIngestMode=active`), start from the
+default total, add the stream, swap the direct ingest Lambda row for the
+Kinesis consumer Lambda, and drop the re-sweep rows, because the re-sweep does
+not run on the Kinesis path today:
 
 | Service | Basis | Est. monthly |
 |---------|-------|--------------|
-| Kinesis Data Streams (optional) | 730 stream-hours at about $0.04, plus about 12 GB written and read | ~$30–31 |
-| Lambda (Kinesis consumer) | Replaces the direct ingest row: 192 MB, batched, so at most ~12.4M events at ~200 ms | ~$10 (upper bound) |
-| Re-sweep rows | Not run on the Kinesis path | −$8–10 |
-| Total, `active` | | ≈ $150–175 |
+| Total, default (`off`) | From the table above | ≈ $129–153 |
+| Kinesis Data Streams (optional) | 730 stream-hours at about $0.04, plus about 12 GB written and read | +$30–31 |
+| Lambda (direct ingest) | Removed: the consumer processes these events instead | −$10 |
+| Lambda (Kinesis consumer) | 192 MB, batched, so at most ~12.4M events at ~200 ms | +$10 (upper bound) |
+| Re-sweep rows | Not run on the Kinesis path (Scheduler, Reconciler, extra writes, `GetMetricData`) | −$8–10 |
+| Total, `active` | $129–153 + $30–31 − $10 + $10 − $8–10 | ≈ $151–174 |
 
 ## Sensitivities
 
