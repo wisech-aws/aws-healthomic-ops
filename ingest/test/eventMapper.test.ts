@@ -3,6 +3,7 @@ import fc from 'fast-check';
 import type { EventBridgeEvent } from 'aws-lambda';
 import { detectKind, mapRunEvent, mapTaskEvent } from '../src/eventMapper.js';
 import { RunStatus, TaskStatus } from '../src/domain/status.js';
+import { runEvents, taskEvents, taskLifecycle } from './fixtures/events.js';
 
 /**
  * Build a minimal EventBridge envelope around a given `detail-type` and
@@ -93,6 +94,7 @@ describe('mapRunEvent', () => {
       name: 'run name',
       workflowId: '7654321',
       workflowName: 'workflow name',
+      outputUri: 's3://amzn-s3-demo-bucket/run-output/2101313',
     });
   });
 
@@ -328,5 +330,127 @@ describe('Property 1: event mapping robustness and extraction', () => {
         }
       }),
     );
+  });
+});
+
+/**
+ * Real captured events from run 8508632 (omicsVersion 1.0.0): task events
+ * carry taskName/cpus/gpus/memory/creationTime at every status, RUNNING adds
+ * instanceType/startTime, COMPLETED adds stopTime. Values are strings.
+ */
+describe('mapping real captured HealthOmics events (run 8508632)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  const [pending, starting, running, completed] = taskLifecycle('9303953');
+
+  it('PENDING maps taskName, numeric cpus/memory and createdAt, without logging', () => {
+    expect(pending.detail.status).toBe('PENDING');
+    const result = mapTaskEvent(pending);
+    expect(result).toEqual({
+      runId: '8508632',
+      taskId: '9303953',
+      status: TaskStatus.PENDING,
+      name: 'NFCORE_RNASEQ:RNASEQ:FASTQ_QC_TRIM_FILTER_SETSTRANDEDNESS:FQ_LINT (WT_REP2)',
+      cpus: 2,
+      memory: 12,
+      createdAt: '2026-11-03T22:41:30.523Z',
+    });
+    expect(typeof result.cpus).toBe('number');
+    expect(result).not.toHaveProperty('instanceType');
+    expect(result).not.toHaveProperty('startedAt');
+    expect(result).not.toHaveProperty('stoppedAt');
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('STARTING carries the same fields as PENDING', () => {
+    const result = mapTaskEvent(starting);
+    expect(result.status).toBe(TaskStatus.STARTING);
+    expect(result.name).toBe(mapTaskEvent(pending).name);
+    expect(result).not.toHaveProperty('startedAt');
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('RUNNING adds instanceType and startedAt (from startTime, not event.time)', () => {
+    const result = mapTaskEvent(running);
+    expect(result.status).toBe(TaskStatus.RUNNING);
+    expect(result.instanceType).toBe('omics.r.large');
+    expect(result.startedAt).toBe('2026-11-03T22:52:31.275Z');
+    expect(result).not.toHaveProperty('stoppedAt');
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('COMPLETED adds stoppedAt with millisecond precision', () => {
+    const result = mapTaskEvent(completed);
+    expect(result).toMatchObject({
+      status: TaskStatus.COMPLETED,
+      instanceType: 'omics.r.large',
+      createdAt: '2026-11-03T22:41:30.523Z',
+      startedAt: '2026-11-03T22:52:31.275Z',
+      stoppedAt: '2026-11-03T22:52:51.913Z',
+      cpus: 2,
+      memory: 12,
+    });
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('never logs the full event for any captured task or run event', () => {
+    for (const status of ['PENDING', 'STARTING', 'RUNNING', 'COMPLETED']) {
+      for (const event of taskEvents(status)) {
+        const result = mapTaskEvent(event);
+        expect(result.name).toBeDefined();
+        expect(result.cpus).toBeTypeOf('number');
+        expect(result.memory).toBeTypeOf('number');
+        expect(result.createdAt).toBeDefined();
+      }
+    }
+    for (const event of runEvents()) {
+      mapRunEvent(event);
+    }
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('omits non-numeric or empty cpus/memory', () => {
+    const result = mapTaskEvent({
+      ...completed,
+      detail: { ...completed.detail, cpus: 'abc', memory: '' },
+    });
+    expect(result).not.toHaveProperty('cpus');
+    expect(result).not.toHaveProperty('memory');
+    expect(result.name).toBeDefined();
+  });
+
+  it('omits an unparseable timestamp', () => {
+    const result = mapTaskEvent({
+      ...completed,
+      detail: { ...completed.detail, stopTime: 'not-a-time' },
+    });
+    expect(result).not.toHaveProperty('stoppedAt');
+  });
+
+  it('still reads the legacy `name` field when taskName is absent', () => {
+    const detail: Record<string, unknown> = { ...completed.detail, name: 'legacy' };
+    delete detail.taskName;
+    expect(mapTaskEvent({ ...completed, detail }).name).toBe('legacy');
+  });
+
+  it('maps workflowVersionName and runOutputUri on run events', () => {
+    const [runPending] = runEvents();
+    expect(mapRunEvent(runPending)).toEqual({
+      runId: '8508632',
+      status: RunStatus.PENDING,
+      name: 'rnaseq-vpc-event-enrichment-20261103-1729',
+      workflowId: '2897933',
+      workflowName: 'nf-core-rnaseq',
+      workflowVersionName: 'v2-wave-fix',
+      outputUri:
+        's3://healthomics-input-data-123456789012-us-east-1-an/run-outputs/dashboard-e2e-rnaseq/8508632',
+    });
+    expect(logSpy).not.toHaveBeenCalled();
   });
 });

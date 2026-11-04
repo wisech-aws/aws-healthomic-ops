@@ -16,8 +16,11 @@
  *   - Only fields that are actually present are extracted; a missing field is
  *     simply omitted from the returned Partial record — never defaulted,
  *     coerced, or allowed to throw.
- *   - When any expected field is missing, the complete event is logged and
- *     processing continues on the remaining fields (Req 1.5).
+ *   - When any REQUIRED field (identity + status) is missing, the complete
+ *     event is logged and processing continues on the remaining fields
+ *     (Req 1.5). Optional fields that are legitimately absent at early
+ *     statuses (e.g. a task's instanceType/startTime before RUNNING) never
+ *     trigger that log.
  *   - A status value that is not a member of its enum is logged and skipped
  *     (left unset) without failing the whole event (Req 1.6).
  *
@@ -49,17 +52,19 @@ const TASK_DETAIL_TYPE = 'Task Status Change';
 // ============================================================================
 // CONFIRM AGAINST AWS DOCS — run event `detail` field names
 // ----------------------------------------------------------------------------
-// Field paths within the run event `detail` object. Confirmed against the AWS
-// HealthOmics EventBridge run "Run Status Change" example, whose `detail`
-// carries: omicsVersion, arn, status, uuid, runId, runName, runOutputUri,
-// workflowId, workflowName.
+// Field paths within the run event `detail` object. Confirmed against real
+// captured "Run Status Change" events (omicsVersion "1.0.0", run 8508632),
+// whose `detail` carries: omicsVersion, arn, runId, status, uuid, runOutputUri,
+// runName, workflowName, workflowId, workflowVersionName, workflowUuid.
 //
 // Notes on the mapping to RunRecord:
 //   - HealthOmics names the run's display name `runName`; RunRecord calls it
-//     `name`.
-//   - The run event does NOT carry createdAt / startedAt / stoppedAt; those
-//     fields are filled by enrichment (GetRun) in a later stage, so the mapper
-//     legitimately leaves them unset.
+//     `name`. `runOutputUri` maps to `outputUri`.
+//   - `workflowVersionName` and `runOutputUri` are OPTIONAL (absent on older
+//     event schemas / versionless runs) and never trigger the full-event log.
+//   - The run event does NOT carry createdAt / startedAt / stoppedAt,
+//     parameters, configuration or status messages; those come from GetRun
+//     (or are derived from event.time by the handler).
 // If HealthOmics renames any of these fields, update ONLY these constants.
 // ============================================================================
 const RUN_FIELDS = {
@@ -69,14 +74,24 @@ const RUN_FIELDS = {
   workflowId: 'workflowId',
   workflowName: 'workflowName',
 } as const;
+/** Optional run event fields (never trigger the missing-field log). */
+const RUN_OPTIONAL_FIELDS = {
+  workflowVersionName: 'workflowVersionName',
+  outputUri: 'runOutputUri',
+} as const;
 
 // ============================================================================
 // CONFIRM AGAINST AWS DOCS — task event `detail` field names
 // ----------------------------------------------------------------------------
-// Field paths within the task event `detail` object. Confirmed against the AWS
-// HealthOmics EventBridge task "Task Status Change" example, whose `detail`
-// carries: omicsVersion, arn, status, runArn, runUuid, runId, runName,
-// workflowId, workflowName.
+// Field paths within the task event `detail` object. Confirmed against real
+// captured "Task Status Change" events (omicsVersion "1.0.0", run 8508632; all
+// 828 events), whose `detail` carries at EVERY status: omicsVersion, arn,
+// status, runArn, runId, runName, runUuid, workflowName, workflowId,
+// workflowVersionName, workflowUuid, taskName, cpus, gpus, memory (GiB),
+// creationTime. RUNNING adds instanceType + startTime; COMPLETED adds stopTime.
+// Numeric values arrive as STRINGS ("cpus":"2"); timestamps are ISO 8601 with
+// milliseconds and match GetRunTask exactly. NOT carried: statusMessage,
+// failureReason (GetRunTask-only). The FAILED/CANCELLED shape is unverified.
 //
 // IMPORTANT — task identifier:
 //   The task "Task Status Change" example `detail` has NO dedicated `taskId`
@@ -86,15 +101,28 @@ const RUN_FIELDS = {
 //   that assumption. If HealthOmics later exposes an explicit taskId field,
 //   prefer it here.
 //
-//   Likewise, the task event carries NO cpus / memory / createdAt / startedAt /
-//   stoppedAt fields; those are filled by enrichment (ListRunTasks/GetRunTask)
-//   in a later stage, so the mapper leaves them unset.
+//   The descriptive fields (taskName, cpus, memory, instanceType, creationTime,
+//   startTime, stopTime) are OPTIONAL: some are legitimately absent at early
+//   statuses, so their absence never triggers the full-event log. `taskName`
+//   is the current field; the legacy `name` is still read as a fallback.
+//   `gpus` is carried but not mapped (TaskRecord / the GraphQL schema have no
+//   gpus field).
 // If HealthOmics renames any of these fields, update ONLY these constants.
 // ============================================================================
 const TASK_FIELDS = {
   runId: 'runId',
   status: 'status',
-  name: 'name',
+} as const;
+/** Optional task event fields (never trigger the missing-field log). */
+const TASK_OPTIONAL_FIELDS = {
+  name: 'taskName',
+  legacyName: 'name',
+  cpus: 'cpus',
+  memory: 'memory',
+  instanceType: 'instanceType',
+  createdAt: 'creationTime',
+  startedAt: 'startTime',
+  stoppedAt: 'stopTime',
 } as const;
 const TASK_ARN_FIELD = 'arn';
 // The ARN resource segment that precedes the task id, e.g. ".../task/8888888".
@@ -130,6 +158,37 @@ function readString(detail: Detail, key: string): string | undefined {
     return value;
   }
   return undefined;
+}
+
+/**
+ * Extract a finite number from `detail`, accepting either a number or a
+ * numeric string (HealthOmics events carry "cpus":"2"). Returns `undefined`
+ * for an absent, empty, non-numeric, or non-finite value. Never throws.
+ */
+function readNumber(detail: Detail, key: string): number | undefined {
+  const value = detail[key];
+  let parsed: number;
+  if (typeof value === 'number') {
+    parsed = value;
+  } else if (typeof value === 'string' && value.trim() !== '') {
+    parsed = Number(value);
+  } else {
+    return undefined;
+  }
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Extract a timestamp from `detail` and normalize it to ISO 8601 UTC with
+ * milliseconds. Returns `undefined` when absent or unparseable. Never throws.
+ */
+function readTimestamp(detail: Detail, key: string): string | undefined {
+  const value = readString(detail, key);
+  if (value === undefined) {
+    return undefined;
+  }
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
 }
 
 /**
@@ -227,8 +286,17 @@ export function mapRunEvent(
     missingField = true;
   }
 
+  const workflowVersionName = readString(detail, RUN_OPTIONAL_FIELDS.workflowVersionName);
+  if (workflowVersionName !== undefined) {
+    record.workflowVersionName = workflowVersionName;
+  }
+  const outputUri = readString(detail, RUN_OPTIONAL_FIELDS.outputUri);
+  if (outputUri !== undefined) {
+    record.outputUri = outputUri;
+  }
+
   if (missingField) {
-    // At least one expected field was absent: log the complete event and
+    // At least one required field was absent: log the complete event and
     // continue on the remaining fields (Req 1.5).
     logFullEvent('run event missing one or more expected fields', event);
   }
@@ -239,7 +307,9 @@ export function mapRunEvent(
 /**
  * Map a task status-change event to a Partial<TaskRecord>, extracting only the
  * fields present in `detail`. The task id is derived from the task `arn`
- * (see TASK_ARN_FIELD). Missing fields are omitted and the full event is logged
+ * (see TASK_ARN_FIELD). String numbers are converted with `Number()` and
+ * timestamps normalized to ISO 8601. Missing required fields (runId, arn,
+ * status) are omitted and the full event is logged
  * (Req 1.4, 1.5); an out-of-enum status is logged and left unset (Req 1.6).
  * Never throws.
  */
@@ -277,15 +347,41 @@ export function mapTaskEvent(
     );
   }
 
-  const name = readString(detail, TASK_FIELDS.name);
+  // Optional descriptive fields: set only when present; absence is normal at
+  // early statuses and never marks the event as missing fields.
+  const name =
+    readString(detail, TASK_OPTIONAL_FIELDS.name) ??
+    readString(detail, TASK_OPTIONAL_FIELDS.legacyName);
   if (name !== undefined) {
     record.name = name;
-  } else {
-    missingField = true;
+  }
+  const cpus = readNumber(detail, TASK_OPTIONAL_FIELDS.cpus);
+  if (cpus !== undefined) {
+    record.cpus = cpus;
+  }
+  const memory = readNumber(detail, TASK_OPTIONAL_FIELDS.memory);
+  if (memory !== undefined) {
+    record.memory = memory;
+  }
+  const instanceType = readString(detail, TASK_OPTIONAL_FIELDS.instanceType);
+  if (instanceType !== undefined) {
+    record.instanceType = instanceType;
+  }
+  const createdAt = readTimestamp(detail, TASK_OPTIONAL_FIELDS.createdAt);
+  if (createdAt !== undefined) {
+    record.createdAt = createdAt;
+  }
+  const startedAt = readTimestamp(detail, TASK_OPTIONAL_FIELDS.startedAt);
+  if (startedAt !== undefined) {
+    record.startedAt = startedAt;
+  }
+  const stoppedAt = readTimestamp(detail, TASK_OPTIONAL_FIELDS.stoppedAt);
+  if (stoppedAt !== undefined) {
+    record.stoppedAt = stoppedAt;
   }
 
   if (missingField) {
-    // At least one expected field was absent: log the complete event and
+    // At least one required field was absent: log the complete event and
     // continue on the remaining fields (Req 1.5).
     logFullEvent('task event missing one or more expected fields', event);
   }
