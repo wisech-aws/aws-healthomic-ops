@@ -3,7 +3,7 @@
 The ingest code isolates each assumption about HealthOmics event and API
 shapes behind a `CONFIRM AGAINST AWS DOCS` comment, so a change in the
 service can be fixed in one place. This table lists those places. The event
-fields marked as observed in [architecture.md](architecture.md#event-metadata-reference)
+fields marked as observed in [events.md](events.md)
 were checked against live events; the rest should be re-checked against the
 [AWS HealthOmics documentation](https://docs.aws.amazon.com/omics/latest/dev/what-is-healthomics.html)
 when the service changes.
@@ -26,8 +26,10 @@ and the workflow-definition fixtures used by the parser tests.
 
 - `npx cdk diff` from `infra/` before every deploy. `scripts/deploy.sh` deploys
   with `--require-approval never`.
-- After changing ingest, deploy once with `-c eventEnrichmentMode=shadow`, run a
-  workflow, and check the `HealthOmicsIngest/EnrichmentShadowMismatch` metric
-  before going back to `event`.
+- After changing ingest, run a workflow and check the `apiCalls` counts in the
+  `ingest_event` log lines and the task fields in the dashboard. If events stop
+  carrying fields that `event` mode relies on, redeploy with
+  `-c eventEnrichmentMode=api` and update `ingest/src/eventMapper.ts` and
+  [events.md](events.md).
 - The Lambdas use `nodejs20.x`; see
   [Known limitations](../README.md#known-limitations) for the deprecation dates.

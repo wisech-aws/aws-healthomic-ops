@@ -226,19 +226,23 @@ npx cdk deploy --all -c kinesisIngestMode=active
 Switching modes is a context change plus a redeploy. Deploy with the same
 mode every time, because a deploy without the flag returns to `off`.
 
-### Enrichment mode (`eventEnrichmentMode`)
+### Event enrichment (`eventEnrichmentMode`)
 
-Set with `-c eventEnrichmentMode=<mode>` on `npx cdk deploy`. `deploy.sh`
-does not set it, so it always deploys the default. An invalid value fails
-synth.
+The enrichment type controls how often ingest calls HealthOmics read APIs.
 
-| Mode | Behavior |
+| Type | Behavior |
 |------|----------|
-| `event` (default) | State comes from the event. `GetRun` at run `PENDING` and terminal, `GetRunTask` for `FAILED` or `CANCELLED` tasks, `GetWorkflow` only for a workflow version with no stored graph, plus fallback calls when expected fields are missing. |
-| `shadow` | As `event`, plus `GetRunTask` on every terminal task event. Differences are logged and counted in the `HealthOmicsIngest/EnrichmentShadowMismatch` metric, and all compared fields are then written from `GetRunTask`. Use it to re-check event data after an ingest change. |
-| `api` | Legacy rollback: `GetRun` on every run event and `GetRunTask` on every terminal task event. |
+| `event` (default) | State is built from the EventBridge event payload. HealthOmics API calls happen only at run start and end (`GetRun`), for failed or cancelled tasks (`GetRunTask`), for a new workflow graph (`GetWorkflow`), and as a fallback when expected fields are missing. Measured 2 calls, compared with 217, on a 207-task nf-core/rnaseq run. |
+| `api` (fallback/rollback) | HealthOmics API calls enrich each event, as before: `GetRun` on every run event and `GetRunTask` on every terminal task event. |
 
-For example, `cd infra && npx cdk deploy --all -c eventEnrichmentMode=shadow`.
+Set it with `-c eventEnrichmentMode=<type>` on `npx cdk deploy`, for example
+`cd infra && npx cdk deploy --all -c eventEnrichmentMode=api`. `deploy.sh`
+does not set it, so it always deploys `event`. Any other value fails synth.
+Use `api` if `event` mode shows missing task names, resources, or timing, for
+example after a HealthOmics event schema change drops fields, and redeploy
+without the flag to return to `event`. The fields each event carries, and the
+ones that still come from the API, are in [docs/events.md](docs/events.md).
+
 The deferred re-sweep delay is the `RECONCILE_DELAY_MINUTES` environment
 variable (default 5; see
 [docs/architecture.md](docs/architecture.md#deferred-re-sweep)).
@@ -342,10 +346,6 @@ the run or task should update within about 5 seconds, with no polling.
   not the events. Replay the records from the stream within its 24-hour
   retention
   ([steps](docs/deployment.md#replaying-from-the-kinesis-dead-letter-queue)).
-- Shadow mismatches. In `shadow` mode, the
-  `HealthOmicsIngest/EnrichmentShadowMismatch` metric (dimension `field`) and
-  `enrichment_shadow_mismatch` log lines show where event values differed
-  from `GetRunTask`.
 - No live updates: check that the deploy region matches the HealthOmics
   region, that you are signed in, and the ingest logs for publish errors.
 - HTTP 401 on publish: the AppSync IAM auth provider is missing, usually after

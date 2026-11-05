@@ -86,7 +86,9 @@ resources, and timing, so ingest builds task and run state from the event
 payload instead of calling HealthOmics for every task. The policy is the CDK
 context flag `-c eventEnrichmentMode=<mode>`, passed to both ingest Lambdas as
 `EVENT_ENRICHMENT_MODE` (`infra/lib/ingest-stack.ts`, `ingest/src/handler.ts`).
-An invalid value fails synth.
+There are two modes, `event` and `api`. Any other value fails synth. If the
+Lambda environment variable is set to an unrecognized value outside CDK, the
+handler logs one warning and uses `event`.
 
 - `event` (default): state comes from the event. HealthOmics read APIs are
   called only when the event cannot supply a field:
@@ -102,16 +104,10 @@ An invalid value fails synth.
     (cache key `workflowId` + `workflowVersionName`). A failed fetch or parse
     is cached for 1 hour (`GRAPH_FAILURE_RETRY_WINDOW_MS`), so a broken
     definition is not retried on every run event.
-- `shadow`: same as `event`, plus `GetRunTask` on every terminal task event to
-  check the event values. Each field that differs (name, cpus, memory,
-  instanceType, createdAt, startedAt, stoppedAt) logs
-  `enrichment_shadow_mismatch` and emits the EMF metric
-  `HealthOmicsIngest/EnrichmentShadowMismatch` with dimension `field`. On
-  every terminal task event, all seven compared fields are then written from
-  `GetRunTask`, so terminal values never depend on unchecked event data. Use
-  it to re-check event data after an ingest change.
-- `api`: the legacy behavior, kept for rollback. `GetRun` on every run event
-  and `GetRunTask` on every terminal task event.
+- `api`: the legacy behavior, kept as the fallback and rollback mode.
+  `GetRun` on every run event and `GetRunTask` on every terminal task event.
+  Use it if a HealthOmics event schema change drops fields that `event` mode
+  relies on.
 
 On a 207-task nf-core/rnaseq run, `event` mode made 2 HealthOmics calls in
 total (`GetRun` at `PENDING` and at terminal), compared with 217 under the
@@ -122,62 +118,19 @@ can be checked in Amazon CloudWatch Logs.
 
 ```bash
 cd infra
-npx cdk deploy --all                                # defaults: off + event
-npx cdk deploy --all -c eventEnrichmentMode=shadow  # check event data
-npx cdk deploy --all -c eventEnrichmentMode=api     # rollback
+npx cdk deploy --all                             # defaults: off + event
+npx cdk deploy --all -c eventEnrichmentMode=api  # fallback / rollback
 ```
 
 `scripts/deploy.sh` does not set `eventEnrichmentMode`, so it deploys the
-default `event` mode. Use `npx cdk deploy` directly for `shadow` or `api`.
+default `event` mode. Use `npx cdk deploy` directly for `api`.
 
 ## Event metadata reference
 
-The fields the ingest mapper reads from HealthOmics events (`omicsVersion`
-1.0.0) are defined in `ingest/src/eventMapper.ts`. Observed statuses are
-`PENDING`, `STARTING`, `RUNNING`, `STOPPING`, `COMPLETED`, `FAILED`, and
-`CANCELLED`.
-
-Task Status Change (`detail-type: "Task Status Change"`):
-
-| Event field | Dashboard field | Carried on |
-|-------------|-----------------|------------|
-| `arn` (`.../task/<task-id>`) | `taskId` (parsed from the ARN) | All statuses |
-| `runId` | `runId` | All statuses |
-| `status` | `status` | All statuses |
-| `taskName` (not `name`) | `name` | All statuses |
-| `cpus` (string, e.g. `"2"`) | `cpus` (number) | All statuses |
-| `memory` (string, GiB) | `memory` (number, GiB) | All statuses |
-| `gpus` (string) | Not mapped (no `gpus` field in the schema) | All statuses |
-| `creationTime` | `createdAt` | All statuses |
-| `instanceType` | `instanceType` | Added at `RUNNING` |
-| `startTime` | `startedAt` | Added at `RUNNING` |
-| `stopTime` | `stoppedAt` | Added at `COMPLETED` |
-| *(not carried)* `statusMessage`, `failureReason` | From `GetRunTask` | `FAILED` / `CANCELLED` only |
-
-Numeric values arrive as strings, and timestamps match `GetRunTask`. Because
-task events never carry `statusMessage` or `failureReason`, `GetRunTask` is
-still called for `FAILED` and `CANCELLED` tasks. The shape of those two events
-has not been checked against live data. The mapper still reads a legacy `name`
-field as a fallback, which is what the sample
-`fixtures/events/task-status-change.json` uses.
-
-Run Status Change (`detail-type: "Run Status Change"`):
-
-| Event field | Dashboard field | Carried on |
-|-------------|-----------------|------------|
-| `runId` | `runId` | All statuses |
-| `status` | `status` | All statuses |
-| `runName` | `name` | All statuses |
-| `workflowId` | `workflowId` | All statuses |
-| `workflowName` | `workflowName` | All statuses |
-| `workflowVersionName` | `workflowVersionName` (optional) | All statuses, when the run has a version |
-| `runOutputUri` | `outputUri` (optional) | All statuses |
-
-Run events carry only identity, `workflowVersionName`, and `runOutputUri`.
-Timestamps, parameters, run configuration, engine version, and status messages
-come from `GetRun` at `PENDING` and at terminal. Until `GetRun` supplies them,
-`event` mode uses the event `time` as `createdAt` at `PENDING` and as
-`startedAt` at `RUNNING`.
+The run and task event fields HealthOmics sends, their types, the statuses
+that carry them, the dashboard fields they map to, sample payloads, and the
+fields that still come from `GetRun` and `GetRunTask` are in
+[events.md](events.md). The mapping code is `ingest/src/eventMapper.ts`.
 
 ## Live updates in the run detail view
 
