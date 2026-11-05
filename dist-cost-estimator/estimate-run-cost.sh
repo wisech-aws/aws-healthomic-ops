@@ -62,8 +62,8 @@ esac
 if [ "$NODE_MAJOR" -lt "$MIN_NODE_MAJOR" ]; then
   die 3 \
     "ERROR: Node.js ${MIN_NODE_MAJOR}+ is required, but found v${NODE_VER}." \
-    "This script uses the global fetch() API and targets Node 20." \
-    "Upgrade Node and re-run. (brew upgrade node, nvm install 20, or https://nodejs.org/en/download)"
+    "This script uses the global fetch() API and requires Node 20+ (the repo toolchain is Node 24)." \
+    "Upgrade Node and re-run. (brew upgrade node, nvm install 24, or https://nodejs.org/en/download)"
 fi
 
 # --- 3. dependencies installed? (local node_modules) -----------------------

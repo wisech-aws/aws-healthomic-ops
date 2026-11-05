@@ -140,13 +140,13 @@ const REQUIRED_MODULES = [
   '@aws-sdk/credential-provider-node', // credentials for signing + SDK clients
 ];
 
-/** The minimum Node major version (Node 20+, matching the repo toolchain). */
+/** The minimum Node major version (Node 20+; the repo toolchain is Node 24). */
 const MIN_NODE_MAJOR = 20;
 
 /**
  * Verify the runtime has everything the script needs BEFORE doing any AWS work:
  *   1. Node >= MIN_NODE_MAJOR (the script relies on global `fetch`, which is
- *      stable from Node 18+, and the repo targets Node 20).
+ *      stable from Node 18+; the repo toolchain is Node 24).
  *   2. Every entry in REQUIRED_MODULES resolves from `ingest/node_modules`.
  *
  * Collects ALL problems and returns them as a list of human-readable strings
@@ -161,7 +161,7 @@ function preflightDependencies() {
   if (!Number.isFinite(major) || major < MIN_NODE_MAJOR) {
     problems.push(
       `Node ${MIN_NODE_MAJOR}+ is required (found ${process.versions.node}). ` +
-        `This script uses the global fetch() API and targets the repo's Node 20 toolchain.`,
+        `This script uses the global fetch() API and requires Node 20+ (the repo toolchain is Node 24).`,
     );
   }
 
@@ -170,7 +170,7 @@ function preflightDependencies() {
   if (typeof fetch !== 'function') {
     problems.push(
       'global fetch() is unavailable in this runtime; it is required for the ' +
-        'DYNAMIC-storage CloudWatch query. Upgrade to Node 18+ (ideally Node 20).',
+        'DYNAMIC-storage CloudWatch query. Upgrade to Node 20+ (ideally Node 24).',
     );
   }
 

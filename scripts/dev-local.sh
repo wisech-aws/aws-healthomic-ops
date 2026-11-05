@@ -51,7 +51,7 @@ fi
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
 if [ "${NODE_MAJOR}" -lt 20 ]; then
-  echo "warning: Node ${NODE_MAJOR} detected; this project targets Node 20+." >&2
+  echo "warning: Node ${NODE_MAJOR} detected; this project targets Node 24.x (Vite needs >= 20.19)." >&2
 fi
 
 # --- Local placeholder config (only written if none exists) -----------------

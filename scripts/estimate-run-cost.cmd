@@ -59,7 +59,7 @@ if not defined NODE_MAJOR (
 )
 if %NODE_MAJOR% LSS %MIN_NODE_MAJOR% (
   echo ERROR: Node.js %MIN_NODE_MAJOR%+ is required, but an older version was found.>&2
-  echo This script uses global fetch^(^) and targets the repo's Node 20 toolchain.>&2
+  echo This script uses global fetch^(^) and requires Node 20+ ^(the repo toolchain is Node 24^).>&2
   echo Upgrade Node and re-run. ^(winget upgrade OpenJS.NodeJS.LTS, or https://nodejs.org/en/download^)>&2
   exit /b 3
 )
