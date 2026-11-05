@@ -118,11 +118,15 @@ can be checked in Amazon CloudWatch Logs.
 
 ```bash
 cd infra
-npx cdk deploy --all                             # defaults: off + event
-npx cdk deploy --all -c eventEnrichmentMode=api  # fallback / rollback
+npx cdk deploy --all -c kinesisIngestMode=<your mode>                             # enrichment default: event
+npx cdk deploy --all -c kinesisIngestMode=<your mode> -c eventEnrichmentMode=api  # fallback / rollback
 ```
 
-`scripts/deploy.sh` does not set `eventEnrichmentMode`, so it deploys the
+Build ingest and the SPA first (see
+[deployment.md](deployment.md#deploying-without-deploysh)). An environment
+running Kinesis must pass `-c kinesisIngestMode=active` (or
+`scripts/deploy.sh --kinesis-mode active`) on every deploy, or it switches to
+`off`. `scripts/deploy.sh` does not set `eventEnrichmentMode`, so it deploys the
 default `event` mode. Use `npx cdk deploy` directly for `api`.
 
 ## Event metadata reference

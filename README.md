@@ -172,7 +172,8 @@ fields the mapper reads and the deferred re-sweep, are in
 
    The default needs no Kinesis flag. To opt in to the
    [Kinesis buffer](#optional-kinesis-buffer-kinesisingestmode), add
-   `--kinesis-mode active`.
+   `--kinesis-mode active`. If your environment already runs Kinesis, pass
+   `--kinesis-mode active` on every deploy, or the deploy switches it to `off`.
 
    The script checks prerequisites and bootstrap, builds ingest and the SPA,
    and runs `npx cdk deploy --all` with `--require-approval never`, so IAM and
@@ -194,7 +195,8 @@ fields the mapper reads and the deferred re-sweep, are in
    your workflows use.
 
 To deploy with `npx cdk` directly, build ingest and the SPA first; see
-[docs/deployment.md](docs/deployment.md#deploying-without-deploysh).
+[docs/deployment.md](docs/deployment.md#deploying-without-deploysh). Without
+`frontend/dist`, the deploy publishes only `config.js` and skips the SPA upload.
 
 ## Configuration
 
@@ -225,7 +227,10 @@ npx cdk deploy --all -c kinesisIngestMode=active
 ```
 
 Switching modes is a context change plus a redeploy. Deploy with the same
-mode every time, because a deploy without the flag returns to `off`.
+mode every time, because a deploy without the flag returns to `off`. An
+environment running Kinesis must pass `-c kinesisIngestMode=active` (or
+`scripts/deploy.sh --kinesis-mode active`) on every deploy, or it switches to
+`off`.
 
 ### Event enrichment (`eventEnrichmentMode`)
 
@@ -237,11 +242,15 @@ The enrichment type controls how often ingest calls HealthOmics read APIs.
 | `api` (fallback/rollback) | HealthOmics API calls enrich each event, as before: `GetRun` on every run event and `GetRunTask` on every terminal task event. |
 
 Set it with `-c eventEnrichmentMode=<type>` on `npx cdk deploy`, for example
-`cd infra && npx cdk deploy --all -c eventEnrichmentMode=api`. `deploy.sh`
-does not set it, so it always deploys `event`. Any other value fails synth.
-Use `api` if `event` mode shows missing task names, resources, or timing, for
-example after a HealthOmics event schema change drops fields, and redeploy
-without the flag to return to `event`. The fields each event carries, and the
+`cd infra && npx cdk deploy --all -c eventEnrichmentMode=api -c kinesisIngestMode=<your mode>`
+(build ingest and the SPA first). `deploy.sh` does not set it, so it always
+deploys `event`. Any other value fails synth. Use `api` if `event` mode shows
+missing task names, resources, or timing, for example after a HealthOmics
+event schema change drops fields, and redeploy without the
+`eventEnrichmentMode` flag to return to `event`. Pass your current
+`kinesisIngestMode` on every deploy: an environment running Kinesis must pass
+`-c kinesisIngestMode=active` (or `scripts/deploy.sh --kinesis-mode active`),
+or it switches to `off`. The fields each event carries, and the
 ones that still come from the API, are in [docs/events.md](docs/events.md).
 
 The deferred re-sweep delay is the `RECONCILE_DELAY_MINUTES` environment
@@ -255,6 +264,7 @@ run role has `cloudwatch:PutMetricData` when the run starts. The run role is
 yours, not created by this repo, so grant it once per role:
 
 ```bash
+npm ci --prefix scripts   # once: installs the script's AWS SDK client (scripts/package.json)
 node scripts/ensure-run-metrics-permission.mjs --dry-run --role-name <your-run-role-name>
 node scripts/ensure-run-metrics-permission.mjs --role-name <your-run-role-name>
 ```
@@ -281,10 +291,15 @@ by default). On first run it installs the frontend dependencies and writes
 `frontend/.env.local` with `VITE_LOCAL_MOCK=true`, so the GraphQL client
 serves in-memory sample runs with no backend and no sign-in.
 
-To point the dev server at a deployed backend:
+To point the dev server at a deployed backend, fetch the `HealthOmicsApi`
+outputs read-only (no deploy) into `cdk-outputs.json`, in the same shape
+`cdk deploy --outputs-file` writes:
 
 ```bash
-cd infra && npx cdk deploy --all --outputs-file ../cdk-outputs.json && cd ..
+aws cloudformation describe-stacks --stack-name HealthOmicsApi --region <region> \
+    --query 'Stacks[0].Outputs' --output json \
+  | node -e 'const o={};for(const x of JSON.parse(require("fs").readFileSync(0,"utf8")))o[x.OutputKey]=x.OutputValue;console.log(JSON.stringify({HealthOmicsApi:o},null,2))' \
+  > cdk-outputs.json
 rm -f frontend/.env.local   # drop the mock-mode config
 node scripts/inject-config.mjs --outputs cdk-outputs.json --stack HealthOmicsApi --out frontend/.env.local
 scripts/dev-local.sh --no-install
@@ -326,8 +341,9 @@ aws kinesis put-record --stream-name <IngestKinesisStreamName> \
 ```
 
 `--mode eventbridge` does not work (see
-[Known limitations](#known-limitations)). Run the script from a Node context
-that provides `@aws-sdk/client-lambda`, such as `ingest/`. With the SPA open,
+[Known limitations](#known-limitations)). `--mode lambda` needs
+`@aws-sdk/client-lambda`: run `npm ci --prefix scripts` once to install it
+(see [scripts/README.md](scripts/README.md#helper-script-dependencies)). With the SPA open,
 the run or task should update within about 5 seconds, with no polling.
 
 ## Troubleshooting

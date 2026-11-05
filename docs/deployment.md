@@ -16,14 +16,26 @@ first:
 ```bash
 npm --prefix ingest run build
 npm --prefix frontend run build     # produces frontend/dist
-cd infra && npx cdk deploy --all    # defaults: kinesisIngestMode=off, eventEnrichmentMode=event
+cd infra && npx cdk deploy --all -c kinesisIngestMode=<your mode>   # default mode: off; enrichment default: event
 ```
 
 The default needs no Kinesis flag. Add `-c kinesisIngestMode=active` to opt
 in to the Kinesis buffer, or `-c eventEnrichmentMode=<mode>` to change
-enrichment (see [Configuration](../README.md#configuration)). If
-`frontend/dist` is missing, the `FrontendStack` skips the asset upload with a
-warning; build the SPA and redeploy `HealthOmicsFrontend`.
+enrichment (see [Configuration](../README.md#configuration)). An environment
+running Kinesis must pass `-c kinesisIngestMode=active` (or
+`scripts/deploy.sh --kinesis-mode active`) on every deploy, or it switches to
+`off`.
+
+Build the SPA before every `cdk deploy` that includes `HealthOmicsFrontend`.
+If `frontend/dist` is missing, synth prints a `frontend-dist-missing` warning
+and the `FrontendStack` skips only the SPA asset upload. The generated
+`config.js` deployment, and the cross-stack references to the `HealthOmicsApi`
+outputs it uses, are always present, so the `HealthOmicsApi` exports stay the
+same and the deploy succeeds; build the SPA and redeploy `HealthOmicsFrontend`
+to publish the site. (Before this was fixed, a missing `frontend/dist` made
+synth drop the `HealthOmicsApi` exports that a deployed `HealthOmicsFrontend`
+imports, and CloudFormation rejected the `HealthOmicsApi` update and rolled it
+back.)
 
 ## Runtime config for the SPA
 
