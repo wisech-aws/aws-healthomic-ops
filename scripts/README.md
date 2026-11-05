@@ -2,6 +2,22 @@
 
 Operational and local-verification scripts.
 
+## Helper-script dependencies
+
+`send-event.mjs` (sending modes) and `ensure-run-metrics-permission.mjs` need
+AWS SDK v3 clients that no other package installs. They are exact-pinned in
+`scripts/package.json` with a lockfile. Install them once from the repo root:
+
+```bash
+npm ci --prefix scripts
+```
+
+This creates `scripts/node_modules` (gitignored), which is on those scripts'
+ESM resolution path, so they run from any working directory. These scripts
+are optional: `deploy.sh` does not check for or need `scripts/node_modules`.
+The `--help` and `--dry-run` paths of `send-event.mjs` and the `--help` path of
+`ensure-run-metrics-permission.mjs` work without it.
+
 ## `deploy.sh` — build and deploy in one command
 
 Runs the correct deploy sequence so you never publish a stale or missing
@@ -31,8 +47,19 @@ including `off`:
   consumer Lambda is the live ingest path. The on-demand stream has a fixed
   charge of about $29/month in us-east-1.
 
-Toggle between modes with a single redeploy. The script does not set
-`eventEnrichmentMode`, so it deploys the CDK default (`event`).
+Toggle between modes with a single redeploy; always pass the mode your
+environment runs (a run without `--kinesis-mode` deploys `off`). An environment
+running Kinesis must pass `--kinesis-mode active` (or
+`-c kinesisIngestMode=active` with raw `cdk deploy`) on every deploy, or it
+switches to `off`. The script does not set `eventEnrichmentMode`, so it deploys
+the CDK default (`event`).
+
+After the build step the script checks that `frontend/dist/index.html` exists
+whenever the selected stacks include `HealthOmicsFrontend` (`--all`, the
+default, or `--frontend-only`/`--stack HealthOmicsFrontend`), and stops with an
+error if it does not. This catches `--skip-build` on a checkout that has never
+built the SPA, which would otherwise deploy only `config.js` and skip the SPA
+upload.
 
 The script deploys with `--require-approval never`, so IAM and security-group
 changes are applied without a confirmation prompt. Run `npx cdk diff` from
@@ -173,9 +200,10 @@ scripts/send-event.mjs --mode lambda --fixture run \
 > the main README).
 
 Sending modes lazily import the AWS SDK v3 clients (`@aws-sdk/client-eventbridge`,
-`@aws-sdk/client-lambda`). Run the script with a Node.js resolution context that
-provides those (e.g. from the `ingest/` package or a workspace that installs
-them). The fixtures it sends live under `../fixtures/events/`.
+`@aws-sdk/client-lambda`). They are declared in `scripts/package.json`; install
+them once from the repo root with `npm ci --prefix scripts` (see
+[Helper-script dependencies](#helper-script-dependencies)). The fixtures it
+sends live under `../fixtures/events/`.
 
 ## `ensure-run-metrics-permission.mjs` — grant run-role metric emission (Req 4.3)
 
@@ -207,8 +235,8 @@ the mutating `PutRolePolicy` call — it only reports what would happen.
 # See usage without touching AWS or needing credentials:
 scripts/ensure-run-metrics-permission.mjs --help
 
-# Check the default TEST-environment role without changing anything:
-scripts/ensure-run-metrics-permission.mjs --dry-run
+# Check a role without changing anything (--role-name is required):
+scripts/ensure-run-metrics-permission.mjs --dry-run --role-name <your-run-role-name>
 
 # Ensure the policy on a specific role in a specific region:
 scripts/ensure-run-metrics-permission.mjs \
@@ -236,11 +264,10 @@ metric ingestion/storage. **Not retroactive:** runs started *before* the
 policy is applied have no metrics, ever — there is no way to backfill them
 after the fact.
 
-`@aws-sdk/client-iam` is imported lazily (only when not just printing help)
-and is not currently a declared dependency of any `package.json` in this
-repo; make sure it is resolvable from this script's location before running
-it in a non-`--help` mode (e.g. `npm install @aws-sdk/client-iam` in a
-directory on the Node resolution path, or `npx --package=@aws-sdk/client-iam`).
+`@aws-sdk/client-iam` is imported lazily (only when not just printing help).
+It is declared in `scripts/package.json`; install it once from the repo root
+with `npm ci --prefix scripts` before running the script in a non-`--help`
+mode (see [Helper-script dependencies](#helper-script-dependencies)).
 
 ## `inject-config.mjs` — frontend build-time config injection (Req 11.7)
 

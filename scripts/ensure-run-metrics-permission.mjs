@@ -62,23 +62,20 @@
  *   # See usage without touching AWS or needing credentials:
  *   scripts/ensure-run-metrics-permission.mjs --help
  *
- *   # Check the default TEST-environment role without changing anything:
- *   scripts/ensure-run-metrics-permission.mjs --dry-run
+ *   # Check a role without changing anything (--role-name is required; there
+ *   # is no default role):
+ *   scripts/ensure-run-metrics-permission.mjs --dry-run --role-name <your-run-role-name>
  *
  *   # Ensure the policy on a specific role in a specific region:
  *   scripts/ensure-run-metrics-permission.mjs \
  *       --role-name MyOmicsRunRole --region us-west-2
  *
- * SDK resolution note: `@aws-sdk/client-iam` is not currently a dependency of
- * any package.json in this repo (checked ingest/, infra/, frontend/). This
- * mirrors `send-event.mjs`, whose `@aws-sdk/client-eventbridge` /
- * `@aws-sdk/client-lambda` imports are likewise not declared anywhere in this
- * repo (see scripts/README.md: "Run the script with a Node.js resolution
- * context that provides those"). No dependency was added to any package.json
- * for this script; before running it in a real (non-`--help`) mode, make sure
- * `@aws-sdk/client-iam` is resolvable from this file's location, e.g.:
- *   npm install @aws-sdk/client-iam   (in a directory on the Node resolution
- *   path for this script, or run via `npx --package=@aws-sdk/client-iam`).
+ * SDK dependency: `@aws-sdk/client-iam` is declared (exact-pinned) in
+ * scripts/package.json, alongside the clients `send-event.mjs` uses. Install
+ * them once from the repo root before any non-`--help` run:
+ *   npm ci --prefix scripts
+ * They land in scripts/node_modules, which is on this file's ESM resolution
+ * path. deploy.sh does not need them.
  */
 
 import { fileURLToPath } from 'node:url';

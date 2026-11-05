@@ -1,0 +1,12 @@
+{
+  "name": "@healthomics-dashboard/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Optional AWS SDK clients for the operator helper scripts (send-event.mjs, ensure-run-metrics-permission.mjs). Install with `npm ci --prefix scripts`; deploy.sh does not need them.",
+  "dependencies": {
+    "@aws-sdk/client-eventbridge": "3.1119.0",
+    "@aws-sdk/client-iam": "3.1119.0",
+    "@aws-sdk/client-lambda": "3.1119.0"
+  }
+}

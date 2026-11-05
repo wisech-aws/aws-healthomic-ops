@@ -52,8 +52,16 @@
 #           ~$29/mo stream charge).
 #   active  EventBridge targets the Kinesis stream and the Kinesis consumer
 #           Lambda is the live ingest path (~$29/mo stream charge).
-#   Toggle between modes with a single redeploy; the event enrichment mode
-#   is not set here and uses the CDK default (event).
+#   Toggle between modes with a single redeploy; always pass the mode your
+#   environment runs (a run without --kinesis-mode deploys off). An environment
+#   running Kinesis must pass --kinesis-mode active (or
+#   `-c kinesisIngestMode=active` with raw cdk) on every deploy, or it switches
+#   to off. The event enrichment mode is not set here and uses the CDK default
+#   (event).
+#
+# When the selected stacks include HealthOmicsFrontend, the script stops before
+# `cdk deploy` if frontend/dist/index.html is missing (e.g. --skip-build on a
+# checkout that never built the SPA).
 #
 # Deploys run with `--require-approval never`, so IAM and security-group
 # changes are applied without an interactive prompt.
@@ -96,7 +104,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     -h|--help)
-      sed -n '2,65p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,73p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "Unknown argument: $1 (use --help)"; exit 2 ;;
@@ -195,6 +203,20 @@ else
   echo "==> Skipping build (--skip-build)."
 fi
 
+# Fail fast if HealthOmicsFrontend is being deployed without a built SPA.
+# Without frontend/dist, CDK still deploys config.js but skips the SPA asset
+# upload (synth warning frontend-dist-missing), so the site is not published.
+case "${STACK}" in
+  --all|HealthOmicsFrontend)
+    if [ ! -f "${FRONTEND_DIR}/dist/index.html" ]; then
+      echo "error: ${FRONTEND_DIR}/dist/index.html is missing." >&2
+      echo "       run 'npm --prefix frontend run build' (or drop --skip-build) and re-run." >&2
+      echo "       Deploying HealthOmicsFrontend without it skips the SPA asset upload." >&2
+      exit 1
+    fi
+    ;;
+esac
+
 # Always pass the Kinesis mode through to CDK (including 'off'), so the mode
 # this script reports is the mode that is deployed.
 CDK_CONTEXT_ARGS="-c kinesisIngestMode=${KINESIS_MODE}"
@@ -219,6 +241,7 @@ if [ "${STACK}" = "--all" ]; then
   echo "     'DistributionDomainName' CloudFront domain in the deploy outputs above"
   echo "     (https://<DistributionDomainName>). Sign in with the user from step 1."
   echo "  3. (Optional, per run role) grant run-metrics emission so runs report"
-  echo "     CPU/memory utilization:"
+  echo "     CPU/memory utilization (install the helper-script SDK clients once):"
+  echo "       npm ci --prefix scripts"
   echo "       node scripts/ensure-run-metrics-permission.mjs --role-name <your-run-role-name>"
 fi
