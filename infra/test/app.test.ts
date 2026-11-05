@@ -511,16 +511,18 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     expect(fn(t, 'IngestFunction').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('event');
   });
 
-  it('honors -c eventEnrichmentMode=shadow on both functions', () => {
-    const t = ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'shadow' });
-    expect(fn(t, 'KinesisIngestConsumer').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
-    expect(fn(t, 'IngestFunction').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('shadow');
+  it('honors -c eventEnrichmentMode=api (rollback) on both functions', () => {
+    const t = ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'api' });
+    expect(fn(t, 'KinesisIngestConsumer').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('api');
+    expect(fn(t, 'IngestFunction').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('api');
     // Memory does not depend on the enrichment mode.
     expect(fn(t, 'KinesisIngestConsumer').Properties.MemorySize).toBe(192);
   });
-  it('honors -c eventEnrichmentMode=api (rollback)', () => {
-    const t = ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'api' });
-    expect(fn(t, 'KinesisIngestConsumer').Properties.Environment?.Variables?.EVENT_ENRICHMENT_MODE).toBe('api');
+  it('rejects the removed shadow eventEnrichmentMode at synth', () => {
+    expect(() => ingestTemplate({ kinesisIngestMode: 'active', eventEnrichmentMode: 'shadow' })).toThrow(
+      /Invalid context eventEnrichmentMode="shadow"; expected one of event, api/,
+    );
+    expect(() => ingestTemplate({ eventEnrichmentMode: 'shadow' })).toThrow(/Invalid context eventEnrichmentMode/);
   });
 
   it('rejects an invalid eventEnrichmentMode at synth', () => {

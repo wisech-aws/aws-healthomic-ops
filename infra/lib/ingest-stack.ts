@@ -59,27 +59,23 @@ export const DEFAULT_KINESIS_INGEST_MODE: KinesisIngestMode = 'off';
  * How the ingest handler enriches events with HealthOmics read APIs, passed to
  * both ingest functions as `EVENT_ENRICHMENT_MODE` (see ingest/src/handler.ts
  * `EnrichmentMode`). Selected with CDK context `-c eventEnrichmentMode=...`:
- *   - 'event'  : use the fields the task/run events carry; GetRunTask only for
- *                FAILED/CANCELLED tasks (or a terminal event missing fields),
- *                GetRun only at PENDING/terminal (or when the run lacks GetRun
- *                data). ~3 HealthOmics calls per run. DEFAULT (validated in
- *                shadow mode on run 1114470: 207 tasks, 0 mismatches).
- *   - 'shadow' : as 'event', plus GetRunTask on every terminal task event to
- *                compare with the event values (EMF metric
- *                HealthOmicsIngest/EnrichmentShadowMismatch) and write the API
- *                values. Use to re-validate event data after an ingest change.
- *   - 'api'    : the legacy behavior (rollback): GetRun on every run event,
- *                GetRunTask on every terminal task event.
+ *   - 'event' : DEFAULT. Use the fields the task/run events carry; GetRunTask
+ *               only for FAILED/CANCELLED tasks (or a terminal event missing
+ *               fields), GetRun only at PENDING/terminal (or when the run lacks
+ *               GetRun data), GetWorkflow on a graph cache miss. ~3 HealthOmics
+ *               calls per run.
+ *   - 'api'   : the legacy behavior (fallback/rollback): GetRun on every run
+ *               event, GetRunTask on every terminal task event.
  *
  * Both flags have defaults (kinesisIngestMode=off, eventEnrichmentMode=event),
  * so a plain `cdk deploy` uses them. Override either, e.g.
  *   cdk deploy -c eventEnrichmentMode=api      # rollback
  *   cdk deploy -c kinesisIngestMode=active     # opt in to the Kinesis buffer
- * An invalid value fails synth.
+ * Any other value fails synth.
  */
-export type EventEnrichmentMode = 'event' | 'shadow' | 'api';
+export type EventEnrichmentMode = 'event' | 'api';
 
-export const EVENT_ENRICHMENT_MODES: readonly EventEnrichmentMode[] = ['event', 'shadow', 'api'];
+export const EVENT_ENRICHMENT_MODES: readonly EventEnrichmentMode[] = ['event', 'api'];
 
 /** Default `eventEnrichmentMode` when the context value is absent. */
 export const DEFAULT_EVENT_ENRICHMENT_MODE: EventEnrichmentMode = 'event';
@@ -231,9 +227,9 @@ export class IngestStack extends Stack {
       // — they are a cheap DynamoDB write + AppSync publish — so they must NOT
       // be starved by the enrichment rate limit. Which events enrich depends on
       // EVENT_ENRICHMENT_MODE: in 'event' mode only FAILED/CANCELLED task events
-      // and PENDING/terminal run events call HealthOmics; in 'shadow' every
-      // terminal task event also calls GetRunTask; in 'api' (legacy) every
-      // terminal task event and every run event does.
+      // and PENDING/terminal run events call HealthOmics (plus fallbacks when
+      // fields are missing); in 'api' (legacy) every terminal task event and
+      // every run event does.
       //
       // The enrichment budget is enforced as reservedConcurrency × OMICS_TPS ≈
       // the HealthOmics ~10 TPS run-read bucket (400 × 0.025 = 10), while the
@@ -260,7 +256,7 @@ export class IngestStack extends Stack {
         // unchanged. (Raise to 0.05 if/when the run-read quota is increased to
         // 20 TPS.)
         OMICS_TPS: '0.025',
-        // HealthOmics enrichment policy (event | shadow | api).
+        // HealthOmics enrichment policy (event | api).
         EVENT_ENRICHMENT_MODE: eventEnrichmentMode,
       },
       bundling: {
@@ -617,7 +613,7 @@ export class IngestStack extends Stack {
         // Per-instance HealthOmics read pace governor (enrichment TPS); keeps
         // enrichment calls within the ~10 TPS bucket regardless of shards.
         OMICS_TPS: '2',
-        // HealthOmics enrichment policy (event | shadow | api).
+        // HealthOmics enrichment policy (event | api).
         EVENT_ENRICHMENT_MODE: eventEnrichmentMode,
       },
       bundling: {

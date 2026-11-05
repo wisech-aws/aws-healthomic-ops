@@ -931,81 +931,6 @@ describe('event-driven task enrichment', () => {
     expect(publishedTasks).toHaveLength(4);
   });
 
-  it('shadow mode calls GetRunTask on terminal, emits an EMF mismatch line per field, and writes the API value', async () => {
-    const { repo, tasks } = makeRepository();
-    const enrichTask = vi.fn(async (runId: string, taskId: string) => ({
-      runId,
-      taskId,
-      status: TaskStatus.COMPLETED,
-      name: TASK_NAME,
-      cpus: 4, // differs from the event's "2"
-      memory: 12,
-      instanceType: 'omics.r.large',
-      createdAt: TASK_CREATED,
-      startedAt: TASK_STARTED,
-      stoppedAt: TASK_STOPPED,
-    }));
-    const deps: HandlerDependencies = {
-      repository: repo,
-      enricher: makeEnricher({ enrichTask }),
-      publisher: makePublisher().publisher,
-      enrichmentMode: 'shadow',
-    };
-    const handler = createHandler(deps);
-    for (const event of taskLifecycle(LIFECYCLE_TASK)) {
-      await handler(event);
-    }
-
-    expect(enrichTask).toHaveBeenCalledOnce(); // terminal only
-    const mismatches = jsonLogs(logSpy, 'enrichment_shadow_mismatch');
-    expect(mismatches).toHaveLength(1);
-    expect(mismatches[0]).toMatchObject({
-      field: 'cpus',
-      eventValue: 2,
-      apiValue: 4,
-      EnrichmentShadowMismatch: 1,
-      runId: '8508632',
-      taskId: LIFECYCLE_TASK,
-    });
-    expect(mismatches[0]._aws).toMatchObject({
-      CloudWatchMetrics: [
-        {
-          Namespace: 'HealthOmicsIngest',
-          Dimensions: [['field']],
-          Metrics: [{ Name: 'EnrichmentShadowMismatch', Unit: 'Count' }],
-        },
-      ],
-    });
-    expect(tasks[3].cpus).toBe(4); // API value written
-    // Non-terminal shadow events use event values (no call).
-    expect(tasks[0].cpus).toBe(2);
-  });
-
-  it('shadow mode emits no mismatch line when the API agrees with the event', async () => {
-    const { repo } = makeRepository();
-    const completed = taskLifecycle(LIFECYCLE_TASK)[3];
-    const deps: HandlerDependencies = {
-      repository: repo,
-      enricher: makeEnricher({
-        enrichTask: async (runId, taskId) => ({
-          runId,
-          taskId,
-          name: TASK_NAME,
-          cpus: 2,
-          memory: 12,
-          instanceType: 'omics.r.large',
-          createdAt: TASK_CREATED,
-          startedAt: TASK_STARTED,
-          stoppedAt: TASK_STOPPED,
-        }),
-      }),
-      publisher: makePublisher().publisher,
-      enrichmentMode: 'shadow',
-    };
-    await createHandler(deps)(completed);
-    expect(jsonLogs(logSpy, 'enrichment_shadow_mismatch')).toHaveLength(0);
-  });
-
   it('logs exactly one concise ingest_event line per event with the API calls made, never the payload', async () => {
     const { repo } = makeRepository();
     const deps: HandlerDependencies = {
@@ -1279,13 +1204,21 @@ describe('out-of-order delivery with the real repository guard', () => {
 });
 
 describe('parseEnrichmentMode', () => {
-  it('defaults to event and accepts the three modes', () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  it('defaults to event and accepts only event and api', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(parseEnrichmentMode(undefined)).toBe('event');
     expect(parseEnrichmentMode('')).toBe('event');
-    expect(parseEnrichmentMode('shadow')).toBe('shadow');
     expect(parseEnrichmentMode('API')).toBe('api');
     expect(parseEnrichmentMode('event')).toBe('event');
+    expect(warn).not.toHaveBeenCalled();
     expect(parseEnrichmentMode('bogus')).toBe('event');
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it('treats the removed shadow mode as unrecognized: warns once and uses event', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(parseEnrichmentMode('shadow')).toBe('event');
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0][0])).toContain('unrecognized EVENT_ENRICHMENT_MODE "shadow"');
   });
 });

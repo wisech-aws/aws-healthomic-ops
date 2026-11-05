@@ -14,7 +14,7 @@
  *                             reuse cache, record failure preserving prior state
  *   4. Persist              — `upsertRun` / `upsertTask` (monotonic guard)
  *   5. Publish              — `publishRunUpdate` / `publishTaskUpdate`; in
- *                             event/shadow mode the merged stored item is
+ *                             event mode the merged stored item is
  *                             published and a stale write publishes nothing
  *
  * Failure isolation (design.md; Req 4.1, 4.2, 6.2, 7.1): enrichment, graph
@@ -107,7 +107,7 @@ export interface IngestRepository {
   ): Promise<GraphCacheEntry | null>;
   /**
    * Whether the run item already holds GetRun-only data (`rawGetRun`). Used in
-   * event/shadow mode to decide whether a STARTING/RUNNING/STOPPING run event
+   * event mode to decide whether a STARTING/RUNNING/STOPPING run event
    * needs a fallback GetRun. Optional: when absent, those events call GetRun.
    */
   getRunEnrichmentMarker?(runId: string): Promise<RunEnrichmentMarker | null>;
@@ -190,18 +190,17 @@ export interface IngestPublisher {
  *   - `event`  (default) — use the fields the events carry; call GetRunTask
  *     only for FAILED/CANCELLED tasks or a terminal event missing fields, and
  *     GetRun only at PENDING, at terminal, or when the run lacks GetRun data.
- *   - `shadow` — as `event`, but ALSO call GetRunTask on every terminal task
- *     event, log/EMF any field mismatch, and write the API values.
  *   - `api`    — the legacy behavior (rollback): GetRun on every run event,
  *     GetRunTask on every terminal task event.
  */
-export type EnrichmentMode = 'event' | 'shadow' | 'api';
+export type EnrichmentMode = 'event' | 'api';
 
-export const ENRICHMENT_MODES: readonly EnrichmentMode[] = ['event', 'shadow', 'api'];
+export const ENRICHMENT_MODES: readonly EnrichmentMode[] = ['event', 'api'];
 
 /**
- * Parse `EVENT_ENRICHMENT_MODE`. Absent/empty means `event`; an unrecognized
- * value logs one warning and falls back to `event`.
+ * Parse `EVENT_ENRICHMENT_MODE`. Absent/empty means `event`; any other
+ * unrecognized value logs one warning and falls back to `event`. CDK synth
+ * rejects such values before deploy.
  */
 export function parseEnrichmentMode(value: string | undefined): EnrichmentMode {
   if (value === undefined || value.trim() === '') {
@@ -706,7 +705,7 @@ function legacyTaskRecord(
 }
 
 /**
- * Whether a run event (event/shadow mode) should call GetRun. GetRun is the
+ * Whether a run event (event mode) should call GetRun. GetRun is the
  * only source of parameters, configuration, tags, engine version, role,
  * storage, networking mode, ms-precision timestamps and status messages, so it
  * is called:
@@ -737,7 +736,7 @@ async function runNeedsGetRun(
  *
  * `api` mode reproduces the legacy behavior exactly: GetRun on every event and
  * the event-built record is published even when the write was stale.
- * `event`/`shadow` mode calls GetRun only when {@link runNeedsGetRun} says so,
+ * `event` mode calls GetRun only when {@link runNeedsGetRun} says so,
  * derives createdAt (PENDING) / startedAt (RUNNING) from the event time when
  * unset, and publishes the MERGED stored item (so a fleet row never loses
  * fields a sparse event does not carry). A stale (preserved) write publishes
@@ -837,87 +836,15 @@ async function processRunEvent(
 }
 
 /**
- * The task fields compared (and, in shadow mode, written from the API) on
- * terminal task events.
- */
-const SHADOW_FIELDS = [
-  'name',
-  'cpus',
-  'memory',
-  'instanceType',
-  'createdAt',
-  'startedAt',
-  'stoppedAt',
-] as const satisfies readonly (keyof TaskRecord)[];
-
-const SHADOW_TIMESTAMP_FIELDS: ReadonlySet<string> = new Set([
-  'createdAt',
-  'startedAt',
-  'stoppedAt',
-]);
-
-/**
- * Shadow mode: compare the event-derived task fields with GetRunTask and emit
- * one EMF line (metric `EnrichmentShadowMismatch`, dimension `field`) per
- * mismatching field. A field absent on either side is skipped; timestamps
- * compare by instant. Returns the number of mismatches.
- */
-function reportShadowMismatches(
-  runId: string,
-  taskId: string,
-  fromEvent: Partial<TaskRecord>,
-  fromApi: Partial<TaskRecord>,
-): number {
-  let mismatches = 0;
-  for (const field of SHADOW_FIELDS) {
-    const eventValue = fromEvent[field];
-    const apiValue = fromApi[field];
-    if (eventValue === undefined || apiValue === undefined) {
-      continue;
-    }
-    const equal = SHADOW_TIMESTAMP_FIELDS.has(field)
-      ? Date.parse(String(eventValue)) === Date.parse(String(apiValue))
-      : eventValue === apiValue;
-    if (equal) {
-      continue;
-    }
-    mismatches += 1;
-    console.log(
-      JSON.stringify({
-        _aws: {
-          Timestamp: Date.now(),
-          CloudWatchMetrics: [
-            {
-              Namespace: 'HealthOmicsIngest',
-              Dimensions: [['field']],
-              Metrics: [{ Name: 'EnrichmentShadowMismatch', Unit: 'Count' }],
-            },
-          ],
-        },
-        msg: 'enrichment_shadow_mismatch',
-        field,
-        EnrichmentShadowMismatch: 1,
-        runId,
-        taskId,
-        eventValue,
-        apiValue,
-      }),
-    );
-  }
-  return mismatches;
-}
-
-/**
- * Whether a task event (event/shadow mode) needs GetRunTask. Task events carry
+ * Whether a task event (event mode) needs GetRunTask. Task events carry
  * name, cpus, memory, creationTime at every status, plus instanceType/startTime
  * from RUNNING and stopTime at COMPLETED, so GetRunTask is called ONLY when:
  *   - the status is FAILED or CANCELLED (statusMessage/failureReason are not in
  *     events; the failed/cancelled event shape is also unverified),
  *   - a terminal event lacks name/startedAt/stoppedAt (older schema or drift),
- *   - shadow mode on any terminal event (to validate the event values),
  *   - or the status is absent/unrecognized (defensive, as before).
  */
-function taskNeedsApi(mode: EnrichmentMode, task: Partial<TaskRecord>): boolean {
+function taskNeedsApi(task: Partial<TaskRecord>): boolean {
   const status = task.status;
   if (status === undefined) {
     return true;
@@ -927,9 +854,6 @@ function taskNeedsApi(mode: EnrichmentMode, task: Partial<TaskRecord>): boolean 
   }
   if (!isTerminalTaskStatus(status)) {
     return false;
-  }
-  if (mode === 'shadow') {
-    return true;
   }
   return (
     task.name === undefined ||
@@ -941,7 +865,7 @@ function taskNeedsApi(mode: EnrichmentMode, task: Partial<TaskRecord>): boolean 
 /**
  * Process a task status-change event (design steps 1–5 for a task).
  *
- * In `event`/`shadow` mode every task event writes the fields it carries and
+ * In `event` mode every task event writes the fields it carries and
  * publishes the MERGED stored task, so the dashboard updates at every status
  * with cumulative name/cpus/memory/instanceType/timing; a stale write
  * (preserved by the monotonic guard, e.g. RUNNING after COMPLETED) publishes
@@ -974,22 +898,10 @@ async function processTaskEvent(
   // (see taskNeedsApi / taskEventNeedsEnrichment for the per-mode policy).
   let record: Partial<TaskRecord> = mapped;
   const terminal = isTerminalTaskStatus(mapped.status);
-  const needsApi = legacy ? taskEventNeedsEnrichment(mapped) : taskNeedsApi(ctx.mode, mapped);
+  const needsApi = legacy ? taskEventNeedsEnrichment(mapped) : taskNeedsApi(mapped);
   if (needsApi) {
     const enriched = await deps.enricher.enrichTask(runId, taskId);
     record = mergeRecords<TaskRecord>(mapped, enriched);
-
-    if (ctx.mode === 'shadow' && terminal) {
-      // Validate the event values against GetRunTask, then write the API
-      // values for the compared fields so nothing user-visible at terminal
-      // depends on not-yet-validated event data.
-      reportShadowMismatches(runId, taskId, mapped, enriched);
-      for (const field of SHADOW_FIELDS) {
-        if (enriched[field] !== undefined) {
-          (record as Record<string, unknown>)[field] = enriched[field];
-        }
-      }
-    }
 
     // Authoritative-terminal override: normally the EVENT's status wins over the
     // enrichment read (the event is the freshest signal — see mergeRecords).
@@ -1087,7 +999,7 @@ function isTerminalTaskStatus(status: TaskRecord['status'] | undefined): boolean
  * It predates the enriched task events: it assumed the event carried only
  * `status` + identifiers, so it called GetRunTask on EVERY terminal event (one
  * call per task) and approximated a RUNNING task's `startedAt` from the event
- * time. In `event`/`shadow` mode {@link taskNeedsApi} is used instead.
+ * time. In `event` mode {@link taskNeedsApi} is used instead.
  *
  * As a safety net, an event that somehow lacks a recognized status is enriched
  * too, so a status-less task is never persisted bare.

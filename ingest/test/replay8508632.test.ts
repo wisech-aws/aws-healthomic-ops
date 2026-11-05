@@ -12,7 +12,6 @@
  * Expected HealthOmics calls:
  *   mode    GetRunTask  GetRun  GetWorkflow   subset   full run (207 tasks)
  *   event        0         2         1           3        3
- *   shadow      12         2         1          15      210
  *   api         12         5         1          18      213 (217 before the
  *                                                         graph-failure cache)
  */
@@ -228,11 +227,4 @@ describe('replay run 8508632 through the ingest handler', () => {
     expect(calls).toEqual({ GetRun: 5, GetRunTask: 12, GetWorkflow: 1, other: 0 });
   });
 
-  it('shadow mode: GetRunTask on each terminal task, no mismatches against the API', async () => {
-    const { calls, logLines, db } = await replay('shadow');
-    expect(calls).toEqual({ GetRun: 2, GetRunTask: 12, GetWorkflow: 1, other: 0 });
-    expect(logLines.filter((l) => l.msg === 'enrichment_shadow_mismatch')).toHaveLength(0);
-    const taskItems = [...db.store.values()].filter((i) => i.entityType === 'TASK');
-    expect(taskItems.every((i) => i.status === 'COMPLETED' && i.instanceType !== undefined)).toBe(true);
-  });
 });
