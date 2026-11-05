@@ -1,5 +1,7 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { App, Tags } from 'aws-cdk-lib';
-import { Match, Template } from 'aws-cdk-lib/assertions';
+import { Annotations, Match, Template } from 'aws-cdk-lib/assertions';
 import { DataStack } from '../lib/data-stack';
 import { ApiStack } from '../lib/api-stack';
 import { IngestStack } from '../lib/ingest-stack';
@@ -592,6 +594,11 @@ describe('Lambda runtimes (project functions run on Node.js 24)', () => {
     }
   });
 
+  it('HealthOmicsFrontend always has the BucketDeployment helper (the config.js deployment is unconditional)', () => {
+    const fns = synthAll({}).HealthOmicsFrontend.findResources('AWS::Lambda::Function');
+    expect(Object.keys(fns).some((id) => id.startsWith('CustomCDKBucketDeployment'))).toBe(true);
+  });
+
   it('the default (Kinesis off) direct ingest + reconciler Lambdas also use nodejs24.x', () => {
     const fns = projectFunctions(synthAll({}).HealthOmicsIngest);
     expect(Object.keys(fns).some((id) => id.startsWith('KinesisIngestConsumer'))).toBe(false);
@@ -599,5 +606,61 @@ describe('Lambda runtimes (project functions run on Node.js 24)', () => {
     for (const runtime of Object.values(fns)) {
       expect(runtime).toBe('nodejs24.x');
     }
+  });
+});
+
+describe('FrontendStack without a built frontend/dist', () => {
+  const DIST_INDEX = path.join(__dirname, '..', '..', 'frontend', 'dist', 'index.html');
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function synthWithoutDist(): { api: Template; frontend: Template; frontendStack: FrontendStack } {
+    // Force "dist missing" regardless of the local checkout state. Spy on the
+    // real CommonJS module (not the esModuleInterop wrapper) so the stack's
+    // own `fs.existsSync` call sees the mock.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const realFs: typeof fs = require('fs');
+    const realExists = realFs.existsSync.bind(realFs);
+    jest
+      .spyOn(realFs, 'existsSync')
+      .mockImplementation((p: fs.PathLike) => (path.resolve(String(p)) === DIST_INDEX ? false : realExists(p)));
+
+    const app = new App();
+    const dataStack = new DataStack(app, 'HealthOmicsData');
+    const apiStack = new ApiStack(app, 'HealthOmicsApi', { dataStack });
+    apiStack.addStackDependency(dataStack);
+    const frontendStack = new FrontendStack(app, 'HealthOmicsFrontend', { apiStack });
+    frontendStack.addStackDependency(apiStack);
+    return { api: Template.fromStack(apiStack), frontend: Template.fromStack(frontendStack), frontendStack };
+  }
+
+  /** Export names of the outputs whose logical IDs match `pattern`. */
+  function exportsMatching(t: Template, pattern: RegExp): string[] {
+    return Object.entries(t.findOutputs('*'))
+      .filter(([id]) => pattern.test(id))
+      .map(([, o]) => (o as { Export?: { Name?: string } }).Export?.Name ?? '');
+  }
+
+  it('HealthOmicsApi still synthesizes the UserPool / UserPoolSpaClient / GraphQLUrl exports', () => {
+    const { api } = synthWithoutDist();
+    expect(exportsMatching(api, /^ExportsOutputRefUserPool[0-9A-F]+$/)).toHaveLength(1);
+    expect(exportsMatching(api, /^ExportsOutputRefUserPoolSpaClient/)).toHaveLength(1);
+    expect(exportsMatching(api, /^ExportsOutputFnGetAtt.*GraphQLUrl/)).toHaveLength(1);
+  });
+
+  it('deploys only the generated config.js (no SiteAssets upload) and warns at synth', () => {
+    const { frontend, frontendStack } = synthWithoutDist();
+    const deployments = frontend.findResources('Custom::CDKBucketDeployment');
+    const ids = Object.keys(deployments);
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).toMatch(/^SiteConfig/);
+    // config.js is built from ApiStack outputs, so the stack imports them.
+    expect(JSON.stringify(frontend.toJSON())).toContain('Fn::ImportValue');
+    Annotations.fromStack(frontendStack).hasWarning(
+      '/HealthOmicsFrontend',
+      Match.stringLikeRegexp('skipping the SPA asset upload'),
+    );
   });
 });

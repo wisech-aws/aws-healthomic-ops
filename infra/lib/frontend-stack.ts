@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
-import { CfnOutput, Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
+import { Annotations, CfnOutput, Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
 import {
   Distribution,
   ViewerProtocolPolicy,
@@ -37,8 +37,9 @@ export interface FrontendStackProps extends StackProps {
  * at the app level in `bin/infra.ts` and inherited by every taggable resource
  * here (Req 11.8).
  *
- * Site assets are built and deployed separately; this stack only provisions the
- * bucket and distribution.
+ * The stack also publishes the site: it always deploys a generated `config.js`
+ * (runtime config from the ApiStack outputs) and, when `frontend/dist` has been
+ * built, uploads the SPA assets. See `deploySiteAssets`.
  */
 export class FrontendStack extends Stack {
   /** The private S3 bucket holding the built SPA assets. */
@@ -127,27 +128,17 @@ export class FrontendStack extends Stack {
    *      SPA reads this at runtime (see frontend/src/api/config.ts), so the same
    *      pre-built bundle works against any backend without a rebuild.
    *
-   * Both target the same bucket + distribution and invalidate `/*` on deploy.
-   * `prune` is disabled on the config deployment so it does not delete the
-   * asset deployment's files (and vice-versa: the asset deployment keeps its
-   * own prune but must not remove config.js — see note below).
+   * Both target the same bucket + distribution. Both use `prune: false`, and
+   * the asset deployment excludes `config.js`, so neither deletes the other's
+   * files.
+   *
+   * The config deployment is unconditional, so the cross-stack references to
+   * the ApiStack (and therefore the HealthOmicsApi exports this stack imports)
+   * exist whether or not the SPA has been built. Only the SPA asset upload is
+   * skipped when `frontend/dist` is missing, with a synth warning; this keeps
+   * `cdk synth` working before the frontend is built (e.g. infra tests, CI).
    */
   private deploySiteAssets(apiStack: ApiStack): void {
-    // Only wire the asset deployment when the build output exists, so `cdk
-    // synth`/`deploy` still works before the frontend has been built (e.g. in
-    // CI that builds infra first). When dist is missing we skip asset upload
-    // and log guidance rather than failing synth.
-    const hasBuild = fs.existsSync(path.join(FRONTEND_DIST, 'index.html'));
-    if (!hasBuild) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[FrontendStack] ${FRONTEND_DIST} not found — skipping SPA asset ` +
-          `deployment. Run \`npm --prefix frontend run build\` before ` +
-          `\`cdk deploy\` to publish the site.`,
-      );
-      return;
-    }
-
     // 1) Runtime config generated from the ApiStack outputs. These are CDK
     //    tokens at synth time; `Fn`-interpolation in the JS string resolves to
     //    the real values in the deployed config.js.
@@ -162,20 +153,30 @@ export class FrontendStack extends Stack {
       '',
     ].join('\n');
 
-    // 2) Deploy the built SPA. This one prunes (removes stale files) but must
-    //    keep config.js, which the config deployment below owns.
-    new BucketDeployment(this, 'SiteAssets', {
-      sources: [Source.asset(FRONTEND_DIST)],
-      destinationBucket: this.siteBucket,
-      distribution: this.distribution,
-      distributionPaths: ['/*'],
-      // Do not delete config.js (owned by the ConfigDeployment) when pruning.
-      exclude: ['config.js'],
-      prune: false,
-    });
+    // 2) Deploy the built SPA, only when the build output exists. It does not
+    //    prune, and never uploads config.js (owned by SiteConfig below).
+    const hasBuild = fs.existsSync(path.join(FRONTEND_DIST, 'index.html'));
+    if (hasBuild) {
+      new BucketDeployment(this, 'SiteAssets', {
+        sources: [Source.asset(FRONTEND_DIST)],
+        destinationBucket: this.siteBucket,
+        distribution: this.distribution,
+        distributionPaths: ['/*'],
+        // Do not overwrite config.js (owned by SiteConfig).
+        exclude: ['config.js'],
+        prune: false,
+      });
+    } else {
+      Annotations.of(this).addWarningV2(
+        'frontend-dist-missing',
+        `${FRONTEND_DIST} not found: skipping the SPA asset upload (config.js ` +
+          `is still deployed). Run \`npm --prefix frontend run build\` before ` +
+          `\`cdk deploy\` to publish the site.`,
+      );
+    }
 
-    // 3) Deploy the generated runtime config, overwriting the placeholder
-    //    config.js baked into the build.
+    // 3) Deploy the generated runtime config (always), overwriting the
+    //    placeholder config.js baked into the build.
     new BucketDeployment(this, 'SiteConfig', {
       sources: [Source.data('config.js', configJs)],
       destinationBucket: this.siteBucket,
