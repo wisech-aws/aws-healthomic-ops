@@ -531,3 +531,73 @@ describe('IngestStack EVENT_ENRICHMENT_MODE + consumer memory (live context kine
     );
   });
 });
+
+describe('Lambda runtimes (project functions run on Node.js 24)', () => {
+  /**
+   * CDK-managed helper functions (S3 autoDeleteObjects provider, BucketDeployment,
+   * log retention) use CDK's own runtimes, so they are excluded by logical ID.
+   */
+  const CDK_HELPER_PREFIXES = ['Custom', 'LogRetention'];
+
+  /** Logical-ID prefixes of every project Lambda, per stack. */
+  const EXPECTED_PROJECT_FUNCTIONS: Record<string, string[]> = {
+    HealthOmicsData: [],
+    HealthOmicsApi: ['CostFunction', 'LogsFunction', 'MetricsFunction', 'ReportsFunction'],
+    HealthOmicsIngest: ['IngestFunction', 'KinesisIngestConsumer', 'ReconcilerFunction'],
+    HealthOmicsFrontend: [],
+  };
+
+  function synthAll(context: Record<string, string>): Record<string, Template> {
+    const app = new App({ context });
+    const dataStack = new DataStack(app, 'HealthOmicsData');
+    const apiStack = new ApiStack(app, 'HealthOmicsApi', { dataStack });
+    apiStack.addStackDependency(dataStack);
+    const ingestStack = new IngestStack(app, 'HealthOmicsIngest', { dataStack, apiStack });
+    ingestStack.addStackDependency(dataStack);
+    ingestStack.addStackDependency(apiStack);
+    const frontendStack = new FrontendStack(app, 'HealthOmicsFrontend', { apiStack });
+    frontendStack.addStackDependency(apiStack);
+    return {
+      HealthOmicsData: Template.fromStack(dataStack),
+      HealthOmicsApi: Template.fromStack(apiStack),
+      HealthOmicsIngest: Template.fromStack(ingestStack),
+      HealthOmicsFrontend: Template.fromStack(frontendStack),
+    };
+  }
+
+  /** Project (non-helper) Lambdas in a template: logical ID -> Runtime. */
+  function projectFunctions(t: Template): Record<string, unknown> {
+    const fns = t.findResources('AWS::Lambda::Function');
+    const out: Record<string, unknown> = {};
+    for (const [id, res] of Object.entries(fns)) {
+      if (CDK_HELPER_PREFIXES.some((p) => id.startsWith(p))) continue;
+      out[id] = (res as { Properties?: { Runtime?: unknown } }).Properties?.Runtime;
+    }
+    return out;
+  }
+
+  it('every project Lambda uses nodejs24.x (kinesisIngestMode=active, eventEnrichmentMode=event)', () => {
+    const templates = synthAll({ kinesisIngestMode: 'active', eventEnrichmentMode: 'event' });
+    for (const [stackName, template] of Object.entries(templates)) {
+      const fns = projectFunctions(template);
+      const expected = EXPECTED_PROJECT_FUNCTIONS[stackName];
+      // Every expected function is present exactly once, and nothing else.
+      expect(Object.keys(fns)).toHaveLength(expected.length);
+      for (const prefix of expected) {
+        expect(Object.keys(fns).filter((id) => id.startsWith(prefix))).toHaveLength(1);
+      }
+      for (const runtime of Object.values(fns)) {
+        expect(runtime).toBe('nodejs24.x');
+      }
+    }
+  });
+
+  it('the default (Kinesis off) direct ingest + reconciler Lambdas also use nodejs24.x', () => {
+    const fns = projectFunctions(synthAll({}).HealthOmicsIngest);
+    expect(Object.keys(fns).some((id) => id.startsWith('KinesisIngestConsumer'))).toBe(false);
+    expect(Object.keys(fns)).toHaveLength(2);
+    for (const runtime of Object.values(fns)) {
+      expect(runtime).toBe('nodejs24.x');
+    }
+  });
+});

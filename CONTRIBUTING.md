@@ -41,7 +41,7 @@ GitHub provides additional document on [forking a repository](https://help.githu
 ### Set-up
 
 This is a TypeScript monorepo with independently buildable and testable packages (`infra/`, `ingest/`, `frontend/`).
-Node.js 20.x and npm are required. Install, build, and test each package from its own directory:
+Node.js 24.x and npm are required (the Lambdas run on Node.js 24; Node 22 also works for running the tests). Install, build, and test each package from its own directory:
 
 ```
 cd ingest   && npm install && npm run build && npm test

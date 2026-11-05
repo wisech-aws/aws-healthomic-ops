@@ -163,11 +163,11 @@ export interface IngestStackProps extends StackProps {
  *   (Req 1.7).
  *
  * The ingest Lambda is a NodejsFunction: esbuild bundles the ESM TypeScript
- * handler for the Node.js 20.x runtime. The AWS SDK v3 clients the handler uses
- * are provided by the Lambda runtime, so `@aws-sdk/*` is marked external rather
- * than bundled. Its render/publish targets are supplied as environment
- * variables (`TABLE_NAME`, `APPSYNC_ENDPOINT`); `AWS_REGION` is injected by the
- * Lambda runtime.
+ * handler for the Node.js 24.x runtime. The pinned AWS SDK v3 clients the handler
+ * uses are bundled into the artifact rather than taken from the Lambda runtime
+ * (see the bundling notes below). Its render/publish targets are supplied as
+ * environment variables (`TABLE_NAME`, `APPSYNC_ENDPOINT`); `AWS_REGION` is
+ * injected by the Lambda runtime.
  *
  * The ingest function and its execution role are exposed as stack properties so
  * task 10.2 can attach the DynamoDB / AppSync / HealthOmics least-privilege
@@ -199,16 +199,16 @@ export class IngestStack extends Stack {
       retentionPeriod: Duration.days(14),
     });
 
-    // The ingest Lambda: esbuild-bundled ESM TypeScript on Node.js 20.x.
+    // The ingest Lambda: esbuild-bundled ESM TypeScript on Node.js 24.x.
     //
     // IMPORTANT: we bundle our pinned `@aws-sdk/*` clients into the artifact
-    // rather than relying on the SDK baked into the Node 20 runtime. The runtime
-    // SDK is frozen at an older version that does not deserialize newer GetRun
-    // response fields (e.g. networkingMode / configuration / vpcConfig), which
+    // rather than relying on the SDK baked into the Node.js runtime. The runtime
+    // SDK can lag behind our pinned version, and an older SDK does not
+    // deserialize newer GetRun response fields (e.g. networkingMode / configuration / vpcConfig), which
     // silently dropped those fields during enrichment. Bundling the pinned
     // client (3.1119.0+) ensures the response is parsed with a current model.
     this.ingestFunction = new NodejsFunction(this, 'IngestFunction', {
-      runtime: Runtime.NODEJS_20_X,
+      runtime: Runtime.NODEJS_24_X,
       entry: HANDLER_ENTRY,
       handler: 'handler',
       // The handler lives in the sibling `ingest/` package, outside `infra/`.
@@ -263,7 +263,7 @@ export class IngestStack extends Stack {
         format: OutputFormat.ESM,
         // Bundle the AWS SDK v3 clients (do NOT mark them external) so the
         // handler uses our pinned, current SDK versions instead of the older
-        // SDK baked into the Node 20 runtime — the stale runtime SDK dropped
+        // SDK baked into the Node.js runtime — the stale runtime SDK dropped
         // newer GetRun response fields (networkingMode/configuration/vpcConfig).
         externalModules: [],
         // The AWS SDK v3 internally uses CommonJS `require(...)` (e.g.
@@ -290,7 +290,7 @@ export class IngestStack extends Stack {
     // then deletes its own schedule. Nothing accumulates (one-shot +
     // ActionAfterCompletion.DELETE + self-delete).
     const reconcilerFn = new NodejsFunction(this, 'ReconcilerFunction', {
-      runtime: Runtime.NODEJS_20_X,
+      runtime: Runtime.NODEJS_24_X,
       entry: RECONCILER_ENTRY,
       handler: 'handler',
       projectRoot: INGEST_PROJECT_ROOT,
@@ -594,7 +594,7 @@ export class IngestStack extends Stack {
     // → getDefaultHandler). Same env as the direct ingest function so both paths
     // behave identically downstream.
     const consumer = new NodejsFunction(this, 'KinesisIngestConsumer', {
-      runtime: Runtime.NODEJS_20_X,
+      runtime: Runtime.NODEJS_24_X,
       entry: KINESIS_CONSUMER_ENTRY,
       handler: 'handler',
       projectRoot: INGEST_PROJECT_ROOT,

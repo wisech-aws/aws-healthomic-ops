@@ -31,5 +31,6 @@ and the workflow-definition fixtures used by the parser tests.
   carrying fields that `event` mode relies on, redeploy with
   `-c eventEnrichmentMode=api` and update `ingest/src/eventMapper.ts` and
   [events.md](events.md).
-- The Lambdas use `nodejs20.x`; see
-  [Known limitations](../README.md#known-limitations) for the deprecation dates.
+- The project Lambdas use the `nodejs24.x` runtime (`Runtime.NODEJS_24_X` in
+  `infra/lib/api-stack.ts` and `infra/lib/ingest-stack.ts`). Use Node 24 for
+  local builds and deploys; Node 22 also works for running the tests.

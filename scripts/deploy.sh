@@ -58,7 +58,7 @@
 # Deploys run with `--require-approval never`, so IAM and security-group
 # changes are applied without an interactive prompt.
 #
-# Requires: AWS CLI on PATH, Node.js 20.x, each package's deps installed
+# Requires: AWS CLI on PATH, Node.js 24.x, each package's deps installed
 # (`npm install` in ingest/, frontend/, infra/), AWS credentials for the target
 # account, and `cdk bootstrap` already run once per account/region. This script
 # checks these prerequisites and fails fast with guidance; it NEVER auto-installs,
@@ -114,14 +114,14 @@ if ! command -v aws >/dev/null 2>&1; then
   exit 1
 fi
 
-# 2) Node present and v20.x (warn, don't fail, on other majors).
+# 2) Node present and v24.x (warn, don't fail, on other majors).
 if ! command -v node >/dev/null 2>&1; then
-  echo "error: node is not installed. Install Node.js 20.x and retry." >&2
+  echo "error: node is not installed. Install Node.js 24.x and retry." >&2
   exit 1
 fi
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [ "${NODE_MAJOR}" != "20" ]; then
-  echo "warning: Node ${NODE_MAJOR}.x detected; this project targets Node 20.x." >&2
+if [ "${NODE_MAJOR}" != "24" ]; then
+  echo "warning: Node ${NODE_MAJOR}.x detected; this project targets Node 24.x (the Lambda runtime)." >&2
 fi
 
 # 3) node_modules present in each package this run will build/deploy from.

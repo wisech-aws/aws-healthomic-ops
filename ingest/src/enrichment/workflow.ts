@@ -147,7 +147,7 @@ function resolveLanguage(res: GetWorkflowCommandOutput): Language | string {
 }
 
 /**
- * Default downloader for the definition bundle bytes, using the Node 20 global
+ * Default downloader for the definition bundle bytes, using the Node.js global
  * `fetch`. GETs the presigned URL, rejects a non-2xx response with a clear
  * message, and returns the response body as a {@link Uint8Array}.
  *

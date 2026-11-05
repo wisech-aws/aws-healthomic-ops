@@ -97,7 +97,7 @@ const ERROR_BODY_EXCERPT_LENGTH = 200;
  * `@smithy/protocol-http` class): method `POST`, `host` header set to `host`,
  * `content-type: application/x-www-form-urlencoded`, and `body` as the form-encoded string.
  *
- * Transport: issues the actual HTTPS POST via Node 20's global `fetch`, to
+ * Transport: issues the actual HTTPS POST via Node.js's global `fetch`, to
  * `https://${host}${path}` (Req 1.2, 1.4), passing through the signed headers.
  *
  * Success vs error (Req 10.3, 10.4 — matches the design's Error Handling table): the JSON

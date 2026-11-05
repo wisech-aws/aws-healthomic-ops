@@ -221,7 +221,7 @@ export class ApiStack extends Stack {
    */
   private addLogsResolver(): void {
     const logsFn = new NodejsFunction(this, 'LogsFunction', {
-      runtime: Runtime.NODEJS_20_X,
+      runtime: Runtime.NODEJS_24_X,
       entry: LOGS_HANDLER_ENTRY,
       handler: 'router',
       projectRoot: INGEST_PROJECT_ROOT,
@@ -312,7 +312,7 @@ export class ApiStack extends Stack {
    */
   private addMetricsResolver(): void {
     const metricsFn = new NodejsFunction(this, 'MetricsFunction', {
-      runtime: Runtime.NODEJS_20_X,
+      runtime: Runtime.NODEJS_24_X,
       entry: METRICS_HANDLER_ENTRY,
       handler: 'handler',
       projectRoot: INGEST_PROJECT_ROOT,
@@ -406,7 +406,7 @@ export class ApiStack extends Stack {
    */
   private addCostResolver(table: DataStack['table']): void {
     const costFn = new NodejsFunction(this, 'CostFunction', {
-      runtime: Runtime.NODEJS_20_X,
+      runtime: Runtime.NODEJS_24_X,
       entry: COST_HANDLER_ENTRY,
       handler: 'handler',
       projectRoot: INGEST_PROJECT_ROOT,
@@ -505,7 +505,7 @@ export class ApiStack extends Stack {
     gsi2Name: string,
   ): void {
     const reportsFn = new NodejsFunction(this, 'ReportsFunction', {
-      runtime: Runtime.NODEJS_20_X,
+      runtime: Runtime.NODEJS_24_X,
       entry: REPORTS_HANDLER_ENTRY,
       handler: 'handler',
       projectRoot: INGEST_PROJECT_ROOT,

@@ -142,8 +142,9 @@ fields the mapper reads and the deferred re-sweep, are in
   lower; request an increase in Service Quotas before deploying.
 - [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html),
   used by `scripts/deploy.sh` and `scripts/create-cognito-user.sh`.
-- Node.js 20.x (20.19 or later, which Vite 7 needs) and npm. Node 20 matches
-  the Lambda runtime; `deploy.sh` warns on other major versions.
+- Node.js 24.x and npm. The Lambdas run on the Node.js 24 runtime (`nodejs24.x`),
+  so use Node 24 for local builds and deploys; `deploy.sh` warns on other major
+  versions. Node 22 also works for running the tests.
 - The AWS CDK CLI comes from `infra/` as a pinned devDependency. Run it as
   `npx cdk` from `infra/` rather than a global install, so the version matches.
 - CDK bootstrap, once per account and region (step 2 of the quick start).
@@ -431,11 +432,6 @@ sources are in [docs/cost.md](docs/cost.md).
   non-terminal, and utilization that lands after the run ends is not added to
   the run summary. Enabling it on the Kinesis path would add HealthOmics
   calls per run.
-- The Lambdas use the `nodejs20.x` runtime, which AWS
-  [deprecated on Apr 30, 2026](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html).
-  Lambda blocks creating functions on it from Jul 29, 2027 and updating them
-  from Aug 31, 2027. `cdk synth` prints a deprecation warning. A runtime
-  upgrade is planned.
 - `scripts/send-event.mjs --mode eventbridge` can't publish its fixtures,
   because EventBridge rejects `PutEvents` entries whose source starts with
   `aws.`. Use `--dry-run`, `--mode lambda`, or, with Kinesis enabled,

@@ -40,9 +40,10 @@ changes are applied without a confirmation prompt. Run `npx cdk diff` from
 
 **Prerequisite checks (fail fast, no auto-install).** Before building or
 deploying, the script verifies: the **AWS CLI** is on `PATH`; **Node.js** is
-present (warns if the major version is not 20); the **CDK CLI** resolves from
-`infra/` (else it tells you to `npm install` there); **AWS credentials** resolve
-(else it tells you to run `aws configure` / set `AWS_PROFILE`); and
+present (warns if the major version is not 24, the Lambda runtime); the
+**CDK CLI** resolves from `infra/` (else it tells you to `npm install` there);
+**AWS credentials** resolve (else it tells you to run `aws configure` / set
+`AWS_PROFILE`); and
 `node_modules` exists in each package it will use (`ingest/`, `frontend/`,
 `infra/`), printing the exact `npm install` command for any that are missing. It
 never installs anything for you.
